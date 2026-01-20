@@ -50,3 +50,43 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# --- Build Artifacts ---
+Makefile
+Makefile.in
+.deps
+.libs
+*.o
+*.lo
+*.la
+*.loT
+*.tr
+*.log
+*.status
+
+# --- Autotools Generated ---
+aclocal.m4
+autom4te.cache/
+m4/
+compile
+config.guess
+config.h
+config.h.in
+config.log
+config.status
+config.sub
+configure
+depcomp
+install-sh
+libtool
+ltmain.sh
+missing
+stamp-h1
+ar-lib
+test-driver
+
+# --- Backup files ---
+*~
+
+# --- Executables ---
+apps/game/game
