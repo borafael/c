@@ -5,6 +5,8 @@ AM_PROG_AR               # Required for non-POSIX archivers
 LT_INIT                  # Initialize Libtool for libraries
 AC_PROG_CC               # Check for C compiler
 
+PKG_CHECK_MODULES([SDL2], [sdl2])
+
 # Tell Autoconf which Makefiles to generate
 AC_CONFIG_FILES([
     Makefile
