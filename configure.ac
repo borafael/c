@@ -11,6 +11,6 @@ PKG_CHECK_MODULES([SDL2], [sdl2])
 AC_CONFIG_FILES([
     Makefile
     libs/math/Makefile
-    apps/game/Makefile
+    apps/nbody/Makefile
 ])
 AC_OUTPUT

@@ -11,7 +11,7 @@ C monorepo using GNU Autotools for build management. This is an experimental pro
 │   ├── net/        # Networking (planned)
 │   └── thread/     # Threading utilities (planned)
 ├── apps/           # Applications
-│   └── game/       # N-Body simulation with SDL2
+│   └── nbody/      # N-Body simulation with SDL2
 ```
 
 ## Build System
@@ -27,7 +27,7 @@ make               # Build everything
 ## Running
 
 ```bash
-./apps/game/game   # Run the N-Body simulation
+./apps/nbody/nbody   # Run the N-Body simulation
 ```
 
 Controls: ESC to quit, R to reset simulation.

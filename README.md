@@ -23,7 +23,7 @@ c/
 │   ├── net/               # Networking (planned)
 │   └── thread/            # Threading utilities (planned)
 ├── apps/                  # Applications
-│   └── game/              # N-Body gravitational simulation
+│   └── nbody/             # N-Body gravitational simulation
 ├── configure.ac           # Autoconf configuration
 ├── Makefile.am            # Top-level Automake file
 └── ...
@@ -65,7 +65,7 @@ make
 
 ## Current Projects
 
-### N-Body Simulation (`apps/game`)
+### N-Body Simulation (`apps/nbody`)
 
 A visual gravitational simulation featuring:
 - 2000 particles with mutual gravitational attraction
@@ -80,7 +80,7 @@ This is not a physically accurate simulation - it's tuned for visual entertainme
 - `R` - Reset simulation
 
 ```bash
-./apps/game/game
+./apps/nbody/nbody
 ```
 
 ## License

@@ -89,4 +89,4 @@ test-driver
 *~
 
 # --- Executables ---
-apps/game/game
+apps/nbody/nbody

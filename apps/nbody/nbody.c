@@ -1,4 +1,4 @@
-#include "game.h"
+#include "nbody.h"
 #include "render.h"
 #include "vector.h"
 #include <stdlib.h>
@@ -48,13 +48,13 @@ static void destroy_entity(int id) {
     free_stack[++top] = id;
 }
 
-void game_init(void) {
+void nbody_init(void) {
     for (int i = MAX_ENTITIES - 1; i >= 0; i--) {
         free_stack[++top] = i;
     }
 }
 
-void game_spawn_entities(void) {
+void nbody_spawn_entities(void) {
     srand(time(NULL));
     for (int i = 0; i < NUM_ENTITIES; i++) {
         int id = create_entity();
@@ -73,7 +73,7 @@ void game_spawn_entities(void) {
     }
 }
 
-void game_reset(void) {
+void nbody_reset(void) {
     for (int i = 0; i < MAX_ENTITIES; i++) {
         entity_masks[i] = NONE;
     }
@@ -81,10 +81,10 @@ void game_reset(void) {
     for (int i = MAX_ENTITIES - 1; i >= 0; i--) {
         free_stack[++top] = i;
     }
-    game_spawn_entities();
+    nbody_spawn_entities();
 }
 
-void game_update(void) {
+void nbody_update(void) {
     /* Reset accelerations */
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
@@ -176,7 +176,7 @@ void game_update(void) {
     }
 }
 
-void game_render(int screen_width, int screen_height) {
+void nbody_render(int screen_width, int screen_height) {
     render_clear();
 
     for (int i = 0; i < MAX_ENTITIES; i++) {
