@@ -5,8 +5,10 @@
  * Input events captured during a frame.
  */
 typedef struct {
-    int quit;   /* Window close or Escape pressed */
-    int reset;  /* R key pressed */
+    int quit;      /* Window close or Escape pressed */
+    int reset;     /* R key pressed */
+    int zoom_in;   /* + key pressed */
+    int zoom_out;  /* - key pressed */
 } input_events;
 
 /**
