@@ -5,8 +5,8 @@
 #include <math.h>
 #include <time.h>
 
-#define MAX_ENTITIES 2000
-#define NUM_ENTITIES 2000
+#define MAX_ENTITIES 4000
+#define NUM_ENTITIES 4000
 #define G 0.5f
 #define DT 0.016f
 #define WORLD_WIDTH 800.0f
@@ -37,6 +37,7 @@ static int free_stack[MAX_ENTITIES];
 static int top = -1;
 static int bounds_enabled = 0;
 static float zoom = 1.0f;
+static float time_scale = 1.0f;
 
 static int create_entity(void) {
     if (top >= 0) {
@@ -62,6 +63,16 @@ void nbody_zoom_in(void) {
 void nbody_zoom_out(void) {
     zoom /= 1.1f;
     if (zoom < 0.1f) zoom = 0.1f;
+}
+
+void nbody_speed_up(void) {
+    time_scale *= 1.5f;
+    if (time_scale > 10.0f) time_scale = 10.0f;
+}
+
+void nbody_speed_down(void) {
+    time_scale /= 1.5f;
+    if (time_scale < 0.1f) time_scale = 0.1f;
 }
 
 void nbody_init(void) {
@@ -91,6 +102,7 @@ void nbody_spawn_entities(void) {
 
 void nbody_reset(void) {
     zoom = 1.0f;
+    time_scale = 1.0f;
     for (int i = 0; i < MAX_ENTITIES; i++) {
         entity_masks[i] = NONE;
     }
@@ -161,17 +173,18 @@ void nbody_update(void) {
     }
 
     /* Integrate velocity and position */
+    float dt = DT * time_scale;
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
             continue;
 
         physics_components[i].velocity = vector_add(
             physics_components[i].velocity,
-            vector_scale(physics_components[i].acceleration, DT));
+            vector_scale(physics_components[i].acceleration, dt));
 
         position_components[i].coordinates = vector_add(
             position_components[i].coordinates,
-            vector_scale(physics_components[i].velocity, DT));
+            vector_scale(physics_components[i].velocity, dt));
 
         /* Boundary collision */
         if (bounds_enabled) {

@@ -8,7 +8,9 @@ typedef struct {
     int quit;      /* Window close or Escape pressed */
     int reset;     /* R key pressed */
     int zoom_in;   /* + key pressed */
-    int zoom_out;  /* - key pressed */
+    int zoom_out;   /* - key pressed */
+    int speed_up;   /* F key pressed */
+    int speed_down; /* S key pressed */
 } input_events;
 
 /**

@@ -6,6 +6,8 @@ void input_poll(input_events* events) {
     events->reset = 0;
     events->zoom_in = 0;
     events->zoom_out = 0;
+    events->speed_up = 0;
+    events->speed_down = 0;
 
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
@@ -24,6 +26,12 @@ void input_poll(input_events* events) {
             }
             if (e.key.keysym.sym == SDLK_MINUS) {
                 events->zoom_out = 1;
+            }
+            if (e.key.keysym.sym == SDLK_f) {
+                events->speed_up = 1;
+            }
+            if (e.key.keysym.sym == SDLK_s) {
+                events->speed_down = 1;
             }
         }
     }

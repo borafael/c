@@ -43,4 +43,14 @@ void nbody_zoom_in(void);
  */
 void nbody_zoom_out(void);
 
+/**
+ * Speed up simulation.
+ */
+void nbody_speed_up(void);
+
+/**
+ * Slow down simulation.
+ */
+void nbody_speed_down(void);
+
 #endif /* NBODY_H */

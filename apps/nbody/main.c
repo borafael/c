@@ -38,6 +38,12 @@ int main(int argc, char** argv) {
         if (events.zoom_out) {
             nbody_zoom_out();
         }
+        if (events.speed_up) {
+            nbody_speed_up();
+        }
+        if (events.speed_down) {
+            nbody_speed_down();
+        }
 
         nbody_update();
         nbody_render(screen_width, screen_height);
