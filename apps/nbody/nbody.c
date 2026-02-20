@@ -209,7 +209,7 @@ void nbody_render(int screen_width, int screen_height) {
         int sy = (int)((position_components[i].coordinates.y - camera_y) * zoom / WORLD_HEIGHT * screen_height);
 
         if (sx >= 0 && sx < screen_width && sy >= 0 && sy < screen_height) {
-            int radius = 2;
+            int radius = (int)(2 * sqrtf(zoom));
             uint8_t r = 100, g = 100, b = 255;
 
             if ((entity_masks[i] & PHYSICS) == PHYSICS) {
@@ -222,7 +222,7 @@ void nbody_render(int screen_width, int screen_height) {
                 g = (uint8_t)(50 * (1 - t * t));
                 b = (uint8_t)(255 * (1 - t * t));
 
-                radius = 2 + (int)(logf(mass) * 2.0f);
+                radius = (int)((2 + (int)(logf(mass) * 2.0f)) * sqrtf(zoom));
             }
 
             render_circle(sx, sy, radius, r, g, b);
