@@ -33,4 +33,14 @@ void nbody_update(void);
  */
 void nbody_render(int screen_width, int screen_height);
 
+/**
+ * Zoom in (increase zoom level).
+ */
+void nbody_zoom_in(void);
+
+/**
+ * Zoom out (decrease zoom level).
+ */
+void nbody_zoom_out(void);
+
 #endif /* NBODY_H */

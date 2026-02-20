@@ -36,6 +36,7 @@ static physics_component physics_components[MAX_ENTITIES];
 static int free_stack[MAX_ENTITIES];
 static int top = -1;
 static int bounds_enabled = 0;
+static float zoom = 1.0f;
 
 static int create_entity(void) {
     if (top >= 0) {
@@ -51,6 +52,16 @@ static void destroy_entity(int id) {
 
 void nbody_set_bounds(int enabled) {
     bounds_enabled = enabled;
+}
+
+void nbody_zoom_in(void) {
+    zoom *= 1.1f;
+    if (zoom > 20.0f) zoom = 20.0f;
+}
+
+void nbody_zoom_out(void) {
+    zoom /= 1.1f;
+    if (zoom < 0.1f) zoom = 0.1f;
 }
 
 void nbody_init(void) {
@@ -79,6 +90,7 @@ void nbody_spawn_entities(void) {
 }
 
 void nbody_reset(void) {
+    zoom = 1.0f;
     for (int i = 0; i < MAX_ENTITIES; i++) {
         entity_masks[i] = NONE;
     }
@@ -186,12 +198,15 @@ void nbody_update(void) {
 void nbody_render(int screen_width, int screen_height) {
     render_clear();
 
+    float camera_x = WORLD_WIDTH / 2.0f - (WORLD_WIDTH / 2.0f) / zoom;
+    float camera_y = WORLD_HEIGHT / 2.0f - (WORLD_HEIGHT / 2.0f) / zoom;
+
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((entity_masks[i] & POSITION) != POSITION)
             continue;
 
-        int sx = (int)(position_components[i].coordinates.x / WORLD_WIDTH * screen_width);
-        int sy = (int)(position_components[i].coordinates.y / WORLD_HEIGHT * screen_height);
+        int sx = (int)((position_components[i].coordinates.x - camera_x) * zoom / WORLD_WIDTH * screen_width);
+        int sy = (int)((position_components[i].coordinates.y - camera_y) * zoom / WORLD_HEIGHT * screen_height);
 
         if (sx >= 0 && sx < screen_width && sy >= 0 && sy < screen_height) {
             int radius = 2;
