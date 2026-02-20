@@ -35,6 +35,7 @@ static physics_component physics_components[MAX_ENTITIES];
 
 static int free_stack[MAX_ENTITIES];
 static int top = -1;
+static int bounds_enabled = 0;
 
 static int create_entity(void) {
     if (top >= 0) {
@@ -46,6 +47,10 @@ static int create_entity(void) {
 static void destroy_entity(int id) {
     entity_masks[id] = NONE;
     free_stack[++top] = id;
+}
+
+void nbody_set_bounds(int enabled) {
+    bounds_enabled = enabled;
 }
 
 void nbody_init(void) {
@@ -157,21 +162,23 @@ void nbody_update(void) {
             vector_scale(physics_components[i].velocity, DT));
 
         /* Boundary collision */
-        if (position_components[i].coordinates.x < 0) {
-            position_components[i].coordinates.x = 0;
-            physics_components[i].velocity.x *= -0.5f;
-        }
-        if (position_components[i].coordinates.x > WORLD_WIDTH) {
-            position_components[i].coordinates.x = WORLD_WIDTH;
-            physics_components[i].velocity.x *= -0.5f;
-        }
-        if (position_components[i].coordinates.y < 0) {
-            position_components[i].coordinates.y = 0;
-            physics_components[i].velocity.y *= -0.5f;
-        }
-        if (position_components[i].coordinates.y > WORLD_HEIGHT) {
-            position_components[i].coordinates.y = WORLD_HEIGHT;
-            physics_components[i].velocity.y *= -0.5f;
+        if (bounds_enabled) {
+            if (position_components[i].coordinates.x < 0) {
+                position_components[i].coordinates.x = 0;
+                physics_components[i].velocity.x *= -0.5f;
+            }
+            if (position_components[i].coordinates.x > WORLD_WIDTH) {
+                position_components[i].coordinates.x = WORLD_WIDTH;
+                physics_components[i].velocity.x *= -0.5f;
+            }
+            if (position_components[i].coordinates.y < 0) {
+                position_components[i].coordinates.y = 0;
+                physics_components[i].velocity.y *= -0.5f;
+            }
+            if (position_components[i].coordinates.y > WORLD_HEIGHT) {
+                position_components[i].coordinates.y = WORLD_HEIGHT;
+                physics_components[i].velocity.y *= -0.5f;
+            }
         }
     }
 }

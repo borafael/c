@@ -7,6 +7,12 @@
 void nbody_init(void);
 
 /**
+ * Enable or disable boundary collision.
+ * Disabled by default.
+ */
+void nbody_set_bounds(int enabled);
+
+/**
  * Spawn initial entities.
  */
 void nbody_spawn_entities(void);

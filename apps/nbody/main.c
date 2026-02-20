@@ -1,12 +1,16 @@
 #include "nbody.h"
 #include "render.h"
 #include "input.h"
+#include <string.h>
 
 int main(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
-
     nbody_init();
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--bounds") == 0) {
+            nbody_set_bounds(1);
+        }
+    }
 
     if (render_init() < 0) {
         return 1;
