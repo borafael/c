@@ -32,6 +32,12 @@ int main(int argc, char** argv) {
         if (events.reset) {
             nbody_reset();
         }
+        if (events.zoom_in) {
+            nbody_zoom_in();
+        }
+        if (events.zoom_out) {
+            nbody_zoom_out();
+        }
 
         nbody_update();
         nbody_render(screen_width, screen_height);
