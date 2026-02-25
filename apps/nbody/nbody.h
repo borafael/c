@@ -53,4 +53,24 @@ void nbody_speed_up(void);
  */
 void nbody_speed_down(void);
 
+/**
+ * Pan camera up.
+ */
+void nbody_pan_up(void);
+
+/**
+ * Pan camera down.
+ */
+void nbody_pan_down(void);
+
+/**
+ * Pan camera left.
+ */
+void nbody_pan_left(void);
+
+/**
+ * Pan camera right.
+ */
+void nbody_pan_right(void);
+
 #endif /* NBODY_H */

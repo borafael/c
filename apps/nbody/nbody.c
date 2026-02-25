@@ -38,6 +38,9 @@ static int top = -1;
 static int bounds_enabled = 0;
 static float zoom = 1.0f;
 static float time_scale = 1.0f;
+static float camera_offset_x = 0.0f;
+static float camera_offset_y = 0.0f;
+#define PAN_SPEED 10.0f
 
 static int create_entity(void) {
     if (top >= 0) {
@@ -75,6 +78,22 @@ void nbody_speed_down(void) {
     if (time_scale < 0.1f) time_scale = 0.1f;
 }
 
+void nbody_pan_up(void) {
+    camera_offset_y += PAN_SPEED / zoom;
+}
+
+void nbody_pan_down(void) {
+    camera_offset_y -= PAN_SPEED / zoom;
+}
+
+void nbody_pan_left(void) {
+    camera_offset_x -= PAN_SPEED / zoom;
+}
+
+void nbody_pan_right(void) {
+    camera_offset_x += PAN_SPEED / zoom;
+}
+
 void nbody_init(void) {
     for (int i = MAX_ENTITIES - 1; i >= 0; i--) {
         free_stack[++top] = i;
@@ -103,6 +122,8 @@ void nbody_spawn_entities(void) {
 void nbody_reset(void) {
     zoom = 1.0f;
     time_scale = 1.0f;
+    camera_offset_x = 0.0f;
+    camera_offset_y = 0.0f;
     for (int i = 0; i < MAX_ENTITIES; i++) {
         entity_masks[i] = NONE;
     }
