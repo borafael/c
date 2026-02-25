@@ -232,8 +232,8 @@ void nbody_update(void) {
 void nbody_render(int screen_width, int screen_height) {
     render_clear();
 
-    float camera_x = WORLD_WIDTH / 2.0f - (WORLD_WIDTH / 2.0f) / zoom;
-    float camera_y = WORLD_HEIGHT / 2.0f - (WORLD_HEIGHT / 2.0f) / zoom;
+    float camera_x = (WORLD_WIDTH / 2.0f - camera_offset_x) - (WORLD_WIDTH / 2.0f) / zoom;
+    float camera_y = (WORLD_HEIGHT / 2.0f - camera_offset_y) - (WORLD_HEIGHT / 2.0f) / zoom;
 
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((entity_masks[i] & POSITION) != POSITION)
