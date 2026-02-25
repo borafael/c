@@ -87,11 +87,11 @@ void nbody_pan_down(void) {
 }
 
 void nbody_pan_left(void) {
-    camera_offset_x -= PAN_SPEED / zoom;
+    camera_offset_x += PAN_SPEED / zoom;
 }
 
 void nbody_pan_right(void) {
-    camera_offset_x += PAN_SPEED / zoom;
+    camera_offset_x -= PAN_SPEED / zoom;
 }
 
 void nbody_init(void) {
