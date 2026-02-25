@@ -44,6 +44,18 @@ int main(int argc, char** argv) {
         if (events.speed_down) {
             nbody_speed_down();
         }
+        if (events.pan_up) {
+            nbody_pan_up();
+        }
+        if (events.pan_down) {
+            nbody_pan_down();
+        }
+        if (events.pan_left) {
+            nbody_pan_left();
+        }
+        if (events.pan_right) {
+            nbody_pan_right();
+        }
 
         nbody_update();
         nbody_render(screen_width, screen_height);
