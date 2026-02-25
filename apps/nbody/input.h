@@ -11,6 +11,10 @@ typedef struct {
     int zoom_out;   /* - key pressed */
     int speed_up;   /* F key pressed */
     int speed_down; /* S key pressed */
+    int pan_up;     /* Up arrow pressed */
+    int pan_down;   /* Down arrow pressed */
+    int pan_left;   /* Left arrow pressed */
+    int pan_right;  /* Right arrow pressed */
 } input_events;
 
 /**

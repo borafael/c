@@ -8,6 +8,10 @@ void input_poll(input_events* events) {
     events->zoom_out = 0;
     events->speed_up = 0;
     events->speed_down = 0;
+    events->pan_up = 0;
+    events->pan_down = 0;
+    events->pan_left = 0;
+    events->pan_right = 0;
 
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
@@ -32,6 +36,18 @@ void input_poll(input_events* events) {
             }
             if (e.key.keysym.sym == SDLK_s) {
                 events->speed_down = 1;
+            }
+            if (e.key.keysym.sym == SDLK_UP) {
+                events->pan_up = 1;
+            }
+            if (e.key.keysym.sym == SDLK_DOWN) {
+                events->pan_down = 1;
+            }
+            if (e.key.keysym.sym == SDLK_LEFT) {
+                events->pan_left = 1;
+            }
+            if (e.key.keysym.sym == SDLK_RIGHT) {
+                events->pan_right = 1;
             }
         }
     }
