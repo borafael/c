@@ -264,8 +264,7 @@ static void nbody_step(void) {
         if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
             continue;
 
-        physics_components[i].acceleration.x = 0;
-        physics_components[i].acceleration.y = 0;
+        physics_components[i].acceleration = (vector){0, 0, 0};
     }
 
     /* Calculate gravitational forces (parallel) */
@@ -337,23 +336,24 @@ static void nbody_step(void) {
             position_components[i].coordinates,
             vector_scale(physics_components[i].velocity, dt));
 
-        /* Boundary collision */
+        /* Spherical boundary collision */
         if (bounds_enabled) {
-            if (position_components[i].coordinates.x < 0) {
-                position_components[i].coordinates.x = 0;
-                physics_components[i].velocity.x *= -0.5f;
-            }
-            if (position_components[i].coordinates.x > world_width) {
-                position_components[i].coordinates.x = world_width;
-                physics_components[i].velocity.x *= -0.5f;
-            }
-            if (position_components[i].coordinates.y < 0) {
-                position_components[i].coordinates.y = 0;
-                physics_components[i].velocity.y *= -0.5f;
-            }
-            if (position_components[i].coordinates.y > world_height) {
-                position_components[i].coordinates.y = world_height;
-                physics_components[i].velocity.y *= -0.5f;
+            float dist = vector_magnitude(position_components[i].coordinates);
+            if (dist > world_radius) {
+                /* Normalize position to sphere surface */
+                vector normal = vector_scale(position_components[i].coordinates,
+                                             1.0f / dist);
+                position_components[i].coordinates = vector_scale(normal,
+                                                                  world_radius);
+                /* Reflect velocity off sphere surface */
+                float vn = vector_dot(physics_components[i].velocity, normal);
+                if (vn > 0) {
+                    physics_components[i].velocity = vector_sub(
+                        physics_components[i].velocity,
+                        vector_scale(normal, 2.0f * vn));
+                    physics_components[i].velocity = vector_scale(
+                        physics_components[i].velocity, 0.5f);
+                }
             }
         }
     }
