@@ -366,38 +366,107 @@ void nbody_update(void) {
     }
 }
 
+/* Depth-sort entry for painter's algorithm */
+typedef struct {
+    int entity_id;
+    float depth;
+    int screen_x;
+    int screen_y;
+    int radius;
+    uint8_t r, g, b;
+} render_entry;
+
+static render_entry render_buffer[MAX_ENTITIES];
+
+static int compare_depth(const void *a, const void *b) {
+    float da = ((const render_entry *)a)->depth;
+    float db = ((const render_entry *)b)->depth;
+    if (da > db) return -1;
+    if (da < db) return 1;
+    return 0;
+}
+
 void nbody_render(int screen_width, int screen_height) {
     render_clear();
 
-    float camera_x = (world_width / 2.0f - camera_offset_x) - (world_width / 2.0f) / zoom;
-    float camera_y = (world_height / 2.0f - camera_offset_y) - (world_height / 2.0f) / zoom;
+    /* Camera position from spherical coordinates */
+    float cos_elev = cosf(camera_elevation);
+    float sin_elev = sinf(camera_elevation);
+    float cos_azim = cosf(camera_azimuth);
+    float sin_azim = sinf(camera_azimuth);
+
+    float fov_factor = (float)screen_height;
+    int visible_count = 0;
 
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((entity_masks[i] & POSITION) != POSITION)
             continue;
 
-        int sx = (int)((position_components[i].coordinates.x - camera_x) * zoom / world_width * screen_width);
-        int sy = (int)((position_components[i].coordinates.y - camera_y) * zoom / world_height * screen_height);
+        vector pos = position_components[i].coordinates;
 
-        if (sx >= 0 && sx < screen_width && sy >= 0 && sy < screen_height) {
-            int radius = (int)(2 * sqrtf(zoom));
-            uint8_t r = 100, g = 100, b = 255;
+        /* Translate: world position relative to camera */
+        /* Step 1: Rotate around Y axis by -azimuth */
+        float rx = pos.x * cos_azim + pos.z * sin_azim;
+        float ry = pos.y;
+        float rz = -pos.x * sin_azim + pos.z * cos_azim;
 
-            if ((entity_masks[i] & PHYSICS) == PHYSICS) {
-                float mass = physics_components[i].mass;
-                float t = logf(mass) / logf(1000.0f);
-                if (t < 0) t = 0;
-                if (t > 1) t = 1;
+        /* Step 2: Rotate around X axis by -elevation */
+        float vx = rx;
+        float vy = ry * cos_elev + rz * sin_elev;
+        float vz = -ry * sin_elev + rz * cos_elev;
 
-                r = (uint8_t)(50 + t * 205);
-                g = (uint8_t)(50 * (1 - t * t));
-                b = (uint8_t)(255 * (1 - t * t));
+        /* Step 3: Translate along view axis by camera distance */
+        vz += camera_distance;
 
-                radius = (int)((2 + (int)(logf(mass) * 2.0f)) * sqrtf(zoom));
-            }
+        /* Cull entities behind camera */
+        if (vz <= 1.0f) continue;
 
-            render_circle(sx, sy, radius, r, g, b);
+        /* Perspective divide */
+        int sx = (int)(vx * fov_factor / vz) + screen_width / 2;
+        int sy = (int)(-vy * fov_factor / vz) + screen_height / 2;
+
+        /* Compute radius and color */
+        int radius = (int)(3.0f * fov_factor / vz);
+        uint8_t r = 100, g = 100, b = 255;
+
+        if ((entity_masks[i] & PHYSICS) == PHYSICS) {
+            float mass = physics_components[i].mass;
+            float t = logf(mass) / logf(1000.0f);
+            if (t < 0) t = 0;
+            if (t > 1) t = 1;
+
+            r = (uint8_t)(50 + t * 205);
+            g = (uint8_t)(50 * (1 - t * t));
+            b = (uint8_t)(255 * (1 - t * t));
+
+            radius = (int)((2 + logf(mass) * 2.0f) * fov_factor / vz);
         }
+
+        if (radius < 1) radius = 1;
+
+        /* Frustum cull: skip off-screen entities */
+        if (sx + radius < 0 || sx - radius >= screen_width) continue;
+        if (sy + radius < 0 || sy - radius >= screen_height) continue;
+
+        render_buffer[visible_count].entity_id = i;
+        render_buffer[visible_count].depth = vz;
+        render_buffer[visible_count].screen_x = sx;
+        render_buffer[visible_count].screen_y = sy;
+        render_buffer[visible_count].radius = radius;
+        render_buffer[visible_count].r = r;
+        render_buffer[visible_count].g = g;
+        render_buffer[visible_count].b = b;
+        visible_count++;
+    }
+
+    /* Sort by depth: farthest first (painter's algorithm) */
+    qsort(render_buffer, visible_count, sizeof(render_entry), compare_depth);
+
+    /* Draw back-to-front */
+    for (int i = 0; i < visible_count; i++) {
+        render_circle(render_buffer[i].screen_x, render_buffer[i].screen_y,
+                      render_buffer[i].radius,
+                      render_buffer[i].r, render_buffer[i].g, render_buffer[i].b);
     }
 
     render_present();
