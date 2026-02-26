@@ -83,40 +83,32 @@ void nbody_set_bounds(int enabled) {
     bounds_enabled = enabled;
 }
 
-void nbody_zoom_in(void) {
-    zoom *= 1.1f;
-    if (zoom > 20.0f) zoom = 20.0f;
+void nbody_distance_increase(void) {
+    camera_distance *= 1.1f;
+    if (camera_distance > 5000.0f) camera_distance = 5000.0f;
 }
 
-void nbody_zoom_out(void) {
-    zoom /= 1.1f;
-    if (zoom < 0.1f) zoom = 0.1f;
+void nbody_distance_decrease(void) {
+    camera_distance /= 1.1f;
+    if (camera_distance < 50.0f) camera_distance = 50.0f;
 }
 
-void nbody_speed_up(void) {
-    time_scale *= 1.5f;
-    if (time_scale > 10.0f) time_scale = 10.0f;
+void nbody_rotate_left(void) {
+    camera_azimuth -= rotation_speed;
 }
 
-void nbody_speed_down(void) {
-    time_scale /= 1.5f;
-    if (time_scale < 0.1f) time_scale = 0.1f;
+void nbody_rotate_right(void) {
+    camera_azimuth += rotation_speed;
 }
 
-void nbody_pan_up(void) {
-    camera_offset_y += pan_speed / zoom;
+void nbody_rotate_up(void) {
+    camera_elevation += rotation_speed;
+    if (camera_elevation > 1.5f) camera_elevation = 1.5f;
 }
 
-void nbody_pan_down(void) {
-    camera_offset_y -= pan_speed / zoom;
-}
-
-void nbody_pan_left(void) {
-    camera_offset_x += pan_speed / zoom;
-}
-
-void nbody_pan_right(void) {
-    camera_offset_x -= pan_speed / zoom;
+void nbody_rotate_down(void) {
+    camera_elevation -= rotation_speed;
+    if (camera_elevation < -1.5f) camera_elevation = -1.5f;
 }
 
 nbody_config nbody_default_config(void) {
@@ -124,11 +116,10 @@ nbody_config nbody_default_config(void) {
     config.num_entities = 8000;
     config.gravity = 0.5f;
     config.dt = 0.016f;
-    config.world_width = 800.0f;
-    config.world_height = 400.0f;
+    config.world_radius = 400.0f;
     config.softening = 5.0f;
     config.num_threads = 8;
-    config.pan_speed = 10.0f;
+    config.rotation_speed = 0.05f;
     return config;
 }
 
@@ -141,8 +132,7 @@ void nbody_init(const nbody_config *config) {
     }
     gravity = config->gravity;
     dt = config->dt;
-    world_width = config->world_width;
-    world_height = config->world_height;
+    world_radius = config->world_radius;
     softening = config->softening;
     num_threads = config->num_threads;
     if (num_threads > MAX_THREADS) {
@@ -151,7 +141,7 @@ void nbody_init(const nbody_config *config) {
         num_threads = MAX_THREADS;
     }
     if (num_threads < 1) num_threads = 1;
-    pan_speed = config->pan_speed;
+    rotation_speed = config->rotation_speed;
 
     for (int i = MAX_ENTITIES - 1; i >= 0; i--) {
         free_stack[++top] = i;
@@ -183,10 +173,10 @@ void nbody_spawn_entities(void) {
 }
 
 void nbody_reset(void) {
-    zoom = 1.0f;
+    camera_azimuth = 0.0f;
+    camera_elevation = 0.3f;
+    camera_distance = 800.0f;
     time_scale = 1.0f;
-    camera_offset_x = 0.0f;
-    camera_offset_y = 0.0f;
     for (int i = 0; i < MAX_ENTITIES; i++) {
         entity_masks[i] = NONE;
     }
