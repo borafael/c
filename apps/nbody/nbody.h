@@ -2,9 +2,29 @@
 #define NBODY_H
 
 /**
- * Initialize the simulation state (entity pool).
+ * Simulation configuration.
+ * Use nbody_default_config() to get defaults, then override as needed.
  */
-void nbody_init(void);
+typedef struct {
+    int num_entities;
+    float gravity;
+    float dt;
+    float world_width;
+    float world_height;
+    float softening;
+    int num_threads;
+    float pan_speed;
+} nbody_config;
+
+/**
+ * Return the default configuration values.
+ */
+nbody_config nbody_default_config(void);
+
+/**
+ * Initialize the simulation state with the given configuration.
+ */
+void nbody_init(const nbody_config *config);
 
 /**
  * Enable or disable boundary collision.

@@ -1,15 +1,76 @@
 #include "nbody.h"
 #include "render.h"
 #include "input.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <getopt.h>
+
+static void print_usage(const char *prog) {
+    nbody_config defaults = nbody_default_config();
+    printf("Usage: %s [options]\n", prog);
+    printf("\nSimulation parameters:\n");
+    printf("  -n, --entities N     Number of entities (default: %d)\n", defaults.num_entities);
+    printf("  -g, --gravity F      Gravitational constant (default: %.3f)\n", defaults.gravity);
+    printf("  -t, --dt F           Time step (default: %.3f)\n", defaults.dt);
+    printf("  -W, --width F        World width (default: %.1f)\n", defaults.world_width);
+    printf("  -H, --height F       World height (default: %.1f)\n", defaults.world_height);
+    printf("  -s, --softening F    Softening distance (default: %.1f)\n", defaults.softening);
+    printf("  -T, --threads N      Number of threads (default: %d)\n", defaults.num_threads);
+    printf("  -p, --pan-speed F    Camera pan speed (default: %.1f)\n", defaults.pan_speed);
+    printf("  -b, --bounds         Enable boundary collision\n");
+    printf("  -h, --help           Show this help message\n");
+    printf("\nControls:\n");
+    printf("  ESC       Quit\n");
+    printf("  R         Reset simulation\n");
+    printf("  +/-       Zoom in/out\n");
+    printf("  F/S       Speed up/down\n");
+    printf("  Arrows    Pan camera\n");
+}
 
 int main(int argc, char** argv) {
-    nbody_init();
+    nbody_config config = nbody_default_config();
+    int bounds = 0;
 
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--bounds") == 0) {
-            nbody_set_bounds(1);
+    static struct option long_options[] = {
+        {"entities",  required_argument, 0, 'n'},
+        {"gravity",   required_argument, 0, 'g'},
+        {"dt",        required_argument, 0, 't'},
+        {"width",     required_argument, 0, 'W'},
+        {"height",    required_argument, 0, 'H'},
+        {"softening", required_argument, 0, 's'},
+        {"threads",   required_argument, 0, 'T'},
+        {"pan-speed", required_argument, 0, 'p'},
+        {"bounds",    no_argument,       0, 'b'},
+        {"help",      no_argument,       0, 'h'},
+        {0, 0, 0, 0}
+    };
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "n:g:t:W:H:s:T:p:bh", long_options, NULL)) != -1) {
+        switch (opt) {
+        case 'n': config.num_entities = atoi(optarg); break;
+        case 'g': config.gravity = (float)atof(optarg); break;
+        case 't': config.dt = (float)atof(optarg); break;
+        case 'W': config.world_width = (float)atof(optarg); break;
+        case 'H': config.world_height = (float)atof(optarg); break;
+        case 's': config.softening = (float)atof(optarg); break;
+        case 'T': config.num_threads = atoi(optarg); break;
+        case 'p': config.pan_speed = (float)atof(optarg); break;
+        case 'b': bounds = 1; break;
+        case 'h':
+            print_usage(argv[0]);
+            return 0;
+        default:
+            print_usage(argv[0]);
+            return 1;
         }
+    }
+
+    nbody_init(&config);
+
+    if (bounds) {
+        nbody_set_bounds(1);
     }
 
     if (render_init() < 0) {
