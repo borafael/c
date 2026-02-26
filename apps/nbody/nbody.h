@@ -9,11 +9,10 @@ typedef struct {
     int num_entities;
     float gravity;
     float dt;
-    float world_width;
-    float world_height;
+    float world_radius;
     float softening;
     int num_threads;
-    float pan_speed;
+    float rotation_speed;
 } nbody_config;
 
 /**
@@ -54,44 +53,34 @@ void nbody_update(void);
 void nbody_render(int screen_width, int screen_height);
 
 /**
- * Zoom in (increase zoom level).
+ * Increase camera distance from center.
  */
-void nbody_zoom_in(void);
+void nbody_distance_increase(void);
 
 /**
- * Zoom out (decrease zoom level).
+ * Decrease camera distance from center.
  */
-void nbody_zoom_out(void);
+void nbody_distance_decrease(void);
 
 /**
- * Speed up simulation.
+ * Rotate camera azimuth left.
  */
-void nbody_speed_up(void);
+void nbody_rotate_left(void);
 
 /**
- * Slow down simulation.
+ * Rotate camera azimuth right.
  */
-void nbody_speed_down(void);
+void nbody_rotate_right(void);
 
 /**
- * Pan camera up.
+ * Rotate camera elevation up.
  */
-void nbody_pan_up(void);
+void nbody_rotate_up(void);
 
 /**
- * Pan camera down.
+ * Rotate camera elevation down.
  */
-void nbody_pan_down(void);
-
-/**
- * Pan camera left.
- */
-void nbody_pan_left(void);
-
-/**
- * Pan camera right.
- */
-void nbody_pan_right(void);
+void nbody_rotate_down(void);
 
 /**
  * Clean up simulation resources (thread pool).

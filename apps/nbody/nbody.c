@@ -14,11 +14,10 @@
 static int num_entities = 8000;
 static float gravity = 0.5f;
 static float dt = 0.016f;
-static float world_width = 800.0f;
-static float world_height = 400.0f;
+static float world_radius = 400.0f;
 static float softening = 5.0f;
 static int num_threads = 8;
-static float pan_speed = 10.0f;
+static float rotation_speed = 0.05f;
 
 typedef enum {
     NONE     = 0,
@@ -63,10 +62,10 @@ static thread_pool *pool;
 static force_task_args task_args[MAX_THREADS];
 
 static int bounds_enabled = 0;
-static float zoom = 1.0f;
+static float camera_azimuth = 0.0f;
+static float camera_elevation = 0.3f;
+static float camera_distance = 800.0f;
 static float time_scale = 1.0f;
-static float camera_offset_x = 0.0f;
-static float camera_offset_y = 0.0f;
 
 static int create_entity(void) {
     if (top >= 0) {
