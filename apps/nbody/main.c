@@ -13,19 +13,19 @@ static void print_usage(const char *prog) {
     printf("  -n, --entities N     Number of entities (default: %d)\n", defaults.num_entities);
     printf("  -g, --gravity F      Gravitational constant (default: %.3f)\n", defaults.gravity);
     printf("  -t, --dt F           Time step (default: %.3f)\n", defaults.dt);
-    printf("  -W, --width F        World width (default: %.1f)\n", defaults.world_width);
-    printf("  -H, --height F       World height (default: %.1f)\n", defaults.world_height);
+    printf("  -r, --radius F       World radius (default: %.1f)\n", defaults.world_radius);
     printf("  -s, --softening F    Softening distance (default: %.1f)\n", defaults.softening);
     printf("  -T, --threads N      Number of threads (default: %d)\n", defaults.num_threads);
-    printf("  -p, --pan-speed F    Camera pan speed (default: %.1f)\n", defaults.pan_speed);
+    printf("  -R, --rot-speed F    Camera rotation speed (default: %.3f)\n", defaults.rotation_speed);
     printf("  -b, --bounds         Enable boundary collision\n");
     printf("  -h, --help           Show this help message\n");
     printf("\nControls:\n");
-    printf("  ESC       Quit\n");
-    printf("  R         Reset simulation\n");
-    printf("  +/-       Zoom in/out\n");
-    printf("  F/S       Speed up/down\n");
-    printf("  Arrows    Pan camera\n");
+    printf("  ESC          Quit\n");
+    printf("  R            Reset simulation\n");
+    printf("  +/-          Camera distance (zoom)\n");
+    printf("  F/S          Speed up/down\n");
+    printf("  Left/Right   Rotate azimuth\n");
+    printf("  Up/Down      Rotate elevation\n");
 }
 
 int main(int argc, char** argv) {
@@ -36,27 +36,25 @@ int main(int argc, char** argv) {
         {"entities",  required_argument, 0, 'n'},
         {"gravity",   required_argument, 0, 'g'},
         {"dt",        required_argument, 0, 't'},
-        {"width",     required_argument, 0, 'W'},
-        {"height",    required_argument, 0, 'H'},
+        {"radius",    required_argument, 0, 'r'},
         {"softening", required_argument, 0, 's'},
         {"threads",   required_argument, 0, 'T'},
-        {"pan-speed", required_argument, 0, 'p'},
+        {"rot-speed", required_argument, 0, 'R'},
         {"bounds",    no_argument,       0, 'b'},
         {"help",      no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "n:g:t:W:H:s:T:p:bh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "n:g:t:r:s:T:R:bh", long_options, NULL)) != -1) {
         switch (opt) {
         case 'n': config.num_entities = atoi(optarg); break;
         case 'g': config.gravity = (float)atof(optarg); break;
         case 't': config.dt = (float)atof(optarg); break;
-        case 'W': config.world_width = (float)atof(optarg); break;
-        case 'H': config.world_height = (float)atof(optarg); break;
+        case 'r': config.world_radius = (float)atof(optarg); break;
         case 's': config.softening = (float)atof(optarg); break;
         case 'T': config.num_threads = atoi(optarg); break;
-        case 'p': config.pan_speed = (float)atof(optarg); break;
+        case 'R': config.rotation_speed = (float)atof(optarg); break;
         case 'b': bounds = 1; break;
         case 'h':
             print_usage(argv[0]);
@@ -87,36 +85,16 @@ int main(int argc, char** argv) {
         input_events events;
         input_poll(&events);
 
-        if (events.quit) {
-            running = 0;
-        }
-        if (events.reset) {
-            nbody_reset();
-        }
-        if (events.zoom_in) {
-            nbody_zoom_in();
-        }
-        if (events.zoom_out) {
-            nbody_zoom_out();
-        }
-        if (events.speed_up) {
-            nbody_speed_up();
-        }
-        if (events.speed_down) {
-            nbody_speed_down();
-        }
-        if (events.pan_up) {
-            nbody_pan_up();
-        }
-        if (events.pan_down) {
-            nbody_pan_down();
-        }
-        if (events.pan_left) {
-            nbody_pan_left();
-        }
-        if (events.pan_right) {
-            nbody_pan_right();
-        }
+        if (events.quit) running = 0;
+        if (events.reset) nbody_reset();
+        if (events.zoom_in) nbody_distance_decrease();
+        if (events.zoom_out) nbody_distance_increase();
+        if (events.speed_up) nbody_speed_up();
+        if (events.speed_down) nbody_speed_down();
+        if (events.pan_up) nbody_rotate_up();
+        if (events.pan_down) nbody_rotate_down();
+        if (events.pan_left) nbody_rotate_left();
+        if (events.pan_right) nbody_rotate_right();
 
         nbody_update();
         nbody_render(screen_width, screen_height);

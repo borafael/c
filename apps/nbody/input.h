@@ -7,14 +7,14 @@
 typedef struct {
     int quit;      /* Window close or Escape pressed */
     int reset;     /* R key pressed */
-    int zoom_in;   /* + key pressed */
-    int zoom_out;   /* - key pressed */
+    int zoom_in;    /* + key pressed (now: decrease distance) */
+    int zoom_out;   /* - key pressed (now: increase distance) */
     int speed_up;   /* F key pressed */
     int speed_down; /* S key pressed */
-    int pan_up;     /* Up arrow pressed */
-    int pan_down;   /* Down arrow pressed */
-    int pan_left;   /* Left arrow pressed */
-    int pan_right;  /* Right arrow pressed */
+    int pan_up;     /* Up arrow pressed (now: rotate elevation up) */
+    int pan_down;   /* Down arrow pressed (now: rotate elevation down) */
+    int pan_left;   /* Left arrow pressed (now: rotate azimuth left) */
+    int pan_right;  /* Right arrow pressed (now: rotate azimuth right) */
 } input_events;
 
 /**
