@@ -171,13 +171,26 @@ void nbody_spawn_entities(void) {
 
         entity_masks[id] = POSITION | PHYSICS;
 
-        position_components[id].coordinates.x = (float)(rand() % (int)world_width);
-        position_components[id].coordinates.y = (float)(rand() % (int)world_height);
+        /* Rejection sampling: random point in sphere */
+        float x, y, z;
+        do {
+            x = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
+            y = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
+            z = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
+        } while (x * x + y * y + z * z > 1.0f);
 
-        physics_components[id].velocity.x = ((float)rand() / RAND_MAX - 0.5f) * 10.0f;
-        physics_components[id].velocity.y = ((float)rand() / RAND_MAX - 0.5f) * 10.0f;
-        physics_components[id].acceleration.x = 0;
-        physics_components[id].acceleration.y = 0;
+        position_components[id].coordinates = (vector){
+            x * world_radius,
+            y * world_radius,
+            z * world_radius
+        };
+
+        physics_components[id].velocity = (vector){
+            ((float)rand() / RAND_MAX - 0.5f) * 10.0f,
+            ((float)rand() / RAND_MAX - 0.5f) * 10.0f,
+            ((float)rand() / RAND_MAX - 0.5f) * 10.0f
+        };
+        physics_components[id].acceleration = (vector){0, 0, 0};
         physics_components[id].mass = 1.0f + (float)(rand() % 10);
     }
 }
