@@ -83,6 +83,16 @@ void nbody_rotate_up(void);
 void nbody_rotate_down(void);
 
 /**
+ * Increase simulation speed.
+ */
+void nbody_speed_up(void);
+
+/**
+ * Decrease simulation speed.
+ */
+void nbody_speed_down(void);
+
+/**
  * Clean up simulation resources (thread pool).
  */
 void nbody_cleanup(void);

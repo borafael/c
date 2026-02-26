@@ -111,6 +111,16 @@ void nbody_rotate_down(void) {
     if (camera_elevation < -1.5f) camera_elevation = -1.5f;
 }
 
+void nbody_speed_up(void) {
+    time_scale *= 1.5f;
+    if (time_scale > 10.0f) time_scale = 10.0f;
+}
+
+void nbody_speed_down(void) {
+    time_scale /= 1.5f;
+    if (time_scale < 0.1f) time_scale = 0.1f;
+}
+
 nbody_config nbody_default_config(void) {
     nbody_config config;
     config.num_entities = 8000;
