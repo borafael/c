@@ -73,4 +73,9 @@ void nbody_pan_left(void);
  */
 void nbody_pan_right(void);
 
+/**
+ * Clean up simulation resources (thread pool).
+ */
+void nbody_cleanup(void);
+
 #endif /* NBODY_H */

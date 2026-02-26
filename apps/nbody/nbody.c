@@ -1,7 +1,10 @@
 #include "nbody.h"
 #include "render.h"
 #include "vector.h"
+#include "thread_pool.h"
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <time.h>
 
@@ -33,8 +36,30 @@ static unsigned int entity_masks[MAX_ENTITIES] = {0};
 static position_component position_components[MAX_ENTITIES];
 static physics_component physics_components[MAX_ENTITIES];
 
+typedef struct {
+    int i;
+    int j;
+} merge_pair;
+
 static int free_stack[MAX_ENTITIES];
 static int top = -1;
+
+#define MAX_MERGES (MAX_ENTITIES / 2)
+static merge_pair merge_list[MAX_MERGES];
+
+#define NUM_THREADS 8
+
+typedef struct {
+    int start;
+    int end;
+    vector local_accel[MAX_ENTITIES];
+    merge_pair local_merges[MAX_MERGES / NUM_THREADS];
+    int merge_count;
+} force_task_args;
+
+static thread_pool *pool;
+static force_task_args task_args[NUM_THREADS];
+
 static int bounds_enabled = 0;
 static float zoom = 1.0f;
 static float time_scale = 1.0f;
@@ -98,6 +123,11 @@ void nbody_init(void) {
     for (int i = MAX_ENTITIES - 1; i >= 0; i--) {
         free_stack[++top] = i;
     }
+    pool = thread_pool_create(NUM_THREADS);
+    if (!pool) {
+        fprintf(stderr, "Failed to create thread pool\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
 void nbody_spawn_entities(void) {
@@ -134,18 +164,20 @@ void nbody_reset(void) {
     nbody_spawn_entities();
 }
 
-static void nbody_step(void) {
-    /* Reset accelerations */
-    for (int i = 0; i < MAX_ENTITIES; i++) {
-        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
-            continue;
-
-        physics_components[i].acceleration.x = 0;
-        physics_components[i].acceleration.y = 0;
+void nbody_cleanup(void) {
+    if (pool) {
+        thread_pool_destroy(pool);
+        pool = NULL;
     }
+}
 
-    /* Calculate gravitational forces */
-    for (int i = 0; i < MAX_ENTITIES; i++) {
+static void compute_forces_chunk(void *arg) {
+    force_task_args *a = (force_task_args *)arg;
+
+    memset(a->local_accel, 0, sizeof(a->local_accel));
+    a->merge_count = 0;
+
+    for (int i = a->start; i < a->end; i++) {
         if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
             continue;
 
@@ -157,40 +189,93 @@ static void nbody_step(void) {
                                      position_components[i].coordinates);
             float dist = vector_magnitude(diff);
 
-            /* Merge entities if too close */
             if (dist < SOFTENING) {
-                float m_i = physics_components[i].mass;
-                float m_j = physics_components[j].mass;
-                float total_mass = m_i + m_j;
-
-                position_components[i].coordinates = vector_scale(
-                    vector_add(vector_scale(position_components[i].coordinates, m_i),
-                               vector_scale(position_components[j].coordinates, m_j)),
-                    1.0f / total_mass);
-
-                physics_components[i].velocity = vector_scale(
-                    vector_add(vector_scale(physics_components[i].velocity, m_i),
-                               vector_scale(physics_components[j].velocity, m_j)),
-                    1.0f / total_mass);
-
-                physics_components[i].mass = total_mass;
-
-                destroy_entity(j);
+                int max_local = MAX_MERGES / NUM_THREADS;
+                if (a->merge_count < max_local) {
+                    a->local_merges[a->merge_count].i = i;
+                    a->local_merges[a->merge_count].j = j;
+                    a->merge_count++;
+                }
                 continue;
             }
 
-            float force = G * physics_components[i].mass * physics_components[j].mass / (dist * dist);
+            float force = G * physics_components[i].mass
+                        * physics_components[j].mass / (dist * dist);
             vector dir = vector_scale(diff, 1.0f / dist);
             vector force_vec = vector_scale(dir, force);
 
-            physics_components[i].acceleration = vector_add(
-                physics_components[i].acceleration,
+            a->local_accel[i] = vector_add(a->local_accel[i],
                 vector_scale(force_vec, 1.0f / physics_components[i].mass));
-
-            physics_components[j].acceleration = vector_sub(
-                physics_components[j].acceleration,
+            a->local_accel[j] = vector_sub(a->local_accel[j],
                 vector_scale(force_vec, 1.0f / physics_components[j].mass));
         }
+    }
+}
+
+static void nbody_step(void) {
+    /* Reset accelerations */
+    for (int i = 0; i < MAX_ENTITIES; i++) {
+        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
+            continue;
+
+        physics_components[i].acceleration.x = 0;
+        physics_components[i].acceleration.y = 0;
+    }
+
+    /* Calculate gravitational forces (parallel) */
+    int chunk = MAX_ENTITIES / NUM_THREADS;
+    for (int t = 0; t < NUM_THREADS; t++) {
+        task_args[t].start = t * chunk;
+        task_args[t].end = (t == NUM_THREADS - 1) ? MAX_ENTITIES : (t + 1) * chunk;
+        thread_pool_submit(pool, compute_forces_chunk, &task_args[t]);
+    }
+    thread_pool_wait(pool);
+
+    /* Sum thread-local accelerations */
+    for (int t = 0; t < NUM_THREADS; t++) {
+        for (int i = 0; i < MAX_ENTITIES; i++) {
+            physics_components[i].acceleration = vector_add(
+                physics_components[i].acceleration, task_args[t].local_accel[i]);
+        }
+    }
+
+    /* Collect merge candidates from all threads */
+    int merge_count = 0;
+    for (int t = 0; t < NUM_THREADS; t++) {
+        for (int m = 0; m < task_args[t].merge_count; m++) {
+            if (merge_count < MAX_MERGES) {
+                merge_list[merge_count++] = task_args[t].local_merges[m];
+            }
+        }
+    }
+
+    /* Apply merges */
+    for (int m = 0; m < merge_count; m++) {
+        int i = merge_list[m].i;
+        int j = merge_list[m].j;
+
+        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
+            continue;
+        if ((entity_masks[j] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
+            continue;
+
+        float m_i = physics_components[i].mass;
+        float m_j = physics_components[j].mass;
+        float total_mass = m_i + m_j;
+
+        position_components[i].coordinates = vector_scale(
+            vector_add(vector_scale(position_components[i].coordinates, m_i),
+                       vector_scale(position_components[j].coordinates, m_j)),
+            1.0f / total_mass);
+
+        physics_components[i].velocity = vector_scale(
+            vector_add(vector_scale(physics_components[i].velocity, m_i),
+                       vector_scale(physics_components[j].velocity, m_j)),
+            1.0f / total_mass);
+
+        physics_components[i].mass = total_mass;
+
+        destroy_entity(j);
     }
 
     /* Integrate velocity and position */

@@ -62,6 +62,7 @@ int main(int argc, char** argv) {
         render_delay(1);
     }
 
+    nbody_cleanup();
     render_cleanup();
     return 0;
 }
