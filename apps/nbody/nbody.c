@@ -2,16 +2,17 @@
 #include "render.h"
 #include "vector.h"
 #include "thread_pool.h"
+#include "raytrace.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
 
-#define MAX_ENTITIES 8000
+#define MAX_ENTITIES 200
 #define MAX_THREADS 64
 
-static int num_entities = 8000;
+static int num_entities = 200;
 static float gravity = 0.5f;
 static float dt = 0.016f;
 static float world_radius = 400.0f;
@@ -66,6 +67,24 @@ static float camera_azimuth = 0.0f;
 static float camera_elevation = 0.3f;
 static float camera_distance = 800.0f;
 static float time_scale = 1.0f;
+
+/* Raytracer state (lazy-initialized in nbody_render) */
+#define RT_SCALE 4
+static rt_scene *rt_scene_ptr = NULL;
+static uint32_t *pixel_buffer = NULL;
+static void *rt_texture = NULL;
+static int rt_width = 0;
+static int rt_height = 0;
+
+typedef struct {
+    uint32_t *pixel_buf;
+    int width;
+    int height;
+    int y_start;
+    int y_end;
+    const rt_camera *camera;
+    const rt_scene *scene;
+} render_chunk_args;
 
 static int create_entity(void) {
     if (top >= 0) {
@@ -123,7 +142,7 @@ void nbody_speed_down(void) {
 
 nbody_config nbody_default_config(void) {
     nbody_config config;
-    config.num_entities = 8000;
+    config.num_entities = 200;
     config.gravity = 0.5f;
     config.dt = 0.016f;
     config.world_radius = 400.0f;
@@ -185,11 +204,7 @@ void nbody_spawn_entities(void) {
             z * world_radius
         };
 
-        physics_components[id].velocity = (vector){
-            ((float)rand() / RAND_MAX - 0.5f) * 10.0f,
-            ((float)rand() / RAND_MAX - 0.5f) * 10.0f,
-            ((float)rand() / RAND_MAX - 0.5f) * 10.0f
-        };
+        physics_components[id].velocity = (vector){0, 0, 0};
         physics_components[id].acceleration = (vector){0, 0, 0};
         physics_components[id].mass = 1.0f + (float)(rand() % 10);
     }
@@ -210,10 +225,28 @@ void nbody_reset(void) {
     nbody_spawn_entities();
 }
 
+static void render_chunk_task(void *arg) {
+    render_chunk_args *a = (render_chunk_args *)arg;
+    rt_render_chunk(a->pixel_buf, a->width, a->height,
+                    a->y_start, a->y_end, a->camera, a->scene);
+}
+
 void nbody_cleanup(void) {
     if (pool) {
         thread_pool_destroy(pool);
         pool = NULL;
+    }
+    if (rt_scene_ptr) {
+        rt_scene_destroy(rt_scene_ptr);
+        rt_scene_ptr = NULL;
+    }
+    if (pixel_buffer) {
+        free(pixel_buffer);
+        pixel_buffer = NULL;
+    }
+    if (rt_texture) {
+        render_destroy_texture(rt_texture);
+        rt_texture = NULL;
     }
 }
 
@@ -366,108 +399,82 @@ void nbody_update(void) {
     }
 }
 
-/* Depth-sort entry for painter's algorithm */
-typedef struct {
-    int entity_id;
-    float depth;
-    int screen_x;
-    int screen_y;
-    int radius;
-    uint8_t r, g, b;
-} render_entry;
-
-static render_entry render_buffer[MAX_ENTITIES];
-
-static int compare_depth(const void *a, const void *b) {
-    float da = ((const render_entry *)a)->depth;
-    float db = ((const render_entry *)b)->depth;
-    if (da > db) return -1;
-    if (da < db) return 1;
-    return 0;
-}
-
 void nbody_render(int screen_width, int screen_height) {
-    render_clear();
+    int w = screen_width / RT_SCALE;
+    int h = screen_height / RT_SCALE;
 
-    /* Camera position from spherical coordinates */
-    float cos_elev = cosf(camera_elevation);
-    float sin_elev = sinf(camera_elevation);
-    float cos_azim = cosf(camera_azimuth);
-    float sin_azim = sinf(camera_azimuth);
+    /* Lazy init raytracer resources */
+    if (!rt_scene_ptr) {
+        rt_scene_ptr = rt_scene_create(MAX_ENTITIES);
+    }
+    if (!pixel_buffer || rt_width != w || rt_height != h) {
+        free(pixel_buffer);
+        pixel_buffer = calloc((size_t)w * h, sizeof(uint32_t));
+        if (rt_texture) render_destroy_texture(rt_texture);
+        rt_texture = render_create_texture(w, h);
+        rt_width = w;
+        rt_height = h;
+    }
 
-    float fov_factor = (float)screen_height;
-    int visible_count = 0;
+    /* Build camera from orbital parameters */
+    rt_camera camera;
+    camera.origin = (vector){
+        camera_distance * cosf(camera_elevation) * sinf(camera_azimuth),
+        camera_distance * sinf(camera_elevation),
+        -camera_distance * cosf(camera_elevation) * cosf(camera_azimuth)
+    };
+    camera.forward = vector_normalize(vector_scale(camera.origin, -1.0f));
 
+    vector world_up = {0.0f, 1.0f, 0.0f};
+    camera.right = vector_normalize(vector_cross(camera.forward, world_up));
+    /* Handle degenerate case when looking straight up/down */
+    if (vector_magnitude(camera.right) < 0.001f) {
+        camera.right = (vector){1.0f, 0.0f, 0.0f};
+    }
+    camera.up = vector_cross(camera.right, camera.forward);
+    camera.fov_factor = (float)h;
+
+    /* Populate scene with entity spheres */
+    rt_scene_clear(rt_scene_ptr);
     for (int i = 0; i < MAX_ENTITIES; i++) {
-        if ((entity_masks[i] & POSITION) != POSITION)
+        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
             continue;
 
-        vector pos = position_components[i].coordinates;
+        float mass = physics_components[i].mass;
+        float t = logf(mass) / logf(1000.0f);
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
 
-        /* Translate: world position relative to camera */
-        /* Step 1: Rotate around Y axis by -azimuth */
-        float rx = pos.x * cos_azim + pos.z * sin_azim;
-        float ry = pos.y;
-        float rz = -pos.x * sin_azim + pos.z * cos_azim;
+        rt_sphere sp;
+        sp.center = position_components[i].coordinates;
+        sp.radius = 2.0f + logf(mass) * 2.0f;
+        if (sp.radius < 1.0f) sp.radius = 1.0f;
+        sp.r = (uint8_t)(50 + t * 205);
+        sp.g = (uint8_t)(50 * (1 - t * t));
+        sp.b = (uint8_t)(255 * (1 - t * t));
 
-        /* Step 2: Rotate around X axis by -elevation */
-        float vx = rx;
-        float vy = ry * cos_elev + rz * sin_elev;
-        float vz = -ry * sin_elev + rz * cos_elev;
-
-        /* Step 3: Translate along view axis by camera distance */
-        vz += camera_distance;
-
-        /* Cull entities behind camera */
-        if (vz <= 1.0f) continue;
-
-        /* Perspective divide */
-        int sx = (int)(vx * fov_factor / vz) + screen_width / 2;
-        int sy = (int)(-vy * fov_factor / vz) + screen_height / 2;
-
-        /* Compute radius and color */
-        int radius = (int)(3.0f * fov_factor / vz);
-        uint8_t r = 100, g = 100, b = 255;
-
-        if ((entity_masks[i] & PHYSICS) == PHYSICS) {
-            float mass = physics_components[i].mass;
-            float t = logf(mass) / logf(1000.0f);
-            if (t < 0) t = 0;
-            if (t > 1) t = 1;
-
-            r = (uint8_t)(50 + t * 205);
-            g = (uint8_t)(50 * (1 - t * t));
-            b = (uint8_t)(255 * (1 - t * t));
-
-            radius = (int)((2 + logf(mass) * 2.0f) * fov_factor / vz);
-        }
-
-        if (radius < 1) radius = 1;
-
-        /* Frustum cull: skip off-screen entities */
-        if (sx + radius < 0 || sx - radius >= screen_width) continue;
-        if (sy + radius < 0 || sy - radius >= screen_height) continue;
-
-        render_buffer[visible_count].entity_id = i;
-        render_buffer[visible_count].depth = vz;
-        render_buffer[visible_count].screen_x = sx;
-        render_buffer[visible_count].screen_y = sy;
-        render_buffer[visible_count].radius = radius;
-        render_buffer[visible_count].r = r;
-        render_buffer[visible_count].g = g;
-        render_buffer[visible_count].b = b;
-        visible_count++;
+        rt_scene_add_sphere(rt_scene_ptr, sp);
     }
 
-    /* Sort by depth: farthest first (painter's algorithm) */
-    qsort(render_buffer, visible_count, sizeof(render_entry), compare_depth);
+    /* Parallel render: split scanlines into chunks via thread pool */
+    int num_chunks = num_threads;
+    render_chunk_args chunk_args[MAX_THREADS];
+    int rows_per_chunk = h / num_chunks;
 
-    /* Draw back-to-front */
-    for (int i = 0; i < visible_count; i++) {
-        render_circle(render_buffer[i].screen_x, render_buffer[i].screen_y,
-                      render_buffer[i].radius,
-                      render_buffer[i].r, render_buffer[i].g, render_buffer[i].b);
+    for (int c = 0; c < num_chunks; c++) {
+        chunk_args[c].pixel_buf = pixel_buffer;
+        chunk_args[c].width = w;
+        chunk_args[c].height = h;
+        chunk_args[c].y_start = c * rows_per_chunk;
+        chunk_args[c].y_end = (c == num_chunks - 1) ? h : (c + 1) * rows_per_chunk;
+        chunk_args[c].camera = &camera;
+        chunk_args[c].scene = rt_scene_ptr;
+        thread_pool_submit(pool, render_chunk_task, &chunk_args[c]);
     }
+    thread_pool_wait(pool);
 
+    /* Display */
+    render_clear();
+    render_texture_update(rt_texture, pixel_buffer, w * (int)sizeof(uint32_t));
     render_present();
 }

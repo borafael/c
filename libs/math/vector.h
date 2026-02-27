@@ -35,4 +35,10 @@ static inline vector vector_scale(vector v, float s) {
   return (vector){v.x * s, v.y * s, v.z * s};
 }
 
+static inline vector vector_normalize(vector v) {
+    float mag = vector_magnitude(v);
+    if (mag > 0.0f) return vector_scale(v, 1.0f / mag);
+    return (vector){0, 0, 0};
+}
+
 #endif

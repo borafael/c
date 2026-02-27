@@ -35,6 +35,22 @@ void render_present(void);
 void render_delay(int ms);
 
 /**
+ * Create a streaming texture (ARGB8888). Returns opaque handle.
+ */
+void *render_create_texture(int width, int height);
+
+/**
+ * Update the texture from a pixel buffer and copy it to the screen.
+ * pitch is the number of bytes per row (width * 4 for ARGB8888).
+ */
+void render_texture_update(void *texture, const void *pixels, int pitch);
+
+/**
+ * Destroy a texture created with render_create_texture.
+ */
+void render_destroy_texture(void *texture);
+
+/**
  * Clean up rendering resources.
  */
 void render_cleanup(void);

@@ -62,6 +62,26 @@ void render_delay(int ms) {
     SDL_Delay(ms);
 }
 
+void *render_create_texture(int width, int height) {
+    SDL_Texture *tex = SDL_CreateTexture(renderer,
+        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+        width, height);
+    if (!tex) {
+        fprintf(stderr, "Texture creation failed: %s\n", SDL_GetError());
+    }
+    return tex;
+}
+
+void render_texture_update(void *texture, const void *pixels, int pitch) {
+    SDL_Texture *tex = (SDL_Texture *)texture;
+    SDL_UpdateTexture(tex, NULL, pixels, pitch);
+    SDL_RenderCopy(renderer, tex, NULL, NULL);
+}
+
+void render_destroy_texture(void *texture) {
+    if (texture) SDL_DestroyTexture((SDL_Texture *)texture);
+}
+
 void render_cleanup(void) {
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);

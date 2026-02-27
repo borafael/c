@@ -12,6 +12,7 @@ AC_CONFIG_FILES([
     Makefile
     libs/math/Makefile
     libs/thread/Makefile
+    libs/raytrace/Makefile
     apps/nbody/Makefile
 ])
 AC_OUTPUT
