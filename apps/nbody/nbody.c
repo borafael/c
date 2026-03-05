@@ -427,11 +427,24 @@ void nbody_update(void) {
     }
 }
 
-void nbody_render(int screen_width, int screen_height) {
-    int w = screen_width / RT_SCALE;
-    int h = screen_height / RT_SCALE;
+static rt_sphere entity_to_sphere(int entity_id) {
+    float mass = physics_components[entity_id].mass;
+    float t = logf(mass) / logf(1000.0f);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
 
-    /* Lazy init raytracer resources */
+    rt_sphere sp;
+    sp.center = position_components[entity_id].coordinates;
+    sp.radius = 2.0f + logf(mass) * 2.0f;
+    if (sp.radius < 1.0f) sp.radius = 1.0f;
+    sp.r = (uint8_t)(50 + t * 205);
+    sp.g = (uint8_t)(50 * (1 - t * t));
+    sp.b = (uint8_t)(255 * (1 - t * t));
+
+    return sp;
+}
+
+static void ensure_render_resources(int w, int h) {
     if (!rt_scene_ptr) {
         rt_scene_ptr = rt_scene_create(MAX_ENTITIES);
     }
@@ -443,49 +456,43 @@ void nbody_render(int screen_width, int screen_height) {
         rt_width = w;
         rt_height = h;
     }
+}
 
-    rt_viewport viewport = { .width = w, .height = h, .fov = 1.5708f };
-
-    /* Populate scene with entity spheres */
-    rt_scene_clear(rt_scene_ptr);
-    for (int i = 0; i < MAX_ENTITIES; i++) {
-        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
-            continue;
-
-        float mass = physics_components[i].mass;
-        float t = logf(mass) / logf(1000.0f);
-        if (t < 0.0f) t = 0.0f;
-        if (t > 1.0f) t = 1.0f;
-
-        rt_sphere sp;
-        sp.center = position_components[i].coordinates;
-        sp.radius = 2.0f + logf(mass) * 2.0f;
-        if (sp.radius < 1.0f) sp.radius = 1.0f;
-        sp.r = (uint8_t)(50 + t * 205);
-        sp.g = (uint8_t)(50 * (1 - t * t));
-        sp.b = (uint8_t)(255 * (1 - t * t));
-
-        rt_scene_add_sphere(rt_scene_ptr, sp);
-    }
-
-    /* Parallel render */
+static void render_scene(const rt_camera *cam, const rt_viewport *vp) {
     int num_chunks = num_threads;
     render_chunk_args chunk_args[MAX_THREADS];
-    int rows_per_chunk = h / num_chunks;
+    int rows_per_chunk = vp->height / num_chunks;
 
     for (int c = 0; c < num_chunks; c++) {
         chunk_args[c].pixel_buf = pixel_buffer;
-        chunk_args[c].viewport = &viewport;
+        chunk_args[c].viewport = vp;
         chunk_args[c].y_start = c * rows_per_chunk;
-        chunk_args[c].y_end = (c == num_chunks - 1) ? h : (c + 1) * rows_per_chunk;
-        chunk_args[c].camera = camera;
+        chunk_args[c].y_end = (c == num_chunks - 1) ? vp->height : (c + 1) * rows_per_chunk;
+        chunk_args[c].camera = cam;
         chunk_args[c].scene = rt_scene_ptr;
         thread_pool_submit(pool, render_chunk_task, &chunk_args[c]);
     }
     thread_pool_wait(pool);
 
-    /* Display */
     render_clear();
-    render_texture_update(rt_texture, pixel_buffer, w * (int)sizeof(uint32_t));
+    render_texture_update(rt_texture, pixel_buffer, vp->width * (int)sizeof(uint32_t));
     render_present();
+}
+
+void nbody_render(int screen_width, int screen_height) {
+    int w = screen_width / RT_SCALE;
+    int h = screen_height / RT_SCALE;
+
+    ensure_render_resources(w, h);
+
+    rt_viewport viewport = { .width = w, .height = h, .fov = 1.5708f };
+
+    rt_scene_clear(rt_scene_ptr);
+    for (int i = 0; i < MAX_ENTITIES; i++) {
+        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
+            continue;
+        rt_scene_add_sphere(rt_scene_ptr, entity_to_sphere(i));
+    }
+
+    render_scene(camera, &viewport);
 }
