@@ -50,6 +50,7 @@ static int top = -1;
 
 #define MAX_MERGES (MAX_ENTITIES / 2)
 static merge_pair merge_list[MAX_MERGES];
+static int merge_count = 0;
 
 typedef struct {
     int start;
@@ -312,16 +313,15 @@ static void compute_forces_chunk(void *arg) {
     }
 }
 
-static void nbody_step(void) {
-    /* Reset accelerations */
+static void reset_accelerations(void) {
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
             continue;
-
         physics_components[i].acceleration = (vector){0, 0, 0};
     }
+}
 
-    /* Calculate gravitational forces (parallel) */
+static void accumulate_forces(void) {
     int chunk = MAX_ENTITIES / num_threads;
     for (int t = 0; t < num_threads; t++) {
         task_args[t].start = t * chunk;
@@ -339,7 +339,7 @@ static void nbody_step(void) {
     }
 
     /* Collect merge candidates from all threads */
-    int merge_count = 0;
+    merge_count = 0;
     for (int t = 0; t < num_threads; t++) {
         for (int m = 0; m < task_args[t].merge_count; m++) {
             if (merge_count < MAX_MERGES) {
@@ -347,8 +347,9 @@ static void nbody_step(void) {
             }
         }
     }
+}
 
-    /* Apply merges */
+static void apply_merges(void) {
     for (int m = 0; m < merge_count; m++) {
         int i = merge_list[m].i;
         int j = merge_list[m].j;
@@ -376,40 +377,46 @@ static void nbody_step(void) {
 
         destroy_entity(j);
     }
+}
 
-    /* Integrate velocity and position */
+static void update_physics_component(int entity_id) {
+    physics_components[entity_id].velocity = vector_add(
+        physics_components[entity_id].velocity,
+        vector_scale(physics_components[entity_id].acceleration, dt));
+
+    position_components[entity_id].coordinates = vector_add(
+        position_components[entity_id].coordinates,
+        vector_scale(physics_components[entity_id].velocity, dt));
+}
+
+static void check_collision_with_boundary(int entity_id) {
+    float dist = vector_magnitude(position_components[entity_id].coordinates);
+    if (dist > world_radius) {
+        vector normal = vector_scale(position_components[entity_id].coordinates,
+                                     1.0f / dist);
+        position_components[entity_id].coordinates = vector_scale(normal,
+                                                                  world_radius);
+        float vn = vector_dot(physics_components[entity_id].velocity, normal);
+        if (vn > 0) {
+            physics_components[entity_id].velocity = vector_sub(
+                physics_components[entity_id].velocity,
+                vector_scale(normal, 2.0f * vn));
+            physics_components[entity_id].velocity = vector_scale(
+                physics_components[entity_id].velocity, 0.5f);
+        }
+    }
+}
+
+static void nbody_step(void) {
+    reset_accelerations();
+    accumulate_forces();
+    apply_merges();
+
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
             continue;
-
-        physics_components[i].velocity = vector_add(
-            physics_components[i].velocity,
-            vector_scale(physics_components[i].acceleration, dt));
-
-        position_components[i].coordinates = vector_add(
-            position_components[i].coordinates,
-            vector_scale(physics_components[i].velocity, dt));
-
-        /* Spherical boundary collision */
-        if (bounds_enabled) {
-            float dist = vector_magnitude(position_components[i].coordinates);
-            if (dist > world_radius) {
-                /* Normalize position to sphere surface */
-                vector normal = vector_scale(position_components[i].coordinates,
-                                             1.0f / dist);
-                position_components[i].coordinates = vector_scale(normal,
-                                                                  world_radius);
-                /* Reflect velocity off sphere surface */
-                float vn = vector_dot(physics_components[i].velocity, normal);
-                if (vn > 0) {
-                    physics_components[i].velocity = vector_sub(
-                        physics_components[i].velocity,
-                        vector_scale(normal, 2.0f * vn));
-                    physics_components[i].velocity = vector_scale(
-                        physics_components[i].velocity, 0.5f);
-                }
-            }
-        }
+        update_physics_component(i);
+        if (bounds_enabled) check_collision_with_boundary(i);
     }
 }
 
