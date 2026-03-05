@@ -67,6 +67,7 @@ static float camera_azimuth = 0.0f;
 static float camera_elevation = 0.3f;
 static float camera_distance = 1500.0f;
 static float time_scale = 1.0f;
+static rt_camera *camera = NULL;
 
 /* Raytracer state (lazy-initialized in nbody_render) */
 #define RT_SCALE 4
@@ -78,8 +79,7 @@ static int rt_height = 0;
 
 typedef struct {
     uint32_t *pixel_buf;
-    int width;
-    int height;
+    const rt_viewport *viewport;
     int y_start;
     int y_end;
     const rt_camera *camera;
@@ -180,6 +180,18 @@ void nbody_init(const nbody_config *config) {
         fprintf(stderr, "Failed to create thread pool\n");
         exit(EXIT_FAILURE);
     }
+
+    vector pos = {
+        camera_distance * cosf(camera_elevation) * sinf(camera_azimuth),
+        camera_distance * sinf(camera_elevation),
+        -camera_distance * cosf(camera_elevation) * cosf(camera_azimuth)
+    };
+    vector dir = vector_normalize(vector_scale(pos, -1.0f));
+    camera = rt_camera_create(pos, dir);
+    if (!camera) {
+        fprintf(stderr, "Failed to create camera\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
 void nbody_spawn_entities(void) {
@@ -223,11 +235,21 @@ void nbody_reset(void) {
         free_stack[++top] = i;
     }
     nbody_spawn_entities();
+
+    if (camera) {
+        vector pos = {
+            camera_distance * cosf(camera_elevation) * sinf(camera_azimuth),
+            camera_distance * sinf(camera_elevation),
+            -camera_distance * cosf(camera_elevation) * cosf(camera_azimuth)
+        };
+        vector dir = vector_normalize(vector_scale(pos, -1.0f));
+        rt_camera_place(camera, pos, dir);
+    }
 }
 
 static void render_chunk_task(void *arg) {
     render_chunk_args *a = (render_chunk_args *)arg;
-    rt_render_chunk(a->pixel_buf, a->width, a->height,
+    rt_render_chunk(a->pixel_buf, a->viewport,
                     a->y_start, a->y_end, a->camera, a->scene);
 }
 
@@ -235,6 +257,10 @@ void nbody_cleanup(void) {
     if (pool) {
         thread_pool_destroy(pool);
         pool = NULL;
+    }
+    if (camera) {
+        rt_camera_destroy(camera);
+        camera = NULL;
     }
     if (rt_scene_ptr) {
         rt_scene_destroy(rt_scene_ptr);
@@ -416,23 +442,7 @@ void nbody_render(int screen_width, int screen_height) {
         rt_height = h;
     }
 
-    /* Build camera from orbital parameters */
-    rt_camera camera;
-    camera.origin = (vector){
-        camera_distance * cosf(camera_elevation) * sinf(camera_azimuth),
-        camera_distance * sinf(camera_elevation),
-        -camera_distance * cosf(camera_elevation) * cosf(camera_azimuth)
-    };
-    camera.forward = vector_normalize(vector_scale(camera.origin, -1.0f));
-
-    vector world_up = {0.0f, 1.0f, 0.0f};
-    camera.right = vector_normalize(vector_cross(camera.forward, world_up));
-    /* Handle degenerate case when looking straight up/down */
-    if (vector_magnitude(camera.right) < 0.001f) {
-        camera.right = (vector){1.0f, 0.0f, 0.0f};
-    }
-    camera.up = vector_cross(camera.right, camera.forward);
-    camera.fov_factor = (float)h;
+    rt_viewport viewport = { .width = w, .height = h, .fov = 1.5708f };
 
     /* Populate scene with entity spheres */
     rt_scene_clear(rt_scene_ptr);
@@ -456,18 +466,17 @@ void nbody_render(int screen_width, int screen_height) {
         rt_scene_add_sphere(rt_scene_ptr, sp);
     }
 
-    /* Parallel render: split scanlines into chunks via thread pool */
+    /* Parallel render */
     int num_chunks = num_threads;
     render_chunk_args chunk_args[MAX_THREADS];
     int rows_per_chunk = h / num_chunks;
 
     for (int c = 0; c < num_chunks; c++) {
         chunk_args[c].pixel_buf = pixel_buffer;
-        chunk_args[c].width = w;
-        chunk_args[c].height = h;
+        chunk_args[c].viewport = &viewport;
         chunk_args[c].y_start = c * rows_per_chunk;
         chunk_args[c].y_end = (c == num_chunks - 1) ? h : (c + 1) * rows_per_chunk;
-        chunk_args[c].camera = &camera;
+        chunk_args[c].camera = camera;
         chunk_args[c].scene = rt_scene_ptr;
         thread_pool_submit(pool, render_chunk_task, &chunk_args[c]);
     }
