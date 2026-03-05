@@ -22,10 +22,10 @@ static void print_usage(const char *prog) {
     printf("\nControls:\n");
     printf("  ESC          Quit\n");
     printf("  R            Reset simulation\n");
-    printf("  +/-          Camera distance (zoom)\n");
-    printf("  F/S          Speed up/down\n");
+    printf("  +/-          Camera distance [10 .. 20000]\n");
+    printf("  F/S          Speed up/down [0.1x .. 50x]\n");
     printf("  Left/Right   Rotate azimuth\n");
-    printf("  Up/Down      Rotate elevation\n");
+    printf("  Up/Down      Rotate elevation [-1.5 .. 1.5 rad]\n");
 }
 
 int main(int argc, char** argv) {
@@ -48,20 +48,20 @@ int main(int argc, char** argv) {
     int opt;
     while ((opt = getopt_long(argc, argv, "n:g:t:r:s:T:R:bh", long_options, NULL)) != -1) {
         switch (opt) {
-        case 'n': config.num_entities = atoi(optarg); break;
-        case 'g': config.gravity = (float)atof(optarg); break;
-        case 't': config.dt = (float)atof(optarg); break;
-        case 'r': config.world_radius = (float)atof(optarg); break;
-        case 's': config.softening = (float)atof(optarg); break;
-        case 'T': config.num_threads = atoi(optarg); break;
-        case 'R': config.rotation_speed = (float)atof(optarg); break;
-        case 'b': bounds = 1; break;
-        case 'h':
-            print_usage(argv[0]);
-            return 0;
-        default:
-            print_usage(argv[0]);
-            return 1;
+            case 'n': config.num_entities = atoi(optarg); break;
+            case 'g': config.gravity = (float)atof(optarg); break;
+            case 't': config.dt = (float)atof(optarg); break;
+            case 'r': config.world_radius = (float)atof(optarg); break;
+            case 's': config.softening = (float)atof(optarg); break;
+            case 'T': config.num_threads = atoi(optarg); break;
+            case 'R': config.rotation_speed = (float)atof(optarg); break;
+            case 'b': bounds = 1; break;
+            case 'h':
+                print_usage(argv[0]);
+                return 0;
+            default:
+                print_usage(argv[0]);
+                return 1;
         }
     }
 

@@ -9,13 +9,13 @@
 #include <math.h>
 #include <time.h>
 
-#define MAX_ENTITIES 200
+#define MAX_ENTITIES 10000
 #define MAX_THREADS 64
 
-static int num_entities = 200;
+static int num_entities = 500;
 static float gravity = 0.5f;
 static float dt = 0.016f;
-static float world_radius = 400.0f;
+static float world_radius = 800.0f;
 static float softening = 5.0f;
 static int num_threads = 8;
 static float rotation_speed = 0.05f;
@@ -65,7 +65,7 @@ static force_task_args task_args[MAX_THREADS];
 static int bounds_enabled = 0;
 static float camera_azimuth = 0.0f;
 static float camera_elevation = 0.3f;
-static float camera_distance = 800.0f;
+static float camera_distance = 1500.0f;
 static float time_scale = 1.0f;
 
 /* Raytracer state (lazy-initialized in nbody_render) */
@@ -104,12 +104,12 @@ void nbody_set_bounds(int enabled) {
 
 void nbody_distance_increase(void) {
     camera_distance *= 1.1f;
-    if (camera_distance > 5000.0f) camera_distance = 5000.0f;
+    if (camera_distance > 20000.0f) camera_distance = 20000.0f;
 }
 
 void nbody_distance_decrease(void) {
     camera_distance /= 1.1f;
-    if (camera_distance < 50.0f) camera_distance = 50.0f;
+    if (camera_distance < 10.0f) camera_distance = 10.0f;
 }
 
 void nbody_rotate_left(void) {
@@ -132,7 +132,7 @@ void nbody_rotate_down(void) {
 
 void nbody_speed_up(void) {
     time_scale *= 1.5f;
-    if (time_scale > 10.0f) time_scale = 10.0f;
+    if (time_scale > 50.0f) time_scale = 50.0f;
 }
 
 void nbody_speed_down(void) {
@@ -213,7 +213,7 @@ void nbody_spawn_entities(void) {
 void nbody_reset(void) {
     camera_azimuth = 0.0f;
     camera_elevation = 0.3f;
-    camera_distance = 800.0f;
+    camera_distance = 1500.0f;
     time_scale = 1.0f;
     for (int i = 0; i < MAX_ENTITIES; i++) {
         entity_masks[i] = NONE;
