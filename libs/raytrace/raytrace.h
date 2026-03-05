@@ -10,13 +10,23 @@ typedef struct {
     uint8_t r, g, b;
 } rt_sphere;
 
-typedef struct {
-    vector origin;
-    vector forward;
-    vector right;
-    vector up;
-    float fov_factor;
-} rt_camera;
+typedef struct rt_camera rt_camera;
+
+/**
+ * Create a camera at position, looking toward direction.
+ * Computes internal orientation vectors automatically.
+ */
+rt_camera *rt_camera_create(vector position, vector direction);
+
+/**
+ * Reposition the camera and change its direction.
+ */
+void rt_camera_place(rt_camera *cam, vector position, vector direction);
+
+/**
+ * Destroy the camera and free resources.
+ */
+void rt_camera_destroy(rt_camera *cam);
 
 typedef struct rt_scene rt_scene;
 

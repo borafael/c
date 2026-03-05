@@ -4,6 +4,14 @@
 #include <math.h>
 #include <float.h>
 
+struct rt_camera {
+    vector origin;
+    vector forward;
+    vector right;
+    vector up;
+    float fov_factor;
+};
+
 struct rt_scene {
     rt_sphere *spheres;
     int count;
@@ -37,6 +45,37 @@ void rt_scene_destroy(rt_scene *scene) {
     if (!scene) return;
     free(scene->spheres);
     free(scene);
+}
+
+static void camera_update_orientation(rt_camera *cam) {
+    cam->forward = vector_normalize(cam->forward);
+
+    vector world_up = {0.0f, 1.0f, 0.0f};
+    cam->right = vector_normalize(vector_cross(cam->forward, world_up));
+    /* Handle degenerate case when looking straight up/down */
+    if (vector_magnitude(cam->right) < 0.001f) {
+        cam->right = (vector){1.0f, 0.0f, 0.0f};
+    }
+    cam->up = vector_cross(cam->right, cam->forward);
+}
+
+rt_camera *rt_camera_create(vector position, vector direction) {
+    rt_camera *cam = malloc(sizeof(rt_camera));
+    if (!cam) return NULL;
+    cam->origin = position;
+    cam->forward = direction;
+    camera_update_orientation(cam);
+    return cam;
+}
+
+void rt_camera_place(rt_camera *cam, vector position, vector direction) {
+    cam->origin = position;
+    cam->forward = direction;
+    camera_update_orientation(cam);
+}
+
+void rt_camera_destroy(rt_camera *cam) {
+    free(cam);
 }
 
 /**
