@@ -43,17 +43,6 @@ void render_clear(void) {
     SDL_RenderClear(renderer);
 }
 
-void render_circle(int cx, int cy, int radius, uint8_t r, uint8_t g, uint8_t b) {
-    SDL_SetRenderDrawColor(renderer, r, g, b, 255);
-    for (int y = -radius; y <= radius; y++) {
-        for (int x = -radius; x <= radius; x++) {
-            if (x*x + y*y <= radius*radius) {
-                SDL_RenderDrawPoint(renderer, cx + x, cy + y);
-            }
-        }
-    }
-}
-
 void render_present(void) {
     SDL_RenderPresent(renderer);
 }

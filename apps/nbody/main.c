@@ -3,7 +3,6 @@
 #include "input.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <getopt.h>
 
 static void print_usage(const char *prog) {

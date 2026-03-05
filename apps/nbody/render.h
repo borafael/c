@@ -20,11 +20,6 @@ void render_get_size(int* width, int* height);
 void render_clear(void);
 
 /**
- * Draw a filled circle.
- */
-void render_circle(int x, int y, int radius, uint8_t r, uint8_t g, uint8_t b);
-
-/**
  * Present the rendered frame.
  */
 void render_present(void);
