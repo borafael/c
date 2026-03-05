@@ -74,6 +74,7 @@ void rt_camera_place(rt_camera *cam, vector position, vector direction) {
 }
 
 void rt_camera_destroy(rt_camera *cam) {
+    if (!cam) return;
     free(cam);
 }
 

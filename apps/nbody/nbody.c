@@ -116,7 +116,6 @@ static void update_camera_from_orbital(void) {
 void nbody_handle_input(const input_events *events) {
     if (events->reset) {
         nbody_reset();
-        return;
     }
 
     if (events->zoom_in) {
