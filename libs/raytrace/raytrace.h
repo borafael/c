@@ -51,11 +51,20 @@ int rt_scene_add_sphere(rt_scene *scene, rt_sphere sphere);
 void rt_scene_destroy(rt_scene *scene);
 
 /**
- * Render a chunk of scanlines [y_start, y_end) into pixel_buf.
- * pixel_buf is ARGB8888 format, width * height uint32_t's.
- * Caller is responsible for parallelizing across chunks.
+ * Viewport defining projection parameters.
  */
-void rt_render_chunk(uint32_t *pixel_buf, int width, int height,
+typedef struct {
+    int width;
+    int height;
+    float fov;
+} rt_viewport;
+
+/**
+ * Render a chunk of scanlines [y_start, y_end) into pixel_buf.
+ * pixel_buf is ARGB8888 format, viewport->width * viewport->height uint32_t's.
+ * fov is in radians. Caller is responsible for parallelizing across chunks.
+ */
+void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
                      int y_start, int y_end,
                      const rt_camera *camera, const rt_scene *scene);
 

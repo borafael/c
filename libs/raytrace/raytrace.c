@@ -9,7 +9,6 @@ struct rt_camera {
     vector forward;
     vector right;
     vector up;
-    float fov_factor;
 };
 
 struct rt_scene {
@@ -95,9 +94,13 @@ static float intersect_sphere(vector ray_origin, vector ray_dir,
     return t;
 }
 
-void rt_render_chunk(uint32_t *pixel_buf, int width, int height,
+void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
                      int y_start, int y_end,
                      const rt_camera *camera, const rt_scene *scene) {
+    int width = viewport->width;
+    int height = viewport->height;
+    float fov_factor = (float)height / (2.0f * tanf(viewport->fov / 2.0f));
+
     /* Fixed directional light */
     vector light_dir = vector_normalize((vector){1.0f, 1.0f, -1.0f});
     float ambient = 0.15f;
@@ -108,8 +111,8 @@ void rt_render_chunk(uint32_t *pixel_buf, int width, int height,
     for (int y = y_start; y < y_end; y++) {
         for (int x = 0; x < width; x++) {
             /* Map pixel to normalized screen coords */
-            float sx = ((float)x - half_w) / camera->fov_factor;
-            float sy = -((float)y - half_h) / camera->fov_factor;
+            float sx = ((float)x - half_w) / fov_factor;
+            float sy = -((float)y - half_h) / fov_factor;
 
             /* Construct ray direction in world space */
             vector dir = vector_add(
