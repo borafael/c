@@ -102,42 +102,50 @@ void nbody_set_bounds(int enabled) {
     bounds_enabled = enabled;
 }
 
-void nbody_distance_increase(void) {
-    camera_distance *= 1.1f;
-    if (camera_distance > 20000.0f) camera_distance = 20000.0f;
+static void update_camera_from_orbital(void) {
+    vector pos = {
+        camera_distance * cosf(camera_elevation) * sinf(camera_azimuth),
+        camera_distance * sinf(camera_elevation),
+        -camera_distance * cosf(camera_elevation) * cosf(camera_azimuth)
+    };
+    vector dir = vector_normalize(vector_scale(pos, -1.0f));
+    rt_camera_place(camera, pos, dir);
 }
 
-void nbody_distance_decrease(void) {
-    camera_distance /= 1.1f;
-    if (camera_distance < 10.0f) camera_distance = 10.0f;
-}
+void nbody_handle_input(const input_events *events) {
+    if (events->reset) {
+        nbody_reset();
+        return;
+    }
 
-void nbody_rotate_left(void) {
-    camera_azimuth -= rotation_speed;
-}
+    if (events->zoom_in) {
+        camera_distance /= 1.1f;
+        if (camera_distance < 10.0f) camera_distance = 10.0f;
+    }
+    if (events->zoom_out) {
+        camera_distance *= 1.1f;
+        if (camera_distance > 20000.0f) camera_distance = 20000.0f;
+    }
+    if (events->pan_left)  camera_azimuth -= rotation_speed;
+    if (events->pan_right) camera_azimuth += rotation_speed;
+    if (events->pan_up) {
+        camera_elevation += rotation_speed;
+        if (camera_elevation > 1.5f) camera_elevation = 1.5f;
+    }
+    if (events->pan_down) {
+        camera_elevation -= rotation_speed;
+        if (camera_elevation < -1.5f) camera_elevation = -1.5f;
+    }
+    if (events->speed_up) {
+        time_scale *= 1.5f;
+        if (time_scale > 50.0f) time_scale = 50.0f;
+    }
+    if (events->speed_down) {
+        time_scale /= 1.5f;
+        if (time_scale < 0.1f) time_scale = 0.1f;
+    }
 
-void nbody_rotate_right(void) {
-    camera_azimuth += rotation_speed;
-}
-
-void nbody_rotate_up(void) {
-    camera_elevation += rotation_speed;
-    if (camera_elevation > 1.5f) camera_elevation = 1.5f;
-}
-
-void nbody_rotate_down(void) {
-    camera_elevation -= rotation_speed;
-    if (camera_elevation < -1.5f) camera_elevation = -1.5f;
-}
-
-void nbody_speed_up(void) {
-    time_scale *= 1.5f;
-    if (time_scale > 50.0f) time_scale = 50.0f;
-}
-
-void nbody_speed_down(void) {
-    time_scale /= 1.5f;
-    if (time_scale < 0.1f) time_scale = 0.1f;
+    update_camera_from_orbital();
 }
 
 nbody_config nbody_default_config(void) {
@@ -181,17 +189,12 @@ void nbody_init(const nbody_config *config) {
         exit(EXIT_FAILURE);
     }
 
-    vector pos = {
-        camera_distance * cosf(camera_elevation) * sinf(camera_azimuth),
-        camera_distance * sinf(camera_elevation),
-        -camera_distance * cosf(camera_elevation) * cosf(camera_azimuth)
-    };
-    vector dir = vector_normalize(vector_scale(pos, -1.0f));
-    camera = rt_camera_create(pos, dir);
+    camera = rt_camera_create((vector){0, 0, 0}, (vector){0, 0, -1});
     if (!camera) {
         fprintf(stderr, "Failed to create camera\n");
         exit(EXIT_FAILURE);
     }
+    update_camera_from_orbital();
 }
 
 void nbody_spawn_entities(void) {
@@ -236,15 +239,7 @@ void nbody_reset(void) {
     }
     nbody_spawn_entities();
 
-    if (camera) {
-        vector pos = {
-            camera_distance * cosf(camera_elevation) * sinf(camera_azimuth),
-            camera_distance * sinf(camera_elevation),
-            -camera_distance * cosf(camera_elevation) * cosf(camera_azimuth)
-        };
-        vector dir = vector_normalize(vector_scale(pos, -1.0f));
-        rt_camera_place(camera, pos, dir);
-    }
+    update_camera_from_orbital();
 }
 
 static void render_chunk_task(void *arg) {

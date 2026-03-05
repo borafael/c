@@ -1,6 +1,5 @@
 #include "nbody.h"
 #include "render.h"
-#include "input.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <getopt.h>
@@ -85,15 +84,7 @@ int main(int argc, char** argv) {
         input_poll(&events);
 
         if (events.quit) running = 0;
-        if (events.reset) nbody_reset();
-        if (events.zoom_in) nbody_distance_decrease();
-        if (events.zoom_out) nbody_distance_increase();
-        if (events.speed_up) nbody_speed_up();
-        if (events.speed_down) nbody_speed_down();
-        if (events.pan_up) nbody_rotate_up();
-        if (events.pan_down) nbody_rotate_down();
-        if (events.pan_left) nbody_rotate_left();
-        if (events.pan_right) nbody_rotate_right();
+        nbody_handle_input(&events);
 
         nbody_update();
         nbody_render(screen_width, screen_height);

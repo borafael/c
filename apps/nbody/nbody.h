@@ -1,6 +1,8 @@
 #ifndef NBODY_H
 #define NBODY_H
 
+#include "input.h"
+
 /**
  * Simulation configuration.
  * Use nbody_default_config() to get defaults, then override as needed.
@@ -53,44 +55,9 @@ void nbody_update(void);
 void nbody_render(int screen_width, int screen_height);
 
 /**
- * Increase camera distance from center.
+ * Handle input events (camera movement, speed, reset).
  */
-void nbody_distance_increase(void);
-
-/**
- * Decrease camera distance from center.
- */
-void nbody_distance_decrease(void);
-
-/**
- * Rotate camera azimuth left.
- */
-void nbody_rotate_left(void);
-
-/**
- * Rotate camera azimuth right.
- */
-void nbody_rotate_right(void);
-
-/**
- * Rotate camera elevation up.
- */
-void nbody_rotate_up(void);
-
-/**
- * Rotate camera elevation down.
- */
-void nbody_rotate_down(void);
-
-/**
- * Increase simulation speed.
- */
-void nbody_speed_up(void);
-
-/**
- * Decrease simulation speed.
- */
-void nbody_speed_down(void);
+void nbody_handle_input(const input_events *events);
 
 /**
  * Clean up simulation resources (thread pool).
