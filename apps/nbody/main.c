@@ -26,6 +26,7 @@ static const opt_descriptor opt_table[] = {
 };
 
 static int apply_option(int opt, const char *arg, nbody_config *cfg) {
+    if (!arg) return 0;
     for (size_t i = 0; i < ARRAY_LEN(opt_table); i++) {
         if (opt_table[i].key == opt) {
             void *field = (char *)cfg + opt_table[i].offset;
