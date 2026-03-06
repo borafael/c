@@ -1,5 +1,26 @@
 #include "input.h"
+#include <stddef.h>
 #include <SDL2/SDL.h>
+
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+
+typedef struct {
+    SDL_Keycode key;
+    size_t offset;
+} key_binding;
+
+static const key_binding bindings[] = {
+    { SDLK_ESCAPE, offsetof(input_events, quit) },
+    { SDLK_r,      offsetof(input_events, reset) },
+    { SDLK_EQUALS, offsetof(input_events, zoom_in) },
+    { SDLK_MINUS,  offsetof(input_events, zoom_out) },
+    { SDLK_f,      offsetof(input_events, speed_up) },
+    { SDLK_s,      offsetof(input_events, speed_down) },
+    { SDLK_UP,     offsetof(input_events, pan_up) },
+    { SDLK_DOWN,   offsetof(input_events, pan_down) },
+    { SDLK_LEFT,   offsetof(input_events, pan_left) },
+    { SDLK_RIGHT,  offsetof(input_events, pan_right) },
+};
 
 void input_poll(input_events* events) {
     events->quit = 0;
@@ -19,35 +40,10 @@ void input_poll(input_events* events) {
             events->quit = 1;
         }
         if (e.type == SDL_KEYDOWN) {
-            if (e.key.keysym.sym == SDLK_ESCAPE) {
-                events->quit = 1;
-            }
-            if (e.key.keysym.sym == SDLK_r) {
-                events->reset = 1;
-            }
-            if (e.key.keysym.sym == SDLK_EQUALS) {
-                events->zoom_in = 1;
-            }
-            if (e.key.keysym.sym == SDLK_MINUS) {
-                events->zoom_out = 1;
-            }
-            if (e.key.keysym.sym == SDLK_f) {
-                events->speed_up = 1;
-            }
-            if (e.key.keysym.sym == SDLK_s) {
-                events->speed_down = 1;
-            }
-            if (e.key.keysym.sym == SDLK_UP) {
-                events->pan_up = 1;
-            }
-            if (e.key.keysym.sym == SDLK_DOWN) {
-                events->pan_down = 1;
-            }
-            if (e.key.keysym.sym == SDLK_LEFT) {
-                events->pan_left = 1;
-            }
-            if (e.key.keysym.sym == SDLK_RIGHT) {
-                events->pan_right = 1;
+            for (size_t i = 0; i < ARRAY_LEN(bindings); i++) {
+                if (e.key.keysym.sym == bindings[i].key) {
+                    *(int *)((char *)events + bindings[i].offset) = 1;
+                }
             }
         }
     }
