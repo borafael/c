@@ -11,6 +11,13 @@
 
 #define MAX_ENTITIES 10000
 #define MAX_THREADS 64
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+
+static inline float clampf(float value, float min, float max) {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+}
 
 static int num_entities = 500;
 static float gravity = 0.5f;
