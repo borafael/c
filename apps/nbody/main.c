@@ -2,7 +2,42 @@
 #include "render.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <getopt.h>
+
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+
+typedef enum { OPT_INT, OPT_FLOAT } opt_type;
+
+typedef struct {
+    int key;
+    opt_type type;
+    size_t offset;
+} opt_descriptor;
+
+static const opt_descriptor opt_table[] = {
+    { 'n', OPT_INT,   offsetof(nbody_config, num_entities) },
+    { 'g', OPT_FLOAT, offsetof(nbody_config, gravity) },
+    { 't', OPT_FLOAT, offsetof(nbody_config, dt) },
+    { 'r', OPT_FLOAT, offsetof(nbody_config, world_radius) },
+    { 's', OPT_FLOAT, offsetof(nbody_config, softening) },
+    { 'T', OPT_INT,   offsetof(nbody_config, num_threads) },
+    { 'R', OPT_FLOAT, offsetof(nbody_config, rotation_speed) },
+};
+
+static int apply_option(int opt, const char *arg, nbody_config *cfg) {
+    for (size_t i = 0; i < ARRAY_LEN(opt_table); i++) {
+        if (opt_table[i].key == opt) {
+            void *field = (char *)cfg + opt_table[i].offset;
+            switch (opt_table[i].type) {
+                case OPT_INT:   *(int *)field   = atoi(arg); break;
+                case OPT_FLOAT: *(float *)field = (float)atof(arg); break;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static void print_usage(const char *prog) {
     nbody_config defaults = nbody_default_config();
@@ -45,14 +80,10 @@ int main(int argc, char** argv) {
 
     int opt;
     while ((opt = getopt_long(argc, argv, "n:g:t:r:s:T:R:bh", long_options, NULL)) != -1) {
+        if (apply_option(opt, optarg, &config)) {
+            continue;
+        }
         switch (opt) {
-            case 'n': config.num_entities = atoi(optarg); break;
-            case 'g': config.gravity = (float)atof(optarg); break;
-            case 't': config.dt = (float)atof(optarg); break;
-            case 'r': config.world_radius = (float)atof(optarg); break;
-            case 's': config.softening = (float)atof(optarg); break;
-            case 'T': config.num_threads = atoi(optarg); break;
-            case 'R': config.rotation_speed = (float)atof(optarg); break;
             case 'b': bounds = 1; break;
             case 'h':
                 print_usage(argv[0]);
