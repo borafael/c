@@ -484,7 +484,7 @@ void nbody_render(int screen_width, int screen_height) {
 
     ensure_render_resources(w, h);
 
-    rt_viewport viewport = { .width = w, .height = h, .fov = 1.5708f };
+    rt_viewport viewport = { .width = w, .height = h, .fov = 0.9273f };
 
     rt_scene_clear(rt_scene_ptr);
     for (int i = 0; i < MAX_ENTITIES; i++) {
