@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stddef.h>
 #include <time.h>
 
 #define MAX_ENTITIES 10000
@@ -120,38 +121,39 @@ static void update_camera_from_orbital(void) {
     rt_camera_place(camera, pos, dir);
 }
 
+static void handle_reset(void)      { nbody_reset(); }
+static void handle_zoom_in(void)    { camera_distance = clampf(camera_distance / 1.1f, 10.0f, 20000.0f); }
+static void handle_zoom_out(void)   { camera_distance = clampf(camera_distance * 1.1f, 10.0f, 20000.0f); }
+static void handle_pan_left(void)   { camera_azimuth -= rotation_speed; }
+static void handle_pan_right(void)  { camera_azimuth += rotation_speed; }
+static void handle_pan_up(void)     { camera_elevation = clampf(camera_elevation + rotation_speed, -1.5f, 1.5f); }
+static void handle_pan_down(void)   { camera_elevation = clampf(camera_elevation - rotation_speed, -1.5f, 1.5f); }
+static void handle_speed_up(void)   { time_scale = clampf(time_scale * 1.5f, 0.1f, 50.0f); }
+static void handle_speed_down(void) { time_scale = clampf(time_scale / 1.5f, 0.1f, 50.0f); }
+
+typedef struct {
+    size_t event_offset;
+    void (*handler)(void);
+} input_action;
+
+static const input_action actions[] = {
+    { offsetof(input_events, reset),      handle_reset },
+    { offsetof(input_events, zoom_in),    handle_zoom_in },
+    { offsetof(input_events, zoom_out),   handle_zoom_out },
+    { offsetof(input_events, pan_left),   handle_pan_left },
+    { offsetof(input_events, pan_right),  handle_pan_right },
+    { offsetof(input_events, pan_up),     handle_pan_up },
+    { offsetof(input_events, pan_down),   handle_pan_down },
+    { offsetof(input_events, speed_up),   handle_speed_up },
+    { offsetof(input_events, speed_down), handle_speed_down },
+};
+
 void nbody_handle_input(const input_events *events) {
-    if (events->reset) {
-        nbody_reset();
+    for (size_t i = 0; i < ARRAY_LEN(actions); i++) {
+        if (*(const int *)((const char *)events + actions[i].event_offset)) {
+            actions[i].handler();
+        }
     }
-
-    if (events->zoom_in) {
-        camera_distance /= 1.1f;
-        if (camera_distance < 10.0f) camera_distance = 10.0f;
-    }
-    if (events->zoom_out) {
-        camera_distance *= 1.1f;
-        if (camera_distance > 20000.0f) camera_distance = 20000.0f;
-    }
-    if (events->pan_left)  camera_azimuth -= rotation_speed;
-    if (events->pan_right) camera_azimuth += rotation_speed;
-    if (events->pan_up) {
-        camera_elevation += rotation_speed;
-        if (camera_elevation > 1.5f) camera_elevation = 1.5f;
-    }
-    if (events->pan_down) {
-        camera_elevation -= rotation_speed;
-        if (camera_elevation < -1.5f) camera_elevation = -1.5f;
-    }
-    if (events->speed_up) {
-        time_scale *= 1.5f;
-        if (time_scale > 50.0f) time_scale = 50.0f;
-    }
-    if (events->speed_down) {
-        time_scale /= 1.5f;
-        if (time_scale < 0.1f) time_scale = 0.1f;
-    }
-
     update_camera_from_orbital();
 }
 
