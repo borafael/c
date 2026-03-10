@@ -32,6 +32,10 @@ struct rt_scene {
     rt_box *boxes;
     int box_count;
     int box_capacity;
+    rt_light *lights;
+    int light_count;
+    int light_capacity;
+    float ambient;
 };
 
 rt_scene *rt_scene_create(void) {
@@ -44,6 +48,8 @@ rt_scene *rt_scene_create(void) {
     s->cylinder_capacity = DEFAULT_CAPACITY;
     s->triangle_capacity = DEFAULT_CAPACITY;
     s->box_capacity      = DEFAULT_CAPACITY;
+    s->light_capacity    = DEFAULT_CAPACITY;
+    s->ambient           = 0.15f;
 
     s->spheres   = malloc(sizeof(rt_sphere)   * s->sphere_capacity);
     s->planes    = malloc(sizeof(rt_plane)    * s->plane_capacity);
@@ -51,9 +57,10 @@ rt_scene *rt_scene_create(void) {
     s->cylinders = malloc(sizeof(rt_cylinder) * s->cylinder_capacity);
     s->triangles = malloc(sizeof(rt_triangle) * s->triangle_capacity);
     s->boxes     = malloc(sizeof(rt_box)      * s->box_capacity);
+    s->lights    = malloc(sizeof(rt_light)    * s->light_capacity);
 
     if (!s->spheres || !s->planes || !s->discs ||
-        !s->cylinders || !s->triangles || !s->boxes) {
+        !s->cylinders || !s->triangles || !s->boxes || !s->lights) {
         rt_scene_destroy(s);
         return NULL;
     }
@@ -105,6 +112,17 @@ int rt_scene_add_box(rt_scene *scene, rt_box box) {
     return 0;
 }
 
+void rt_scene_set_ambient(rt_scene *scene, float ambient) {
+    scene->ambient = ambient;
+}
+
+int rt_scene_add_light(rt_scene *scene, rt_light light) {
+    if (scene->light_count >= scene->light_capacity) return -1;
+    light.direction = vector_normalize(light.direction);
+    scene->lights[scene->light_count++] = light;
+    return 0;
+}
+
 void rt_scene_destroy(rt_scene *scene) {
     if (!scene) return;
     free(scene->spheres);
@@ -113,6 +131,7 @@ void rt_scene_destroy(rt_scene *scene) {
     free(scene->cylinders);
     free(scene->triangles);
     free(scene->boxes);
+    free(scene->lights);
     free(scene);
 }
 
@@ -325,10 +344,6 @@ void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
     int height = viewport->height;
     float fov_factor = (float)height / (2.0f * tanf(viewport->fov / 2.0f));
 
-    /* Fixed directional light */
-    vector light_dir = vector_normalize((vector){1.0f, 1.0f, -1.0f});
-    float ambient = 0.15f;
-
     float half_w = (float)width * 0.5f;
     float half_h = (float)height * 0.5f;
 
@@ -419,9 +434,12 @@ void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
             }
 
             if (hit) {
-                float diffuse = vector_dot(normal, light_dir);
-                if (diffuse < 0.0f) diffuse = 0.0f;
-                float shade = ambient + 0.85f * diffuse;
+                float shade = scene->ambient;
+                for (int i = 0; i < scene->light_count; i++) {
+                    float d = vector_dot(normal, scene->lights[i].direction);
+                    if (d > 0.0f) shade += d * scene->lights[i].intensity;
+                }
+                if (shade > 1.0f) shade = 1.0f;
 
                 uint8_t cr = (uint8_t)(color.r * shade > 255.0f ? 255 : color.r * shade);
                 uint8_t cg = (uint8_t)(color.g * shade > 255.0f ? 255 : color.g * shade);

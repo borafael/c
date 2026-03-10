@@ -46,6 +46,11 @@ typedef struct {
     rt_color color;
 } rt_box;
 
+typedef struct {
+    vector direction;
+    float intensity;
+} rt_light;
+
 typedef struct rt_camera rt_camera;
 
 /**
@@ -76,6 +81,8 @@ rt_scene *rt_scene_create(void);
  */
 void rt_scene_clear(rt_scene *scene);
 
+void rt_scene_set_ambient(rt_scene *scene, float ambient);
+int rt_scene_add_light(rt_scene *scene, rt_light light);
 int rt_scene_add_sphere(rt_scene *scene, rt_sphere sphere);
 int rt_scene_add_plane(rt_scene *scene, rt_plane plane);
 int rt_scene_add_disc(rt_scene *scene, rt_disc disc);

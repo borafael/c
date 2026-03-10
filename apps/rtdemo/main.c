@@ -66,6 +66,12 @@ static void build_scene(rt_scene **scene, rt_camera **camera) {
         .color = {255, 120, 60}
     });
 
+    rt_scene_set_ambient(*scene, 0.15f);
+    rt_scene_add_light(*scene, (rt_light){
+        .direction = {1.0f, 1.0f, -1.0f},
+        .intensity = 0.85f
+    });
+
     *camera = rt_camera_create(
         (vector){5.0f, 3.0f, 5.0f},
         (vector){-1.0f, -0.4f, -1.0f}

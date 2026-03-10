@@ -455,6 +455,11 @@ static rt_sphere entity_to_sphere(int entity_id) {
 static void ensure_render_resources(int w, int h) {
     if (!rt_scene_ptr) {
         rt_scene_ptr = rt_scene_create();
+        rt_scene_set_ambient(rt_scene_ptr, 0.15f);
+        rt_scene_add_light(rt_scene_ptr, (rt_light){
+            .direction = {1.0f, 1.0f, -1.0f},
+            .intensity = 0.85f
+        });
     }
     if (!pixel_buffer || rt_width != w || rt_height != h) {
         free(pixel_buffer);
