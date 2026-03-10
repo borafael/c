@@ -445,16 +445,16 @@ static rt_sphere entity_to_sphere(int entity_id) {
     sp.center = position_components[entity_id].coordinates;
     sp.radius = 2.0f + logf(mass) * 2.0f;
     if (sp.radius < 1.0f) sp.radius = 1.0f;
-    sp.r = (uint8_t)(50 + t * 205);
-    sp.g = (uint8_t)(50 * (1 - t * t));
-    sp.b = (uint8_t)(255 * (1 - t * t));
+    sp.color.r = (uint8_t)(50 + t * 205);
+    sp.color.g = (uint8_t)(50 * (1 - t * t));
+    sp.color.b = (uint8_t)(255 * (1 - t * t));
 
     return sp;
 }
 
 static void ensure_render_resources(int w, int h) {
     if (!rt_scene_ptr) {
-        rt_scene_ptr = rt_scene_create(MAX_ENTITIES);
+        rt_scene_ptr = rt_scene_create();
     }
     if (!pixel_buffer || rt_width != w || rt_height != h) {
         free(pixel_buffer);

@@ -14,5 +14,6 @@ AC_CONFIG_FILES([
     libs/thread/Makefile
     libs/raytrace/Makefile
     apps/nbody/Makefile
+    apps/rtdemo/Makefile
 ])
 AC_OUTPUT

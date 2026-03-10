@@ -5,10 +5,46 @@
 #include "vector.h"
 
 typedef struct {
+    uint8_t r, g, b;
+} rt_color;
+
+typedef struct {
     vector center;
     float radius;
-    uint8_t r, g, b;
+    rt_color color;
 } rt_sphere;
+
+typedef struct {
+    vector normal;
+    vector point;
+    rt_color color;
+} rt_plane;
+
+typedef struct {
+    vector center;
+    vector normal;
+    float radius;
+    rt_color color;
+} rt_disc;
+
+typedef struct {
+    vector center;
+    vector axis;
+    float radius;
+    float half_height;
+    rt_color color;
+} rt_cylinder;
+
+typedef struct {
+    vector v0, v1, v2;
+    rt_color color;
+} rt_triangle;
+
+typedef struct {
+    vector min;
+    vector max;
+    rt_color color;
+} rt_box;
 
 typedef struct rt_camera rt_camera;
 
@@ -31,19 +67,21 @@ void rt_camera_destroy(rt_camera *cam);
 typedef struct rt_scene rt_scene;
 
 /**
- * Create a scene that can hold up to max_spheres.
+ * Create an empty scene.
  */
-rt_scene *rt_scene_create(int max_spheres);
+rt_scene *rt_scene_create(void);
 
 /**
- * Clear all spheres from the scene.
+ * Clear all shapes from the scene.
  */
 void rt_scene_clear(rt_scene *scene);
 
-/**
- * Add a sphere to the scene. Returns 0 on success, -1 if full.
- */
 int rt_scene_add_sphere(rt_scene *scene, rt_sphere sphere);
+int rt_scene_add_plane(rt_scene *scene, rt_plane plane);
+int rt_scene_add_disc(rt_scene *scene, rt_disc disc);
+int rt_scene_add_cylinder(rt_scene *scene, rt_cylinder cylinder);
+int rt_scene_add_triangle(rt_scene *scene, rt_triangle triangle);
+int rt_scene_add_box(rt_scene *scene, rt_box box);
 
 /**
  * Destroy the scene and free resources.
