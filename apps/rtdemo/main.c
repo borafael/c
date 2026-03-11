@@ -8,53 +8,162 @@
 #define WINDOW_H 600
 #define FOV (M_PI / 3.0f)
 
-#define SPRITE_SIZE 16
+#define S 16  /* sprite frame size */
 
 #define PX(r,g,b) (0xFF000000u | ((r)<<16) | ((g)<<8) | (b))
 #define TP 0x00000000u  /* transparent */
 
-static uint32_t frame_data_0[SPRITE_SIZE * SPRITE_SIZE];
-static uint32_t frame_data_1[SPRITE_SIZE * SPRITE_SIZE];
-static uint32_t frame_data_2[SPRITE_SIZE * SPRITE_SIZE];
-static uint32_t frame_data_3[SPRITE_SIZE * SPRITE_SIZE];
-static uint32_t frame_data_4[SPRITE_SIZE * SPRITE_SIZE];
-static uint32_t frame_data_5[SPRITE_SIZE * SPRITE_SIZE];
-static uint32_t frame_data_6[SPRITE_SIZE * SPRITE_SIZE];
-static uint32_t frame_data_7[SPRITE_SIZE * SPRITE_SIZE];
+static uint32_t frame_data[8][S * S];
 
-static void fill_arrow_frame(uint32_t *buf, uint32_t fg) {
-    for (int i = 0; i < SPRITE_SIZE * SPRITE_SIZE; i++)
-        buf[i] = TP;
+static void set(uint32_t *buf, int x, int y, uint32_t c) {
+    if (x >= 0 && x < S && y >= 0 && y < S)
+        buf[y * S + x] = c;
+}
 
-    int cx = SPRITE_SIZE / 2;
-    int cy = SPRITE_SIZE / 2;
-    for (int y = 0; y < SPRITE_SIZE; y++) {
-        for (int x = 0; x < SPRITE_SIZE; x++) {
-            int dx = abs(x - cx);
-            int dy = abs(y - cy);
-            if (dx + dy <= SPRITE_SIZE / 3)
-                buf[y * SPRITE_SIZE + x] = fg;
-        }
-    }
+static void fill_circle(uint32_t *buf, int cx, int cy, int r, uint32_t c) {
+    for (int y = cy - r; y <= cy + r; y++)
+        for (int x = cx - r; x <= cx + r; x++)
+            if ((x-cx)*(x-cx) + (y-cy)*(y-cy) <= r*r)
+                set(buf, x, y, c);
+}
 
-    /* Arrow tip at the top to indicate facing */
-    for (int y = 1; y < 5; y++) {
-        for (int x = cx - y; x <= cx + y; x++) {
-            if (x >= 0 && x < SPRITE_SIZE)
-                buf[(cy - SPRITE_SIZE/3 - 1 + y) * SPRITE_SIZE + x] = fg;
-        }
-    }
+static uint32_t skin  = 0;
+static uint32_t hair  = 0;
+static uint32_t eye_w = 0;
+static uint32_t eye_p = 0;
+static uint32_t mouth = 0;
+
+static void clear_frame(uint32_t *buf) {
+    for (int i = 0; i < S * S; i++) buf[i] = TP;
+}
+
+static void draw_head(uint32_t *buf) {
+    fill_circle(buf, 7, 7, 6, skin);
+    /* Hair on top */
+    for (int x = 2; x <= 12; x++)
+        for (int y = 1; y <= 3; y++)
+            if ((x-7)*(x-7) + (y-7)*(y-7) <= 36)
+                set(buf, x, y, hair);
+}
+
+/* Frame 0: Front face — two eyes, smile */
+static void draw_front(uint32_t *buf) {
+    clear_frame(buf);
+    draw_head(buf);
+    /* Eyes */
+    fill_circle(buf, 5, 6, 1, eye_w);
+    set(buf, 5, 6, eye_p);
+    fill_circle(buf, 9, 6, 1, eye_w);
+    set(buf, 9, 6, eye_p);
+    /* Smile */
+    set(buf, 5, 10, mouth);
+    set(buf, 6, 11, mouth);
+    set(buf, 7, 11, mouth);
+    set(buf, 8, 11, mouth);
+    set(buf, 9, 10, mouth);
+}
+
+/* Frame 1: Front-right — two eyes shifted right, 3/4 smile */
+static void draw_front_right(uint32_t *buf) {
+    clear_frame(buf);
+    draw_head(buf);
+    fill_circle(buf, 6, 6, 1, eye_w);
+    set(buf, 7, 6, eye_p);
+    fill_circle(buf, 10, 6, 1, eye_w);
+    set(buf, 11, 6, eye_p);
+    set(buf, 7, 10, mouth);
+    set(buf, 8, 11, mouth);
+    set(buf, 9, 11, mouth);
+    set(buf, 10, 10, mouth);
+}
+
+/* Frame 2: Right profile — one eye, nose bump */
+static void draw_right(uint32_t *buf) {
+    clear_frame(buf);
+    draw_head(buf);
+    fill_circle(buf, 9, 6, 1, eye_w);
+    set(buf, 10, 6, eye_p);
+    /* Nose */
+    set(buf, 12, 7, skin);
+    set(buf, 13, 8, skin);
+    /* Mouth */
+    set(buf, 9, 10, mouth);
+    set(buf, 10, 11, mouth);
+    set(buf, 11, 10, mouth);
+}
+
+/* Frame 3: Back-right — no features, ear hint */
+static void draw_back_right(uint32_t *buf) {
+    clear_frame(buf);
+    draw_head(buf);
+    /* Ear on left side (viewer's left = character's right from behind) */
+    set(buf, 2, 7, skin);
+    set(buf, 1, 7, skin);
+    set(buf, 1, 8, skin);
+}
+
+/* Frame 4: Back — no face, just hair and head */
+static void draw_back(uint32_t *buf) {
+    clear_frame(buf);
+    draw_head(buf);
+    /* More hair coverage on back */
+    for (int x = 3; x <= 11; x++)
+        for (int y = 2; y <= 6; y++)
+            if ((x-7)*(x-7) + (y-7)*(y-7) <= 36)
+                set(buf, x, y, hair);
+}
+
+/* Frame 5: Back-left — mirror of back-right */
+static void draw_back_left(uint32_t *buf) {
+    clear_frame(buf);
+    draw_head(buf);
+    set(buf, 12, 7, skin);
+    set(buf, 13, 7, skin);
+    set(buf, 13, 8, skin);
+}
+
+/* Frame 6: Left profile — mirror of right */
+static void draw_left(uint32_t *buf) {
+    clear_frame(buf);
+    draw_head(buf);
+    fill_circle(buf, 5, 6, 1, eye_w);
+    set(buf, 4, 6, eye_p);
+    set(buf, 2, 7, skin);
+    set(buf, 1, 8, skin);
+    set(buf, 3, 10, mouth);
+    set(buf, 4, 11, mouth);
+    set(buf, 5, 10, mouth);
+}
+
+/* Frame 7: Front-left — mirror of front-right */
+static void draw_front_left(uint32_t *buf) {
+    clear_frame(buf);
+    draw_head(buf);
+    fill_circle(buf, 4, 6, 1, eye_w);
+    set(buf, 3, 6, eye_p);
+    fill_circle(buf, 8, 6, 1, eye_w);
+    set(buf, 7, 6, eye_p);
+    set(buf, 4, 10, mouth);
+    set(buf, 5, 11, mouth);
+    set(buf, 6, 11, mouth);
+    set(buf, 7, 10, mouth);
 }
 
 static void init_sprite_frames(void) {
-    fill_arrow_frame(frame_data_0, PX(255,  60,  60));  /* front - red */
-    fill_arrow_frame(frame_data_1, PX(255, 160,  40));  /* front-right - orange */
-    fill_arrow_frame(frame_data_2, PX(255, 255,  40));  /* right - yellow */
-    fill_arrow_frame(frame_data_3, PX(160, 255,  40));  /* back-right - lime */
-    fill_arrow_frame(frame_data_4, PX( 40, 255,  40));  /* back - green */
-    fill_arrow_frame(frame_data_5, PX( 40, 255, 255));  /* back-left - cyan */
-    fill_arrow_frame(frame_data_6, PX( 40,  80, 255));  /* left - blue */
-    fill_arrow_frame(frame_data_7, PX(200,  40, 255));  /* front-left - purple */
+    skin  = PX(255, 200, 150);
+    hair  = PX(100,  60,  20);
+    eye_w = PX(255, 255, 255);
+    eye_p = PX( 30,  30,  30);
+    mouth = PX(200,  60,  60);
+
+    draw_front(frame_data[0]);
+    draw_front_right(frame_data[1]);
+    draw_right(frame_data[2]);
+    draw_back_right(frame_data[3]);
+    draw_back(frame_data[4]);
+    draw_back_left(frame_data[5]);
+    draw_left(frame_data[6]);
+    draw_front_left(frame_data[7]);
 }
 
 static void build_scene(rt_scene **scene, rt_camera **camera) {
@@ -123,14 +232,8 @@ static void build_scene(rt_scene **scene, rt_camera **camera) {
 
     static rt_frame sprite_frames[8];
     init_sprite_frames();
-    sprite_frames[0] = (rt_frame){ frame_data_0, SPRITE_SIZE, SPRITE_SIZE };
-    sprite_frames[1] = (rt_frame){ frame_data_1, SPRITE_SIZE, SPRITE_SIZE };
-    sprite_frames[2] = (rt_frame){ frame_data_2, SPRITE_SIZE, SPRITE_SIZE };
-    sprite_frames[3] = (rt_frame){ frame_data_3, SPRITE_SIZE, SPRITE_SIZE };
-    sprite_frames[4] = (rt_frame){ frame_data_4, SPRITE_SIZE, SPRITE_SIZE };
-    sprite_frames[5] = (rt_frame){ frame_data_5, SPRITE_SIZE, SPRITE_SIZE };
-    sprite_frames[6] = (rt_frame){ frame_data_6, SPRITE_SIZE, SPRITE_SIZE };
-    sprite_frames[7] = (rt_frame){ frame_data_7, SPRITE_SIZE, SPRITE_SIZE };
+    for (int i = 0; i < 8; i++)
+        sprite_frames[i] = (rt_frame){ frame_data[i], S, S };
 
     rt_scene_add_sprite(*scene, (rt_sprite){
         .position = {0.0f, 1.0f, 3.0f},
