@@ -322,10 +322,14 @@ int main(void) {
     int running = 1;
 
     Uint32 fps_last = SDL_GetTicks();
+    Uint32 frame_last = SDL_GetTicks();
     int fps_frames = 0;
     char title_buf[128];
 
     while (running) {
+        Uint32 frame_now = SDL_GetTicks();
+        float dt = (frame_now - frame_last) / 1000.0f;
+        frame_last = frame_now;
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) running = 0;
@@ -361,7 +365,7 @@ int main(void) {
             }
         }
 
-        angle += 0.01f;
+        angle += 0.5f * dt;  /* ~0.5 radians/sec, consistent regardless of FPS */
         update_scene(camera, angle, cam_dist, cam_height);
 
         /* Split scanlines across threads */
