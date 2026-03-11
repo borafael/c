@@ -9,6 +9,8 @@
 #define WINDOW_W 800
 #define WINDOW_H 600
 #define FOV (M_PI / 3.0f)
+#define RENDER_SCALE_MIN 1
+#define RENDER_SCALE_MAX 4
 
 typedef struct {
     uint32_t *pixels;
@@ -294,23 +296,25 @@ int main(void) {
     }
 
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    SDL_Texture *texture = SDL_CreateTexture(renderer,
-        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-        WINDOW_W, WINDOW_H);
-
-    uint32_t *pixels = calloc(WINDOW_W * WINDOW_H, sizeof(uint32_t));
-
-    rt_scene *scene;
-    rt_camera *camera;
-    build_scene(&scene, &camera);
-
-    rt_viewport viewport = { WINDOW_W, WINDOW_H, FOV };
 
     int num_threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (num_threads < 1) num_threads = 4;
     thread_pool *pool = thread_pool_create(num_threads);
     render_task *tasks = malloc(sizeof(render_task) * num_threads);
     fprintf(stderr, "Using %d render threads\n", num_threads);
+
+    rt_scene *scene;
+    rt_camera *camera;
+    build_scene(&scene, &camera);
+
+    int render_scale = 1;
+    int render_w = WINDOW_W / render_scale;
+    int render_h = WINDOW_H / render_scale;
+    uint32_t *pixels = calloc(render_w * render_h, sizeof(uint32_t));
+    rt_viewport viewport = { render_w, render_h, FOV };
+    SDL_Texture *texture = SDL_CreateTexture(renderer,
+        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+        render_w, render_h);
 
     float angle = 0.0f;
     float cam_dist = 10.0f;
@@ -319,27 +323,57 @@ int main(void) {
 
     Uint32 fps_last = SDL_GetTicks();
     int fps_frames = 0;
-    char title_buf[80];
+    char title_buf[128];
 
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) running = 0;
-            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
-                running = 0;
+            if (e.type == SDL_KEYDOWN) {
+                if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
+                if (e.key.keysym.sym == SDLK_MINUS ||
+                    e.key.keysym.sym == SDLK_KP_MINUS) {
+                    if (render_scale < RENDER_SCALE_MAX) {
+                        render_scale++;
+                        goto recreate_buffers;
+                    }
+                }
+                if (e.key.keysym.sym == SDLK_EQUALS ||
+                    e.key.keysym.sym == SDLK_KP_PLUS) {
+                    if (render_scale > RENDER_SCALE_MIN) {
+                        render_scale--;
+                        goto recreate_buffers;
+                    }
+                }
+                continue;
+                recreate_buffers:
+                    render_w = WINDOW_W / render_scale;
+                    render_h = WINDOW_H / render_scale;
+                    free(pixels);
+                    pixels = calloc(render_w * render_h, sizeof(uint32_t));
+                    viewport = (rt_viewport){ render_w, render_h, FOV };
+                    SDL_DestroyTexture(texture);
+                    texture = SDL_CreateTexture(renderer,
+                        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+                        render_w, render_h);
+                    fprintf(stderr, "Render scale: 1/%d (%dx%d)\n",
+                            render_scale, render_w, render_h);
+            }
         }
 
         angle += 0.01f;
         update_scene(camera, angle, cam_dist, cam_height);
 
         /* Split scanlines across threads */
-        int rows_per = WINDOW_H / num_threads;
-        for (int i = 0; i < num_threads; i++) {
+        int rows_per = render_h / num_threads;
+        if (rows_per < 1) rows_per = 1;
+        int actual_chunks = render_h / rows_per;
+        for (int i = 0; i < actual_chunks; i++) {
             tasks[i] = (render_task){
                 .pixels = pixels,
                 .viewport = &viewport,
                 .y_start = i * rows_per,
-                .y_end = (i == num_threads - 1) ? WINDOW_H : (i + 1) * rows_per,
+                .y_end = (i == actual_chunks - 1) ? render_h : (i + 1) * rows_per,
                 .camera = camera,
                 .scene = scene
             };
@@ -347,7 +381,7 @@ int main(void) {
         }
         thread_pool_wait(pool);
 
-        SDL_UpdateTexture(texture, NULL, pixels, WINDOW_W * sizeof(uint32_t));
+        SDL_UpdateTexture(texture, NULL, pixels, render_w * sizeof(uint32_t));
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
 
@@ -355,8 +389,8 @@ int main(void) {
         Uint32 now = SDL_GetTicks();
         if (now - fps_last >= 1000) {
             snprintf(title_buf, sizeof(title_buf),
-                     "Raytrace Demo - %d FPS (%dx%d, %d threads)",
-                     fps_frames, WINDOW_W, WINDOW_H, num_threads);
+                     "Raytrace Demo - %d FPS (%dx%d, 1/%d scale, %d threads)",
+                     fps_frames, render_w, render_h, render_scale, num_threads);
             SDL_SetWindowTitle(window, title_buf);
             fprintf(stderr, "%d FPS\n", fps_frames);
             fps_frames = 0;
