@@ -294,6 +294,10 @@ int main(void) {
     float cam_height = 3.0f;
     int running = 1;
 
+    Uint32 fps_last = SDL_GetTicks();
+    int fps_frames = 0;
+    char title_buf[64];
+
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -310,7 +314,17 @@ int main(void) {
         SDL_UpdateTexture(texture, NULL, pixels, WINDOW_W * sizeof(uint32_t));
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
-        SDL_Delay(16);
+
+        fps_frames++;
+        Uint32 now = SDL_GetTicks();
+        if (now - fps_last >= 1000) {
+            snprintf(title_buf, sizeof(title_buf),
+                     "Raytrace Demo — %d FPS (%dx%d)", fps_frames,
+                     WINDOW_W, WINDOW_H);
+            SDL_SetWindowTitle(window, title_buf);
+            fps_frames = 0;
+            fps_last = now;
+        }
     }
 
     free(pixels);
