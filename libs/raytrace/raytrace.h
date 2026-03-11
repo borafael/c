@@ -9,6 +9,21 @@ typedef struct {
 } rt_color;
 
 typedef struct {
+    uint32_t *pixels;   /* ARGB8888 pixel data (not owned by raytracer) */
+    int width;
+    int height;
+} rt_frame;
+
+typedef struct {
+    vector position;     /* center in world space */
+    vector direction;    /* facing direction (for angle selection only) */
+    float width;         /* world-space quad width */
+    float height;        /* world-space quad height */
+    int frame_count;     /* number of viewing angles */
+    rt_frame *frames;    /* one frame per angle, clockwise from front */
+} rt_sprite;
+
+typedef struct {
     vector center;
     float radius;
     rt_color color;
@@ -89,6 +104,7 @@ int rt_scene_add_disc(rt_scene *scene, rt_disc disc);
 int rt_scene_add_cylinder(rt_scene *scene, rt_cylinder cylinder);
 int rt_scene_add_triangle(rt_scene *scene, rt_triangle triangle);
 int rt_scene_add_box(rt_scene *scene, rt_box box);
+int rt_scene_add_sprite(rt_scene *scene, rt_sprite sprite);
 
 /**
  * Destroy the scene and free resources.
