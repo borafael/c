@@ -8,6 +8,55 @@
 #define WINDOW_H 600
 #define FOV (M_PI / 3.0f)
 
+#define SPRITE_SIZE 16
+
+#define PX(r,g,b) (0xFF000000u | ((r)<<16) | ((g)<<8) | (b))
+#define TP 0x00000000u  /* transparent */
+
+static uint32_t frame_data_0[SPRITE_SIZE * SPRITE_SIZE];
+static uint32_t frame_data_1[SPRITE_SIZE * SPRITE_SIZE];
+static uint32_t frame_data_2[SPRITE_SIZE * SPRITE_SIZE];
+static uint32_t frame_data_3[SPRITE_SIZE * SPRITE_SIZE];
+static uint32_t frame_data_4[SPRITE_SIZE * SPRITE_SIZE];
+static uint32_t frame_data_5[SPRITE_SIZE * SPRITE_SIZE];
+static uint32_t frame_data_6[SPRITE_SIZE * SPRITE_SIZE];
+static uint32_t frame_data_7[SPRITE_SIZE * SPRITE_SIZE];
+
+static void fill_arrow_frame(uint32_t *buf, uint32_t fg) {
+    for (int i = 0; i < SPRITE_SIZE * SPRITE_SIZE; i++)
+        buf[i] = TP;
+
+    int cx = SPRITE_SIZE / 2;
+    int cy = SPRITE_SIZE / 2;
+    for (int y = 0; y < SPRITE_SIZE; y++) {
+        for (int x = 0; x < SPRITE_SIZE; x++) {
+            int dx = abs(x - cx);
+            int dy = abs(y - cy);
+            if (dx + dy <= SPRITE_SIZE / 3)
+                buf[y * SPRITE_SIZE + x] = fg;
+        }
+    }
+
+    /* Arrow tip at the top to indicate facing */
+    for (int y = 1; y < 5; y++) {
+        for (int x = cx - y; x <= cx + y; x++) {
+            if (x >= 0 && x < SPRITE_SIZE)
+                buf[(cy - SPRITE_SIZE/3 - 1 + y) * SPRITE_SIZE + x] = fg;
+        }
+    }
+}
+
+static void init_sprite_frames(void) {
+    fill_arrow_frame(frame_data_0, PX(255,  60,  60));  /* front - red */
+    fill_arrow_frame(frame_data_1, PX(255, 160,  40));  /* front-right - orange */
+    fill_arrow_frame(frame_data_2, PX(255, 255,  40));  /* right - yellow */
+    fill_arrow_frame(frame_data_3, PX(160, 255,  40));  /* back-right - lime */
+    fill_arrow_frame(frame_data_4, PX( 40, 255,  40));  /* back - green */
+    fill_arrow_frame(frame_data_5, PX( 40, 255, 255));  /* back-left - cyan */
+    fill_arrow_frame(frame_data_6, PX( 40,  80, 255));  /* left - blue */
+    fill_arrow_frame(frame_data_7, PX(200,  40, 255));  /* front-left - purple */
+}
+
 static void build_scene(rt_scene **scene, rt_camera **camera) {
     *scene = rt_scene_create();
 
@@ -70,6 +119,26 @@ static void build_scene(rt_scene **scene, rt_camera **camera) {
     rt_scene_add_light(*scene, (rt_light){
         .direction = {1.0f, 1.0f, -1.0f},
         .intensity = 0.85f
+    });
+
+    static rt_frame sprite_frames[8];
+    init_sprite_frames();
+    sprite_frames[0] = (rt_frame){ frame_data_0, SPRITE_SIZE, SPRITE_SIZE };
+    sprite_frames[1] = (rt_frame){ frame_data_1, SPRITE_SIZE, SPRITE_SIZE };
+    sprite_frames[2] = (rt_frame){ frame_data_2, SPRITE_SIZE, SPRITE_SIZE };
+    sprite_frames[3] = (rt_frame){ frame_data_3, SPRITE_SIZE, SPRITE_SIZE };
+    sprite_frames[4] = (rt_frame){ frame_data_4, SPRITE_SIZE, SPRITE_SIZE };
+    sprite_frames[5] = (rt_frame){ frame_data_5, SPRITE_SIZE, SPRITE_SIZE };
+    sprite_frames[6] = (rt_frame){ frame_data_6, SPRITE_SIZE, SPRITE_SIZE };
+    sprite_frames[7] = (rt_frame){ frame_data_7, SPRITE_SIZE, SPRITE_SIZE };
+
+    rt_scene_add_sprite(*scene, (rt_sprite){
+        .position = {0.0f, 1.0f, 3.0f},
+        .direction = {0.0f, 0.0f, 1.0f},
+        .width = 2.0f,
+        .height = 2.0f,
+        .frame_count = 8,
+        .frames = sprite_frames
     });
 
     *camera = rt_camera_create(
