@@ -81,6 +81,7 @@ void rt_scene_clear(rt_scene *scene) {
     scene->triangle_count = 0;
     scene->box_count      = 0;
     scene->sprite_count   = 0;
+    scene->light_count    = 0;
 }
 
 int rt_scene_add_sphere(rt_scene *scene, rt_sphere sphere) {
