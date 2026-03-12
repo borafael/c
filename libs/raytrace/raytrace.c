@@ -182,6 +182,15 @@ void rt_camera_destroy(rt_camera *cam) {
     free(cam);
 }
 
+void rt_camera_get_basis(const rt_camera *cam,
+                         vector *origin, vector *forward,
+                         vector *right, vector *up) {
+    *origin  = cam->origin;
+    *forward = cam->forward;
+    *right   = cam->right;
+    *up      = cam->up;
+}
+
 /* --- Intersection functions ---
  * All return distance t >= 0, or -1 if no hit.
  * ray_dir must be normalized.
@@ -429,6 +438,25 @@ static uint32_t sprite_sample(const rt_sprite *spr, const rt_frame *frame,
     if (py >= frame->height) py = frame->height - 1;
 
     return frame->pixels[py * frame->width + px];
+}
+
+float rt_pick_sprite(vector ray_origin, vector ray_dir,
+                     const rt_sprite *sprite, vector camera_origin,
+                     vector *hit_point) {
+    vector spr_right, spr_up, spr_normal;
+    float t = intersect_sprite(ray_origin, ray_dir, sprite, camera_origin,
+                               &spr_right, &spr_up, &spr_normal);
+    if (t < 0.0f) return -1.0f;
+
+    vector hp = vector_add(ray_origin, vector_scale(ray_dir, t));
+    int frame_idx = sprite_select_frame(sprite, camera_origin);
+    const rt_frame *frame = &sprite->frames[frame_idx];
+    uint32_t pixel = sprite_sample(sprite, frame, hp, spr_right, spr_up);
+    uint8_t alpha = (pixel >> 24) & 0xFF;
+    if (alpha == 0) return -1.0f;
+
+    if (hit_point) *hit_point = hp;
+    return t;
 }
 
 void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,

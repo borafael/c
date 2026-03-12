@@ -84,6 +84,22 @@ void rt_camera_place(rt_camera *cam, vector position, vector direction);
  */
 void rt_camera_destroy(rt_camera *cam);
 
+/**
+ * Extract the camera's position and orientation basis vectors.
+ */
+void rt_camera_get_basis(const rt_camera *cam,
+                         vector *origin, vector *forward,
+                         vector *right, vector *up);
+
+/**
+ * Test ray against a billboard sprite with alpha transparency.
+ * Returns t > 0 on opaque hit, -1 on miss or transparent.
+ * hit_point is set to the world-space hit position on success.
+ */
+float rt_pick_sprite(vector ray_origin, vector ray_dir,
+                     const rt_sprite *sprite, vector camera_origin,
+                     vector *hit_point);
+
 typedef struct rt_scene rt_scene;
 
 /**
