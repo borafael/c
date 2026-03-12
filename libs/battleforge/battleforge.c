@@ -5,7 +5,11 @@
 #include <stdlib.h>
 #include <math.h>
 #include <float.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 #define CMD_QUEUE_SIZE 1024
 #define MAX_ENTITIES 1024
@@ -89,7 +93,13 @@ bf_engine *bf_create(bf_config config) {
     /* Thread pool */
     int nt = config.num_threads;
     if (nt <= 0) {
+#ifdef _WIN32
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        nt = (int)si.dwNumberOfProcessors;
+#else
         nt = (int)sysconf(_SC_NPROCESSORS_ONLN);
+#endif
         if (nt < 1) nt = 4;
     }
     e->num_threads = nt;

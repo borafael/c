@@ -90,3 +90,7 @@ test-driver
 
 # --- Executables ---
 apps/nbody/nbody
+
+# --- Cross-compilation ---
+deps/
+build/

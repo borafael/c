@@ -1,6 +1,7 @@
 #include "raytrace.h"
 #include "vector.h"
 #include <stdlib.h>
+#define _USE_MATH_DEFINES
 #include <math.h>
 #include <float.h>
 
