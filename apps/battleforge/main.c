@@ -198,14 +198,14 @@ int main(void) {
         .entity_create = { .id = 2, .sprite_id = spr_id,
                            .position = {5.0f, 1.0f, -3.0f},
                            .direction = {-1.0f, 0.0f, 0.0f},
-                           .speed = 0.0f }
+                           .speed = 3.0f }
     });
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_ENTITY_CREATE,
         .entity_create = { .id = 3, .sprite_id = spr_id,
                            .position = {-4.0f, 1.0f, 2.0f},
                            .direction = {1.0f, 0.0f, 0.0f},
-                           .speed = 0.0f }
+                           .speed = 3.0f }
     });
 
     /* Camera starts looking at the scene */
@@ -217,15 +217,9 @@ int main(void) {
         }
     });
 
-    /* Entity 1 patrol target */
-    bf_command(engine, (bf_cmd){
-        .type = BF_CMD_ENTITY_MOVE,
-        .entity_move = { .id = 1, .position = {8.0f, 1.0f, 0.0f} }
-    });
-
     float cam_yaw = 0.0f;  /* facing -Z initially */
     float cam_x = 0.0f, cam_y = 8.0f, cam_z = 15.0f;
-    int patrol_dir = 1;  /* 1 = going right, 0 = going left */
+    int selected_id = 0;
 
     Uint32 fps_last = SDL_GetTicks();
     Uint32 frame_last = SDL_GetTicks();
@@ -244,6 +238,37 @@ int main(void) {
             if (e.type == SDL_QUIT) running = 0;
             if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
                 running = 0;
+            if (e.type == SDL_MOUSEBUTTONDOWN) {
+                bf_pick_result pick = bf_pick(engine, e.button.x, e.button.y);
+                if (e.button.button == SDL_BUTTON_LEFT) {
+                    if (pick.type == BF_PICK_ENTITY) {
+                        selected_id = pick.entity_id;
+                        bf_command(engine, (bf_cmd){
+                            .type = BF_CMD_SELECT,
+                            .select = { .id = pick.entity_id }
+                        });
+                        fprintf(stderr, "Selected entity %d\n", pick.entity_id);
+                    } else {
+                        selected_id = 0;
+                        bf_command(engine, (bf_cmd){
+                            .type = BF_CMD_SELECT,
+                            .select = { .id = 0 }
+                        });
+                        fprintf(stderr, "Deselected\n");
+                    }
+                } else if (e.button.button == SDL_BUTTON_RIGHT) {
+                    if (selected_id > 0 && pick.type == BF_PICK_GROUND) {
+                        bf_command(engine, (bf_cmd){
+                            .type = BF_CMD_ENTITY_MOVE,
+                            .entity_move = { .id = selected_id,
+                                             .position = pick.position }
+                        });
+                        fprintf(stderr, "Move entity %d to (%.1f, %.1f, %.1f)\n",
+                                selected_id, pick.position.x,
+                                pick.position.y, pick.position.z);
+                    }
+                }
+            }
         }
 
         /* Continuous key input for camera */
@@ -269,25 +294,6 @@ int main(void) {
                 .direction = {sinf(cam_yaw), -0.3f, -cosf(cam_yaw)}
             }
         });
-
-        /* Simple patrol: entity 1 bounces between two points */
-        static float patrol_timer = 0.0f;
-        patrol_timer += dt;
-        if (patrol_timer > 3.0f) {
-            patrol_timer = 0.0f;
-            if (patrol_dir) {
-                bf_command(engine, (bf_cmd){
-                    .type = BF_CMD_ENTITY_MOVE,
-                    .entity_move = { .id = 1, .position = {-8.0f, 1.0f, 0.0f} }
-                });
-            } else {
-                bf_command(engine, (bf_cmd){
-                    .type = BF_CMD_ENTITY_MOVE,
-                    .entity_move = { .id = 1, .position = {8.0f, 1.0f, 0.0f} }
-                });
-            }
-            patrol_dir = !patrol_dir;
-        }
 
         bf_tick(engine, dt);
         bf_render(engine, pixels);
