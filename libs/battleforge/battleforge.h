@@ -44,6 +44,7 @@ typedef enum {
     BF_CMD_ENTITY_MOVE,
     BF_CMD_ENTITY_FACE,
     BF_CMD_ENTITY_SET_SPEED,
+    BF_CMD_SELECT,
     BF_CMD_COUNT
 } bf_cmd_type;
 
@@ -57,8 +58,23 @@ typedef struct {
         struct { int id; vector position; } entity_move;
         struct { int id; vector direction; } entity_face;
         struct { int id; float speed; } entity_set_speed;
+        struct { int id; } select;
     };
 } bf_cmd;
+
+/* --- Picking --- */
+
+typedef enum {
+    BF_PICK_SKY,       /* ray hit nothing */
+    BF_PICK_GROUND,    /* ray hit the ground plane */
+    BF_PICK_ENTITY     /* ray hit an entity sprite */
+} bf_pick_type;
+
+typedef struct {
+    bf_pick_type type;
+    int entity_id;       /* entity ID when type == BF_PICK_ENTITY; 0 otherwise */
+    vector position;     /* world-space hit point for GROUND and ENTITY; zeroed for SKY */
+} bf_pick_result;
 
 /* --- Engine --- */
 
@@ -73,5 +89,6 @@ void        bf_set_map(bf_engine *e, bf_map map);
 int         bf_command(bf_engine *e, bf_cmd cmd);
 void        bf_tick(bf_engine *e, float dt);
 void        bf_render(bf_engine *e, uint32_t *pixel_buf);
+bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y);
 
 #endif /* BATTLEFORGE_H */

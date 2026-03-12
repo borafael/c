@@ -4,6 +4,7 @@
 #include "vector.h"
 #include <stdlib.h>
 #include <math.h>
+#include <float.h>
 #include <unistd.h>
 
 #define CMD_QUEUE_SIZE 1024
@@ -45,6 +46,7 @@ struct bf_engine {
 
     bf_entity entities[MAX_ENTITIES];
     int entity_count;
+    int selected_entity_id;
 
     bf_cmd cmd_queue[CMD_QUEUE_SIZE];
     int cmd_head;
@@ -167,7 +169,11 @@ static void cmd_entity_create(bf_engine *e, const bf_cmd *cmd) {
 
 static void cmd_entity_destroy(bf_engine *e, const bf_cmd *cmd) {
     bf_entity *ent = find_entity(e, cmd->entity_destroy.id);
-    if (ent) ent->active = 0;
+    if (ent) {
+        ent->active = 0;
+        if (e->selected_entity_id == ent->id)
+            e->selected_entity_id = 0;
+    }
 }
 
 static void cmd_entity_move(bf_engine *e, const bf_cmd *cmd) {
@@ -185,6 +191,15 @@ static void cmd_entity_set_speed(bf_engine *e, const bf_cmd *cmd) {
     if (ent) ent->speed = cmd->entity_set_speed.speed;
 }
 
+static void cmd_select(bf_engine *e, const bf_cmd *cmd) {
+    if (cmd->select.id <= 0) {
+        e->selected_entity_id = 0;
+        return;
+    }
+    bf_entity *ent = find_entity(e, cmd->select.id);
+    if (ent) e->selected_entity_id = cmd->select.id;
+}
+
 /* --- Dispatch table --- */
 
 static void (*cmd_handlers[BF_CMD_COUNT])(bf_engine *, const bf_cmd *) = {
@@ -195,6 +210,7 @@ static void (*cmd_handlers[BF_CMD_COUNT])(bf_engine *, const bf_cmd *) = {
     [BF_CMD_ENTITY_MOVE]       = cmd_entity_move,
     [BF_CMD_ENTITY_FACE]       = cmd_entity_face,
     [BF_CMD_ENTITY_SET_SPEED]  = cmd_entity_set_speed,
+    [BF_CMD_SELECT]            = cmd_select,
 };
 
 void bf_tick(bf_engine *e, float dt) {
@@ -284,4 +300,79 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
         thread_pool_submit(e->pool, render_chunk_fn, &e->tasks[i]);
     }
     thread_pool_wait(e->pool);
+}
+
+bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
+    bf_pick_result result = { .type = BF_PICK_SKY, .entity_id = 0,
+                              .position = {0.0f, 0.0f, 0.0f} };
+
+    /* Bounds check */
+    if (screen_x < 0 || screen_x >= e->config.render_width ||
+        screen_y < 0 || screen_y >= e->config.render_height)
+        return result;
+
+    /* Construct ray matching the raytracer's projection */
+    vector origin, forward, right, up;
+    rt_camera_get_basis(e->rt_cam, &origin, &forward, &right, &up);
+
+    float half_w = (float)e->config.render_width * 0.5f;
+    float half_h = (float)e->config.render_height * 0.5f;
+    float fov_factor = (float)e->config.render_height /
+                       (2.0f * tanf(e->config.fov / 2.0f));
+
+    float sx = ((float)screen_x - half_w) / fov_factor;
+    float sy = -((float)screen_y - half_h) / fov_factor;
+
+    vector ray_dir = vector_add(
+        vector_add(forward, vector_scale(right, sx)),
+        vector_scale(up, sy));
+    ray_dir = vector_normalize(ray_dir);
+
+    /* Test entities (closest wins) */
+    float closest_t = FLT_MAX;
+    int closest_id = 0;
+    vector closest_pos = {0};
+
+    for (int i = 0; i < e->entity_count; i++) {
+        bf_entity *ent = &e->entities[i];
+        if (!ent->active) continue;
+        if (ent->sprite_id < 0 || ent->sprite_id >= e->sprite_count) continue;
+
+        bf_sprite_def *def = &e->sprites[ent->sprite_id];
+        rt_sprite spr = {
+            .position = ent->position,
+            .direction = ent->direction,
+            .width = def->width,
+            .height = def->height,
+            .frame_count = def->frame_count,
+            .frames = def->frames
+        };
+
+        vector hp;
+        float t = rt_pick_sprite(origin, ray_dir, &spr, origin, &hp);
+        if (t > 0.0f && t < closest_t) {
+            closest_t = t;
+            closest_id = ent->id;
+            closest_pos = hp;
+        }
+    }
+
+    if (closest_id > 0) {
+        result.type = BF_PICK_ENTITY;
+        result.entity_id = closest_id;
+        result.position = closest_pos;
+        return result;
+    }
+
+    /* Test ground plane (y=0) */
+    if (e->map_set && fabsf(ray_dir.y) > 1e-6f) {
+        float t = -origin.y / ray_dir.y;
+        if (t > 0.0f) {
+            result.type = BF_PICK_GROUND;
+            result.position = vector_add(origin, vector_scale(ray_dir, t));
+            return result;
+        }
+    }
+
+    return result;
 }
