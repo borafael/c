@@ -41,8 +41,9 @@ $CC -O2 -mwindows \
     "$ROOT/libs/thread/thread_pool.c" \
     -lmingw32 -lSDL2main -lSDL2 -lm -lpthread
 
-# Bundle SDL2.dll
+# Bundle required DLLs
 cp "$SDL2_DIR/bin/SDL2.dll" "$OUT_DIR/"
+cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll "$OUT_DIR/"
 
 echo ""
 echo "Build complete: $OUT_DIR/"

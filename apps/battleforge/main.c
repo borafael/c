@@ -17,7 +17,7 @@
 #define PX(r,g,b) (0xFF000000u | ((r)<<16) | ((g)<<8) | (b))
 #define TP 0x00000000u
 
-static uint32_t frame_data[8][S * S];
+static uint32_t frame_data[16][S * S];
 
 static void set(uint32_t *buf, int x, int y, uint32_t c) {
     if (x >= 0 && x < S && y >= 0 && y < S)
@@ -50,7 +50,11 @@ static void init_sprite_frames(void) {
     uint32_t eye_p = PX( 30,  30,  30);
     uint32_t mouth = PX(200,  60,  60);
 
-    /* Frame 0: Front */
+    /* 16 frames at 22.5° increments, clockwise from front.
+       Even frames (0,2,4,...) are the original 8 cardinal/diagonal angles.
+       Odd frames (1,3,5,...) are new intermediates. */
+
+    /* Frame 0: Front (0°) */
     clear_frame(frame_data[0]);
     draw_head(frame_data[0], skin, hair);
     fill_circle(frame_data[0], 5, 6, 1, eye_w);
@@ -63,73 +67,159 @@ static void init_sprite_frames(void) {
     set(frame_data[0], 8, 11, mouth);
     set(frame_data[0], 9, 10, mouth);
 
-    /* Frame 1: Front-right */
+    /* Frame 1: Front-to-front-right (22.5°) */
     clear_frame(frame_data[1]);
     draw_head(frame_data[1], skin, hair);
     fill_circle(frame_data[1], 6, 6, 1, eye_w);
-    set(frame_data[1], 7, 6, eye_p);
+    set(frame_data[1], 6, 6, eye_p);
     fill_circle(frame_data[1], 10, 6, 1, eye_w);
-    set(frame_data[1], 11, 6, eye_p);
-    set(frame_data[1], 7, 10, mouth);
+    set(frame_data[1], 10, 6, eye_p);
+    set(frame_data[1], 6, 10, mouth);
+    set(frame_data[1], 7, 11, mouth);
     set(frame_data[1], 8, 11, mouth);
-    set(frame_data[1], 9, 11, mouth);
-    set(frame_data[1], 10, 10, mouth);
+    set(frame_data[1], 9, 10, mouth);
 
-    /* Frame 2: Right */
+    /* Frame 2: Front-right (45°) */
     clear_frame(frame_data[2]);
     draw_head(frame_data[2], skin, hair);
-    fill_circle(frame_data[2], 9, 6, 1, eye_w);
-    set(frame_data[2], 10, 6, eye_p);
-    set(frame_data[2], 12, 7, skin);
-    set(frame_data[2], 13, 8, skin);
-    set(frame_data[2], 9, 10, mouth);
-    set(frame_data[2], 10, 11, mouth);
-    set(frame_data[2], 11, 10, mouth);
+    fill_circle(frame_data[2], 6, 6, 1, eye_w);
+    set(frame_data[2], 7, 6, eye_p);
+    fill_circle(frame_data[2], 10, 6, 1, eye_w);
+    set(frame_data[2], 11, 6, eye_p);
+    set(frame_data[2], 7, 10, mouth);
+    set(frame_data[2], 8, 11, mouth);
+    set(frame_data[2], 9, 11, mouth);
+    set(frame_data[2], 10, 10, mouth);
 
-    /* Frame 3: Back-right */
+    /* Frame 3: Front-right-to-right (67.5°) */
     clear_frame(frame_data[3]);
     draw_head(frame_data[3], skin, hair);
-    set(frame_data[3], 2, 7, skin);
-    set(frame_data[3], 1, 7, skin);
-    set(frame_data[3], 1, 8, skin);
+    fill_circle(frame_data[3], 8, 6, 1, eye_w);
+    set(frame_data[3], 9, 6, eye_p);
+    fill_circle(frame_data[3], 11, 6, 1, eye_w);
+    set(frame_data[3], 12, 6, eye_p);
+    set(frame_data[3], 8, 10, mouth);
+    set(frame_data[3], 9, 11, mouth);
+    set(frame_data[3], 10, 10, mouth);
 
-    /* Frame 4: Back */
+    /* Frame 4: Right (90°) */
     clear_frame(frame_data[4]);
     draw_head(frame_data[4], skin, hair);
+    fill_circle(frame_data[4], 9, 6, 1, eye_w);
+    set(frame_data[4], 10, 6, eye_p);
+    set(frame_data[4], 12, 7, skin);
+    set(frame_data[4], 13, 8, skin);
+    set(frame_data[4], 9, 10, mouth);
+    set(frame_data[4], 10, 11, mouth);
+    set(frame_data[4], 11, 10, mouth);
+
+    /* Frame 5: Right-to-back-right (112.5°) */
+    clear_frame(frame_data[5]);
+    draw_head(frame_data[5], skin, hair);
+    fill_circle(frame_data[5], 10, 6, 1, eye_w);
+    set(frame_data[5], 11, 6, eye_p);
+    set(frame_data[5], 12, 7, skin);
+    set(frame_data[5], 13, 8, skin);
+    set(frame_data[5], 10, 10, mouth);
+    set(frame_data[5], 11, 10, mouth);
+
+    /* Frame 6: Back-right (135°) */
+    clear_frame(frame_data[6]);
+    draw_head(frame_data[6], skin, hair);
+    set(frame_data[6], 2, 7, skin);
+    set(frame_data[6], 1, 7, skin);
+    set(frame_data[6], 1, 8, skin);
+
+    /* Frame 7: Back-right-to-back (157.5°) */
+    clear_frame(frame_data[7]);
+    draw_head(frame_data[7], skin, hair);
+    for (int x = 4; x <= 11; x++)
+        for (int y = 2; y <= 5; y++)
+            if ((x-7)*(x-7) + (y-7)*(y-7) <= 36)
+                set(frame_data[7], x, y, hair);
+    set(frame_data[7], 2, 7, skin);
+    set(frame_data[7], 1, 8, skin);
+
+    /* Frame 8: Back (180°) */
+    clear_frame(frame_data[8]);
+    draw_head(frame_data[8], skin, hair);
     for (int x = 3; x <= 11; x++)
         for (int y = 2; y <= 6; y++)
             if ((x-7)*(x-7) + (y-7)*(y-7) <= 36)
-                set(frame_data[4], x, y, hair);
+                set(frame_data[8], x, y, hair);
 
-    /* Frame 5: Back-left */
-    clear_frame(frame_data[5]);
-    draw_head(frame_data[5], skin, hair);
-    set(frame_data[5], 12, 7, skin);
-    set(frame_data[5], 13, 7, skin);
-    set(frame_data[5], 13, 8, skin);
+    /* Frame 9: Back-to-back-left (202.5°) */
+    clear_frame(frame_data[9]);
+    draw_head(frame_data[9], skin, hair);
+    for (int x = 3; x <= 10; x++)
+        for (int y = 2; y <= 5; y++)
+            if ((x-7)*(x-7) + (y-7)*(y-7) <= 36)
+                set(frame_data[9], x, y, hair);
+    set(frame_data[9], 12, 7, skin);
+    set(frame_data[9], 13, 8, skin);
 
-    /* Frame 6: Left */
-    clear_frame(frame_data[6]);
-    draw_head(frame_data[6], skin, hair);
-    fill_circle(frame_data[6], 5, 6, 1, eye_w);
-    set(frame_data[6], 4, 6, eye_p);
-    set(frame_data[6], 2, 7, skin);
-    set(frame_data[6], 1, 8, skin);
-    set(frame_data[6], 3, 10, mouth);
-    set(frame_data[6], 4, 11, mouth);
-    set(frame_data[6], 5, 10, mouth);
+    /* Frame 10: Back-left (225°) */
+    clear_frame(frame_data[10]);
+    draw_head(frame_data[10], skin, hair);
+    set(frame_data[10], 12, 7, skin);
+    set(frame_data[10], 13, 7, skin);
+    set(frame_data[10], 13, 8, skin);
 
-    /* Frame 7: Front-left */
-    clear_frame(frame_data[7]);
-    draw_head(frame_data[7], skin, hair);
-    fill_circle(frame_data[7], 4, 6, 1, eye_w);
-    set(frame_data[7], 3, 6, eye_p);
-    fill_circle(frame_data[7], 8, 6, 1, eye_w);
-    set(frame_data[7], 7, 6, eye_p);
-    set(frame_data[7], 4, 10, mouth);
-    set(frame_data[7], 5, 11, mouth);
-    set(frame_data[7], 6, 11, mouth);
-    set(frame_data[7], 7, 10, mouth);
+    /* Frame 11: Back-left-to-left (247.5°) */
+    clear_frame(frame_data[11]);
+    draw_head(frame_data[11], skin, hair);
+    fill_circle(frame_data[11], 4, 6, 1, eye_w);
+    set(frame_data[11], 3, 6, eye_p);
+    set(frame_data[11], 2, 7, skin);
+    set(frame_data[11], 1, 8, skin);
+    set(frame_data[11], 4, 10, mouth);
+    set(frame_data[11], 5, 10, mouth);
+
+    /* Frame 12: Left (270°) */
+    clear_frame(frame_data[12]);
+    draw_head(frame_data[12], skin, hair);
+    fill_circle(frame_data[12], 5, 6, 1, eye_w);
+    set(frame_data[12], 4, 6, eye_p);
+    set(frame_data[12], 2, 7, skin);
+    set(frame_data[12], 1, 8, skin);
+    set(frame_data[12], 3, 10, mouth);
+    set(frame_data[12], 4, 11, mouth);
+    set(frame_data[12], 5, 10, mouth);
+
+    /* Frame 13: Left-to-front-left (292.5°) */
+    clear_frame(frame_data[13]);
+    draw_head(frame_data[13], skin, hair);
+    fill_circle(frame_data[13], 4, 6, 1, eye_w);
+    set(frame_data[13], 3, 6, eye_p);
+    fill_circle(frame_data[13], 7, 6, 1, eye_w);
+    set(frame_data[13], 6, 6, eye_p);
+    set(frame_data[13], 4, 10, mouth);
+    set(frame_data[13], 5, 11, mouth);
+    set(frame_data[13], 6, 10, mouth);
+
+    /* Frame 14: Front-left (315°) */
+    clear_frame(frame_data[14]);
+    draw_head(frame_data[14], skin, hair);
+    fill_circle(frame_data[14], 4, 6, 1, eye_w);
+    set(frame_data[14], 3, 6, eye_p);
+    fill_circle(frame_data[14], 8, 6, 1, eye_w);
+    set(frame_data[14], 7, 6, eye_p);
+    set(frame_data[14], 4, 10, mouth);
+    set(frame_data[14], 5, 11, mouth);
+    set(frame_data[14], 6, 11, mouth);
+    set(frame_data[14], 7, 10, mouth);
+
+    /* Frame 15: Front-left-to-front (337.5°) */
+    clear_frame(frame_data[15]);
+    draw_head(frame_data[15], skin, hair);
+    fill_circle(frame_data[15], 5, 6, 1, eye_w);
+    set(frame_data[15], 4, 6, eye_p);
+    fill_circle(frame_data[15], 9, 6, 1, eye_w);
+    set(frame_data[15], 8, 6, eye_p);
+    set(frame_data[15], 5, 10, mouth);
+    set(frame_data[15], 6, 11, mouth);
+    set(frame_data[15], 7, 11, mouth);
+    set(frame_data[15], 8, 10, mouth);
 }
 
 /* --- Main --- */
@@ -177,14 +267,14 @@ int main(int argc, char *argv[]) {
 
     /* Register sprite */
     init_sprite_frames();
-    rt_frame frames[8];
-    for (int i = 0; i < 8; i++)
+    rt_frame frames[16];
+    for (int i = 0; i < 16; i++)
         frames[i] = (rt_frame){ frame_data[i], S, S };
 
     int spr_id = bf_register_sprite(engine, (bf_sprite_def){
         .width = 2.0f,
         .height = 2.0f,
-        .frame_count = 8,
+        .frame_count = 16,
         .frames = frames
     });
 
@@ -261,14 +351,15 @@ int main(int argc, char *argv[]) {
                     }
                 } else if (e.button.button == SDL_BUTTON_RIGHT) {
                     if (selected_id > 0 && pick.type == BF_PICK_GROUND) {
+                        vector dest = pick.position;
+                        dest.y = 1.0f;  /* keep entity above ground */
                         bf_command(engine, (bf_cmd){
                             .type = BF_CMD_ENTITY_MOVE,
                             .entity_move = { .id = selected_id,
-                                             .position = pick.position }
+                                             .position = dest }
                         });
                         fprintf(stderr, "Move entity %d to (%.1f, %.1f, %.1f)\n",
-                                selected_id, pick.position.x,
-                                pick.position.y, pick.position.z);
+                                selected_id, dest.x, dest.y, dest.z);
                     }
                 }
             }
