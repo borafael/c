@@ -246,6 +246,7 @@ void bf_tick(bf_engine *e, float dt) {
             ent->position = ent->target;
         } else {
             vector move_dir = vector_scale(to_target, 1.0f / dist);
+            ent->direction = move_dir;
             ent->position = vector_add(ent->position, vector_scale(move_dir, step));
         }
     }
