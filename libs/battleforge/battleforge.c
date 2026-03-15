@@ -293,6 +293,7 @@ void bf_tick(bf_engine *e, float dt) {
         if (!sheet || ent->anim_index >= sheet->anim_count) continue;
         slice_anim *anim = &sheet->anims[ent->anim_index];
         if (anim->column_count <= 1) continue;
+        if (ent->anim_fps <= 0.0f) continue;
 
         ent->frame_timer += dt;
         float interval = 1.0f / ent->anim_fps;
