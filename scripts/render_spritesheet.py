@@ -55,7 +55,7 @@ def setup_camera():
 
 def position_camera(cam, angle_deg):
     """Place camera at given angle (degrees clockwise from front), looking at origin."""
-    rad = math.radians(angle_deg)
+    rad = math.radians(-angle_deg)
     cam.location = Vector((
         math.sin(rad) * CAMERA_DISTANCE,
         -math.cos(rad) * CAMERA_DISTANCE,
@@ -102,7 +102,7 @@ def composite_sheet(frame_paths, total_cols, total_rows, output_path):
                 for x in range(w):
                     src_i = (y * w + x) * 4
                     # Flip Y: Blender images are bottom-up, sheet is top-down
-                    dst_y = (total_rows - 1 - row) * h + (h - 1 - y)
+                    dst_y = (total_rows - 1 - row) * h + y
                     dst_x = col * w + x
                     dst_i = (dst_y * sheet_w + dst_x) * 4
                     pixels[dst_i:dst_i+4] = src[src_i:src_i+4]

@@ -413,8 +413,8 @@ int main(int argc, char *argv[]) {
 
         if (keys[SDL_SCANCODE_W]) { move_x += sinf(cam_yaw); move_z += -cosf(cam_yaw); }
         if (keys[SDL_SCANCODE_S]) { move_x -= sinf(cam_yaw); move_z -= -cosf(cam_yaw); }
-        if (keys[SDL_SCANCODE_A]) { move_x += cosf(cam_yaw); move_z += sinf(cam_yaw); }
-        if (keys[SDL_SCANCODE_D]) { move_x -= cosf(cam_yaw); move_z -= sinf(cam_yaw); }
+        if (keys[SDL_SCANCODE_A]) { move_x -= cosf(cam_yaw); move_z -= sinf(cam_yaw); }
+        if (keys[SDL_SCANCODE_D]) { move_x += cosf(cam_yaw); move_z += sinf(cam_yaw); }
         if (keys[SDL_SCANCODE_LEFT])  cam_yaw -= ROT_SPEED * dt;
         if (keys[SDL_SCANCODE_RIGHT]) cam_yaw += ROT_SPEED * dt;
         if (keys[SDL_SCANCODE_SPACE]) cam_y += MOVE_SPEED * dt;
