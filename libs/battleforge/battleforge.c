@@ -2,6 +2,7 @@
 #include "raytrace.h"
 #include "thread_pool.h"
 #include "vector.h"
+#include "slice.h"
 #include <stdlib.h>
 #include <math.h>
 #include <float.h>
@@ -23,6 +24,10 @@ typedef struct {
     vector target;
     float speed;
     int active;
+    int anim_index;     /* -1 = no animation */
+    int anim_frame;     /* current frame within animation */
+    float frame_timer;  /* time accumulator */
+    float anim_fps;     /* playback speed */
 } bf_entity;
 
 typedef struct {
@@ -45,7 +50,11 @@ struct bf_engine {
     bf_map map;
     int map_set;
 
-    bf_sprite_def sprites[MAX_SPRITES];
+    struct {
+        slice_sheet *sheet;
+        float width;
+        float height;
+    } sprites[MAX_SPRITES];
     int sprite_count;
 
     bf_entity entities[MAX_ENTITIES];
@@ -122,10 +131,14 @@ void bf_destroy(bf_engine *e) {
     free(e);
 }
 
-int bf_register_sprite(bf_engine *e, bf_sprite_def def) {
+int bf_register_sprite(bf_engine *e, slice_sheet *sheet,
+                       float world_width, float world_height) {
     if (e->sprite_count >= MAX_SPRITES) return -1;
     int id = e->sprite_count;
-    e->sprites[e->sprite_count++] = def;
+    e->sprites[e->sprite_count].sheet = sheet;
+    e->sprites[e->sprite_count].width = world_width;
+    e->sprites[e->sprite_count].height = world_height;
+    e->sprite_count++;
     return id;
 }
 
@@ -172,7 +185,11 @@ static void cmd_entity_create(bf_engine *e, const bf_cmd *cmd) {
         .direction = cmd->entity_create.direction,
         .target = cmd->entity_create.position,
         .speed = cmd->entity_create.speed,
-        .active = 1
+        .active = 1,
+        .anim_index = -1,
+        .anim_frame = 0,
+        .frame_timer = 0.0f,
+        .anim_fps = 0.0f
     };
     e->entities[e->entity_count++] = ent;
 }
@@ -210,6 +227,20 @@ static void cmd_select(bf_engine *e, const bf_cmd *cmd) {
     if (ent) e->selected_entity_id = cmd->select.id;
 }
 
+static void cmd_entity_animate(bf_engine *e, const bf_cmd *cmd) {
+    bf_entity *ent = find_entity(e, cmd->entity_animate.id);
+    if (!ent) return;
+    if (ent->sprite_id < 0 || ent->sprite_id >= e->sprite_count) return;
+    slice_sheet *sheet = e->sprites[ent->sprite_id].sheet;
+    if (!sheet) return;
+    int ai = cmd->entity_animate.anim_index;
+    if (ai < 0 || ai >= sheet->anim_count) return;
+    ent->anim_index = ai;
+    ent->anim_frame = 0;
+    ent->frame_timer = 0.0f;
+    ent->anim_fps = sheet->fps;
+}
+
 /* --- Dispatch table --- */
 
 static void (*cmd_handlers[BF_CMD_COUNT])(bf_engine *, const bf_cmd *) = {
@@ -221,6 +252,7 @@ static void (*cmd_handlers[BF_CMD_COUNT])(bf_engine *, const bf_cmd *) = {
     [BF_CMD_ENTITY_FACE]       = cmd_entity_face,
     [BF_CMD_ENTITY_SET_SPEED]  = cmd_entity_set_speed,
     [BF_CMD_SELECT]            = cmd_select,
+    [BF_CMD_ENTITY_ANIMATE]    = cmd_entity_animate,
 };
 
 void bf_tick(bf_engine *e, float dt) {
@@ -250,6 +282,57 @@ void bf_tick(bf_engine *e, float dt) {
             ent->position = vector_add(ent->position, vector_scale(move_dir, step));
         }
     }
+
+    /* Advance animation */
+    for (int i = 0; i < e->entity_count; i++) {
+        bf_entity *ent = &e->entities[i];
+        if (!ent->active || ent->anim_index < 0) continue;
+        if (ent->sprite_id < 0 || ent->sprite_id >= e->sprite_count) continue;
+
+        slice_sheet *sheet = e->sprites[ent->sprite_id].sheet;
+        if (!sheet || ent->anim_index >= sheet->anim_count) continue;
+        slice_anim *anim = &sheet->anims[ent->anim_index];
+        if (anim->column_count <= 1) continue;
+
+        ent->frame_timer += dt;
+        float interval = 1.0f / ent->anim_fps;
+        while (ent->frame_timer >= interval) {
+            ent->frame_timer -= interval;
+            ent->anim_frame++;
+            if (ent->anim_frame >= anim->column_count) {
+                if (anim->loop)
+                    ent->anim_frame = 0;
+                else
+                    ent->anim_frame = anim->column_count - 1;
+            }
+        }
+    }
+}
+
+static slice_sheet *build_sprite_frames(bf_engine *e, bf_entity *ent,
+                                        rt_frame *out_frames) {
+    if (ent->sprite_id < 0 || ent->sprite_id >= e->sprite_count)
+        return NULL;
+    slice_sheet *sheet = e->sprites[ent->sprite_id].sheet;
+    if (!sheet) return NULL;
+
+    int col = 0;
+    if (ent->anim_index >= 0 && ent->anim_index < sheet->anim_count) {
+        slice_anim *anim = &sheet->anims[ent->anim_index];
+        if (anim->column_count > 0 && ent->anim_frame < anim->column_count)
+            col = anim->columns[ent->anim_frame];
+    }
+
+    if (col < 0 || col >= sheet->total_columns) col = 0;
+
+    for (int a = 0; a < sheet->angles; a++) {
+        out_frames[a] = (rt_frame){
+            .pixels = sheet->pixels[a * sheet->total_columns + col],
+            .width = sheet->frame_width,
+            .height = sheet->frame_height
+        };
+    }
+    return sheet;
 }
 
 void bf_render(bf_engine *e, uint32_t *pixel_buf) {
@@ -279,16 +362,18 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
     for (int i = 0; i < e->entity_count; i++) {
         bf_entity *ent = &e->entities[i];
         if (!ent->active) continue;
-        if (ent->sprite_id < 0 || ent->sprite_id >= e->sprite_count) continue;
 
-        bf_sprite_def *def = &e->sprites[ent->sprite_id];
+        rt_frame frames[32];
+        slice_sheet *sheet = build_sprite_frames(e, ent, frames);
+        if (!sheet) continue;
+
         rt_scene_add_sprite(e->scene, (rt_sprite){
             .position = ent->position,
             .direction = ent->direction,
-            .width = def->width,
-            .height = def->height,
-            .frame_count = def->frame_count,
-            .frames = def->frames
+            .width = e->sprites[ent->sprite_id].width,
+            .height = e->sprites[ent->sprite_id].height,
+            .frame_count = sheet->angles,
+            .frames = frames
         });
     }
 
@@ -347,16 +432,18 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
     for (int i = 0; i < e->entity_count; i++) {
         bf_entity *ent = &e->entities[i];
         if (!ent->active) continue;
-        if (ent->sprite_id < 0 || ent->sprite_id >= e->sprite_count) continue;
 
-        bf_sprite_def *def = &e->sprites[ent->sprite_id];
+        rt_frame frames[32];
+        slice_sheet *sheet = build_sprite_frames(e, ent, frames);
+        if (!sheet) continue;
+
         rt_sprite spr = {
             .position = ent->position,
             .direction = ent->direction,
-            .width = def->width,
-            .height = def->height,
-            .frame_count = def->frame_count,
-            .frames = def->frames
+            .width = e->sprites[ent->sprite_id].width,
+            .height = e->sprites[ent->sprite_id].height,
+            .frame_count = sheet->angles,
+            .frames = frames
         };
 
         vector hp;

@@ -5,33 +5,27 @@
 #include "vector.h"
 #include "raytrace.h"
 
+/* Forward declaration — full definition in slice.h */
+typedef struct slice_sheet slice_sheet;
+
 /* --- Configuration --- */
 
 typedef struct {
     int render_width;
     int render_height;
-    float fov;            /* field of view in radians */
-    int num_threads;      /* 0 = auto-detect via sysconf */
+    float fov;
+    int num_threads;
 } bf_config;
-
-/* --- Sprite definition --- */
-
-typedef struct {
-    float width;          /* world-space quad width */
-    float height;         /* world-space quad height */
-    int frame_count;      /* number of viewing angles */
-    rt_frame *frames;     /* one frame per angle, clockwise from front */
-} bf_sprite_def;
 
 /* --- Map --- */
 
 typedef struct {
-    float width;          /* world units */
-    float depth;          /* world units */
-    uint8_t r, g, b;     /* ground color */
-    float ambient;        /* ambient light level (0-1) */
-    vector light_dir;     /* directional light direction */
-    float light_intensity;/* directional light intensity (0-1) */
+    float width;
+    float depth;
+    uint8_t r, g, b;
+    float ambient;
+    vector light_dir;
+    float light_intensity;
 } bf_map;
 
 /* --- Commands --- */
@@ -45,6 +39,7 @@ typedef enum {
     BF_CMD_ENTITY_FACE,
     BF_CMD_ENTITY_SET_SPEED,
     BF_CMD_SELECT,
+    BF_CMD_ENTITY_ANIMATE,
     BF_CMD_COUNT
 } bf_cmd_type;
 
@@ -59,21 +54,22 @@ typedef struct {
         struct { int id; vector direction; } entity_face;
         struct { int id; float speed; } entity_set_speed;
         struct { int id; } select;
+        struct { int id; int anim_index; } entity_animate;
     };
 } bf_cmd;
 
 /* --- Picking --- */
 
 typedef enum {
-    BF_PICK_SKY,       /* ray hit nothing */
-    BF_PICK_GROUND,    /* ray hit the ground plane */
-    BF_PICK_ENTITY     /* ray hit an entity sprite */
+    BF_PICK_SKY,
+    BF_PICK_GROUND,
+    BF_PICK_ENTITY
 } bf_pick_type;
 
 typedef struct {
     bf_pick_type type;
-    int entity_id;       /* entity ID when type == BF_PICK_ENTITY; 0 otherwise */
-    vector position;     /* world-space hit point for GROUND and ENTITY; zeroed for SKY */
+    int entity_id;
+    vector position;
 } bf_pick_result;
 
 /* --- Engine --- */
@@ -83,7 +79,8 @@ typedef struct bf_engine bf_engine;
 bf_engine  *bf_create(bf_config config);
 void        bf_destroy(bf_engine *e);
 
-int         bf_register_sprite(bf_engine *e, bf_sprite_def def);
+int         bf_register_sprite(bf_engine *e, slice_sheet *sheet,
+                               float world_width, float world_height);
 void        bf_set_map(bf_engine *e, bf_map map);
 
 int         bf_command(bf_engine *e, bf_cmd cmd);

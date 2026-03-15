@@ -1,4 +1,5 @@
 #include "battleforge.h"
+#include "slice.h"
 #include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -265,18 +266,36 @@ int main(int argc, char *argv[]) {
         .light_intensity = 0.85f
     });
 
-    /* Register sprite */
+    /* Build a programmatic slice_sheet from procedural frame data.
+       Static storage: engine borrows these pointers for its lifetime. */
     init_sprite_frames();
-    rt_frame frames[16];
-    for (int i = 0; i < 16; i++)
-        frames[i] = (rt_frame){ frame_data[i], S, S };
 
-    int spr_id = bf_register_sprite(engine, (bf_sprite_def){
-        .width = 2.0f,
-        .height = 2.0f,
-        .frame_count = 16,
-        .frames = frames
-    });
+    static uint32_t *pixel_ptrs[16];
+    for (int i = 0; i < 16; i++)
+        pixel_ptrs[i] = frame_data[i];
+
+    static int idle_col = 0;
+    static slice_anim smiley_anim = {
+        .name = "idle",
+        .columns = NULL,
+        .column_count = 1,
+        .loop = 1
+    };
+    smiley_anim.columns = &idle_col;
+
+    static slice_sheet smiley_sheet;
+    smiley_sheet = (slice_sheet){
+        .pixels = pixel_ptrs,
+        .angles = 16,
+        .total_columns = 1,
+        .frame_width = S,
+        .frame_height = S,
+        .fps = 1.0f,
+        .anims = &smiley_anim,
+        .anim_count = 1
+    };
+
+    int spr_id = bf_register_sprite(engine, &smiley_sheet, 2.0f, 2.0f);
 
     /* Create entities */
     bf_command(engine, (bf_cmd){
