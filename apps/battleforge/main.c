@@ -297,6 +297,19 @@ int main(int argc, char *argv[]) {
 
     int spr_id = bf_register_sprite(engine, &smiley_sheet, 2.0f, 2.0f);
 
+    /* Load 3D-rendered sprite sheet from PNG */
+    slice_sheet *unit_sheet = slice_load("apps/battleforge/assets/test_unit.png");
+    int unit_spr = -1;
+    int walk_anim = -1;
+    if (unit_sheet) {
+        unit_spr = bf_register_sprite(engine, unit_sheet, 2.0f, 2.0f);
+        walk_anim = slice_anim_index(unit_sheet, "walk");
+        fprintf(stderr, "Loaded test_unit sprite (id=%d, walk_anim=%d)\n",
+                unit_spr, walk_anim);
+    } else {
+        fprintf(stderr, "Warning: could not load test_unit.png, using smiley only\n");
+    }
+
     /* Create entities */
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_ENTITY_CREATE,
@@ -312,13 +325,23 @@ int main(int argc, char *argv[]) {
                            .direction = {-1.0f, 0.0f, 0.0f},
                            .speed = 3.0f }
     });
+
+    /* Entity 3: use the PNG-loaded sprite if available */
+    int ent3_spr = (unit_spr >= 0) ? unit_spr : spr_id;
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_ENTITY_CREATE,
-        .entity_create = { .id = 3, .sprite_id = spr_id,
+        .entity_create = { .id = 3, .sprite_id = ent3_spr,
                            .position = {-4.0f, 1.0f, 2.0f},
                            .direction = {1.0f, 0.0f, 0.0f},
                            .speed = 3.0f }
     });
+    /* Play walk animation on entity 3 */
+    if (walk_anim >= 0) {
+        bf_command(engine, (bf_cmd){
+            .type = BF_CMD_ENTITY_ANIMATE,
+            .entity_animate = { .id = 3, .anim_index = walk_anim }
+        });
+    }
 
     /* Camera starts looking at the scene */
     bf_command(engine, (bf_cmd){
@@ -429,6 +452,7 @@ int main(int argc, char *argv[]) {
     }
 
     bf_destroy(engine);
+    if (unit_sheet) slice_free(unit_sheet);
     free(pixels);
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
