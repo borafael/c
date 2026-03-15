@@ -13,6 +13,7 @@ AC_CONFIG_FILES([
     libs/math/Makefile
     libs/thread/Makefile
     libs/raytrace/Makefile
+    libs/slice/Makefile
     libs/battleforge/Makefile
     apps/nbody/Makefile
     apps/rtdemo/Makefile
