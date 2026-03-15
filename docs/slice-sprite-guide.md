@@ -98,16 +98,15 @@ You can define as many animations as you need. Name them whatever makes sense fo
 
 ## Recommended Tools
 
-- **Aseprite** ($20, best for pixel art) — draw sprites, export as PNG sheet
-- **LibreSprite** (free, Aseprite fork) — same workflow, open source
-- **GIMP** (free) — manual grid layout
-- **Piskel** (free, browser-based) — quick pixel art prototyping
+- **LibreSprite** (free, open source) — pixel art editor with animation timeline and sprite sheet export
+- **GIMP** (free) — general image editor, manual grid layout
+- **Piskel** (free, browser-based) — quick pixel art prototyping, no install needed
 
-### Workflow with Aseprite
+### Workflow with LibreSprite
 
 1. Create a new sprite at your cell size (e.g., 32x32)
 2. Draw the front-facing idle frame
-3. Duplicate and modify for each angle (use Aseprite's rotation as a starting point, then hand-correct)
+3. Duplicate and modify for each angle (use rotation as a starting point, then hand-correct)
 4. Add animation frames as additional columns
 5. Export: `File > Export Sprite Sheet`
    - Layout: "By Rows"
