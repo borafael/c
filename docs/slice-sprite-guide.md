@@ -1,13 +1,12 @@
 # Slice Sprite Guide
 
-How to create and use sprite sheets for the Battleforge engine.
+How to create sprite sheets and INI files for the Slice loader.
 
 ## Quick Start
 
-1. Create a PNG sprite sheet
-2. Create a matching INI file
-3. Drop both in `apps/battleforge/assets/`
-4. Load in code with `slice_load("assets/warrior.png")`
+1. Create a PNG sprite sheet (grid of frames)
+2. Create a matching INI file with the same name
+3. Place both files in the same directory
 
 ## Sprite Sheet Layout
 
@@ -24,7 +23,7 @@ row 15 (337.5°)[idle]   [walk1]  [walk2]  [attack]
 
 ### Angles
 
-Angles go **clockwise from front** (the direction the entity faces):
+Angles go **clockwise from front** (the direction the character faces):
 
 ```
          0° (front)
@@ -38,18 +37,18 @@ Angles go **clockwise from front** (the direction the entity faces):
         180° (back)
 ```
 
-With 16 angles, each row covers 22.5 degrees. The engine picks the closest row based on the camera's position relative to the entity.
+With 16 angles, each row covers 22.5 degrees. With 32 angles, each row covers 11.25 degrees. Start with 16 — you can always add more later.
 
 ### Rules
 
 - All cells must be the **same size** (e.g., 32x32, 64x64)
-- Use **transparent pixels** (alpha = 0) for empty space around the sprite
+- Use **transparent pixels** (alpha = 0) for empty space around the character
 - PNG must have an **alpha channel** (RGBA)
-- Rows x columns must fill the entire image (no partial rows)
+- Rows x columns must fill the entire image — no partial rows
 
-## INI Sidecar File
+## INI File
 
-For every `sprite.png`, create a `sprite.ini` in the same directory.
+For every `sprite.png`, create a `sprite.ini` in the same directory. The names must match (only the extension changes).
 
 ```ini
 frame_width=32
@@ -73,12 +72,14 @@ loop=false
 
 ### Global Settings
 
-| Key | Description |
-|-----|-------------|
-| `frame_width` | Pixel width of each cell |
-| `frame_height` | Pixel height of each cell |
-| `angles` | Number of rows (viewing angles): 16 or 32 |
-| `fps` | Animation playback speed (frames per second) |
+| Key | Description | Example |
+|-----|-------------|---------|
+| `frame_width` | Pixel width of each cell | `32` |
+| `frame_height` | Pixel height of each cell | `32` |
+| `angles` | Number of rows (viewing angles) | `16` or `32` |
+| `fps` | Animation playback speed (frames per second) | `8` |
+
+All four are required. Must be positive values.
 
 ### Animation Sections
 
@@ -86,21 +87,21 @@ Each `[name]` block defines a named animation:
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `frames` | Comma-separated column indices | (required) |
+| `frames` | Comma-separated column indices (0-based) | (required) |
 | `loop` | `true` or `false` | `true` |
 
-Column indices refer to columns in the sprite sheet (0-based). A single column like `frames=0` means a static pose. Multiple columns like `frames=0,1,2,3` create an animated sequence.
+- `frames=0` — a static pose (single column)
+- `frames=0,1,2,3` — a 4-frame animated sequence
+- `loop=false` — animation plays once and holds the last frame (useful for death animations)
 
-When `loop=false`, the animation plays once and holds the last frame.
+You can define as many animations as you need. Name them whatever makes sense for the character.
 
-## Creating Sprites
-
-### Recommended Tools
+## Recommended Tools
 
 - **Aseprite** ($20, best for pixel art) — draw sprites, export as PNG sheet
 - **LibreSprite** (free, Aseprite fork) — same workflow, open source
 - **GIMP** (free) — manual grid layout
-- **Piskel** (free, browser) — quick pixel art prototyping
+- **Piskel** (free, browser-based) — quick pixel art prototyping
 
 ### Workflow with Aseprite
 
@@ -117,97 +118,54 @@ When `loop=false`, the animation plays once and holds the last frame.
 
 - Start with 4 or 8 angles to prototype, then fill in the intermediates
 - Mirror left-facing frames from right-facing to save work (just flip horizontally)
-- Keep sprites centered in their cell — the engine renders from the center point
+- Keep sprites centered in their cell
 - Use high-contrast outlines for readability at small sizes
+- PNG is the recommended format (supports transparency), but BMP, TGA, and JPEG also work
 
-## Loading in Code
+## Example
 
-### From a file (production use)
+A warrior with 16 angles and 11 animation columns (1 idle + 4 walk + 4 attack + 2 death + 1 spare):
 
-```c
-#include "slice.h"
-#include "battleforge.h"
+**`warrior.png`** — 352x512 image (11 columns x 32px wide, 16 rows x 32px tall)
 
-/* Load the sprite sheet */
-slice_sheet *warrior = slice_load("assets/warrior.png");
-if (!warrior) {
-    fprintf(stderr, "Failed to load warrior sprite\n");
-    return 1;
-}
+**`warrior.ini`**:
+```ini
+frame_width=32
+frame_height=32
+angles=16
+fps=8
 
-/* Register with engine (2x2 world units) */
-int spr_id = bf_register_sprite(engine, warrior, 2.0f, 2.0f);
+[idle]
+frames=0
 
-/* Create an entity using this sprite */
-bf_command(engine, (bf_cmd){
-    .type = BF_CMD_ENTITY_CREATE,
-    .entity_create = {
-        .id = 1,
-        .sprite_id = spr_id,
-        .position = {0.0f, 1.0f, 0.0f},
-        .direction = {0.0f, 0.0f, 1.0f},
-        .speed = 3.0f
-    }
-});
+[walk]
+frames=1,2,3,4
 
-/* Play the walk animation */
-int walk_idx = slice_anim_index(warrior, "walk");
-bf_command(engine, (bf_cmd){
-    .type = BF_CMD_ENTITY_ANIMATE,
-    .entity_animate = { .id = 1, .anim_index = walk_idx }
-});
+[attack]
+frames=5,6,7,8
+
+[death]
+frames=9,10
+loop=false
 ```
 
-### Memory ownership
+## Checklist
 
-The engine **borrows** the `slice_sheet` pointer — it does not copy it. You must keep the sheet alive for the engine's lifetime:
+Before handing off your sprites:
 
-```c
-/* Correct order: destroy engine first, then free sheets */
-bf_destroy(engine);
-slice_free(warrior);
-```
+- [ ] PNG has alpha channel (save as RGBA, not RGB)
+- [ ] All cells are the same size
+- [ ] Number of rows matches `angles` in the INI
+- [ ] PNG width is evenly divisible by `frame_width`
+- [ ] PNG height is evenly divisible by `frame_height`
+- [ ] INI file has all 4 global keys (`frame_width`, `frame_height`, `angles`, `fps`)
+- [ ] Every animation section has a `frames` key
+- [ ] Column indices in `frames` don't exceed the number of columns in the sheet
+- [ ] INI file has the same name as the PNG (just different extension)
+- [ ] Both files are in the same directory
 
-### World size
+## Limits
 
-The `world_width` and `world_height` parameters in `bf_register_sprite` control how large the sprite appears in the 3D scene. A 2x2 sprite occupies 2 world units wide and 2 tall. Adjust to taste.
-
-## File Organization
-
-```
-apps/battleforge/
-├── main.c
-└── assets/
-    ├── warrior.png
-    ├── warrior.ini
-    ├── archer.png
-    ├── archer.ini
-    └── ...
-```
-
-Keep PNG and INI files side by side with matching names. The loader finds the INI automatically by replacing `.png` with `.ini`.
-
-## Troubleshooting
-
-| Error message | Cause | Fix |
-|---------------|-------|-----|
-| `slice: cannot open INI 'foo.ini'` | INI file missing or wrong name | Ensure `foo.ini` exists next to `foo.png` |
-| `slice: invalid INI values` | Missing or zero values in INI | Check all 4 global keys are set and positive |
-| `slice: PNG has N rows but INI expects M angles` | Image too short for angle count | Add more rows or reduce `angles` in INI |
-| `slice: cannot load PNG` | File not found or corrupt | Check path and that the PNG is valid RGBA |
-| Sprite looks wrong/garbled | Cell size mismatch | Verify `frame_width` x `frame_height` match your actual cell size |
-| Sprite faces wrong direction | Angle order wrong | Row 0 = front (facing camera), clockwise from there |
-
-## Reference
-
-### Supported formats
-
-The loader uses stb_image internally, so it supports: **PNG** (recommended), BMP, TGA, JPEG, GIF, PSD, HDR, PIC. Always use PNG for sprites (it supports transparency).
-
-### Limits
-
-- Max 256 registered sprites per engine
-- Max 1024 entities per engine
 - Max 32 viewing angles per sheet
 - Max 64 named animations per sheet
 - Animation names max 31 characters
