@@ -256,15 +256,19 @@ int main(int argc, char *argv[]) {
         .num_threads = 0
     });
 
-    /* Set map */
-    bf_set_map(engine, (bf_map){
+    /* Set map and generate terrain */
+    bf_map map = {
         .width = 100.0f,
         .depth = 100.0f,
-        .r = 80, .g = 120, .b = 40,
+        .grid_cols = 64,
+        .grid_rows = 64,
+        .max_height = 10.0f,
         .ambient = 0.15f,
         .light_dir = {1.0f, 1.0f, -1.0f},
         .light_intensity = 0.85f
-    });
+    };
+    bf_map_generate_test_terrain(&map);
+    bf_set_map(engine, map);
 
     /* Build a programmatic slice_sheet from procedural frame data.
        Static storage: engine borrows these pointers for its lifetime. */
@@ -314,14 +318,14 @@ int main(int argc, char *argv[]) {
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_ENTITY_CREATE,
         .entity_create = { .id = 1, .sprite_id = spr_id,
-                           .position = {0.0f, 1.0f, 0.0f},
+                           .position = {0.0f, 0.0f, 0.0f},
                            .direction = {0.0f, 0.0f, 1.0f},
                            .speed = 3.0f }
     });
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_ENTITY_CREATE,
         .entity_create = { .id = 2, .sprite_id = spr_id,
-                           .position = {5.0f, 1.0f, -3.0f},
+                           .position = {5.0f, 0.0f, -3.0f},
                            .direction = {-1.0f, 0.0f, 0.0f},
                            .speed = 3.0f }
     });
@@ -331,7 +335,7 @@ int main(int argc, char *argv[]) {
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_ENTITY_CREATE,
         .entity_create = { .id = 3, .sprite_id = ent3_spr,
-                           .position = {-4.0f, 1.0f, 2.0f},
+                           .position = {-4.0f, 0.0f, 2.0f},
                            .direction = {1.0f, 0.0f, 0.0f},
                            .speed = 3.0f }
     });
@@ -347,13 +351,13 @@ int main(int argc, char *argv[]) {
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_CAMERA_SET,
         .camera_set = {
-            .position = {0.0f, 8.0f, 15.0f},
+            .position = {0.0f, 15.0f, 15.0f},
             .direction = {0.0f, -0.4f, -1.0f}
         }
     });
 
     float cam_yaw = 0.0f;  /* facing -Z initially */
-    float cam_x = 0.0f, cam_y = 8.0f, cam_z = 15.0f;
+    float cam_x = 0.0f, cam_y = 15.0f, cam_z = 15.0f;
     int selected_id = 0;
 
     Uint32 fps_last = SDL_GetTicks();
@@ -394,7 +398,6 @@ int main(int argc, char *argv[]) {
                 } else if (e.button.button == SDL_BUTTON_RIGHT) {
                     if (selected_id > 0 && pick.type == BF_PICK_GROUND) {
                         vector dest = pick.position;
-                        dest.y = 1.0f;  /* keep entity above ground */
                         bf_command(engine, (bf_cmd){
                             .type = BF_CMD_ENTITY_MOVE,
                             .entity_move = { .id = selected_id,
