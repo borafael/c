@@ -22,7 +22,11 @@ typedef struct {
 typedef struct {
     float width;
     float depth;
-    uint8_t r, g, b;
+    int grid_cols, grid_rows;   /* vertex dimensions (e.g., 64x64) */
+    float *heights;             /* grid_rows * grid_cols floats */
+    uint8_t *colors;            /* (grid_rows-1) * (grid_cols-1) * 3 (RGB per cell) */
+    float *normals;             /* grid_rows * grid_cols * 3 (vertex normals) */
+    float max_height;           /* maximum terrain height */
     float ambient;
     vector light_dir;
     float light_intensity;
@@ -82,6 +86,8 @@ void        bf_destroy(bf_engine *e);
 int         bf_register_sprite(bf_engine *e, slice_sheet *sheet,
                                float world_width, float world_height);
 void        bf_set_map(bf_engine *e, bf_map map);
+void        bf_map_generate_test_terrain(bf_map *map);
+float       bf_map_height_at(const bf_map *map, float x, float z);
 
 int         bf_command(bf_engine *e, bf_cmd cmd);
 void        bf_tick(bf_engine *e, float dt);

@@ -80,6 +80,143 @@ static void render_chunk_fn(void *arg) {
                     t->camera, t->scene);
 }
 
+void bf_map_generate_test_terrain(bf_map *map) {
+    int rows = map->grid_rows;
+    int cols = map->grid_cols;
+
+    map->heights = calloc(rows * cols, sizeof(float));
+    map->colors  = calloc((rows - 1) * (cols - 1) * 3, sizeof(uint8_t));
+    map->normals = calloc(rows * cols * 3, sizeof(float));
+
+    float cell_w = map->width / (float)(cols - 1);
+    float cell_d = map->depth / (float)(rows - 1);
+
+    float h_min = FLT_MAX, h_max = -FLT_MAX;
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            float wx = c * cell_w;
+            float wz = r * cell_d;
+            float h = sinf(wx * 0.3f) * cosf(wz * 0.2f) * 5.0f
+                    + sinf(wx * 0.7f + wz * 0.5f) * 2.5f;
+            map->heights[r * cols + c] = h;
+            if (h < h_min) h_min = h;
+            if (h > h_max) h_max = h;
+        }
+    }
+
+    float range = h_max - h_min;
+    if (range < 1e-6f) range = 1.0f;
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            map->heights[r * cols + c] =
+                ((map->heights[r * cols + c] - h_min) / range) * map->max_height;
+        }
+    }
+
+    for (int r = 0; r < rows - 1; r++) {
+        for (int c = 0; c < cols - 1; c++) {
+            float avg = (map->heights[r * cols + c]
+                       + map->heights[r * cols + c + 1]
+                       + map->heights[(r + 1) * cols + c]
+                       + map->heights[(r + 1) * cols + c + 1]) * 0.25f;
+            float t = avg / map->max_height;
+            int ci = (r * (cols - 1) + c) * 3;
+            if (t < 0.3f) {
+                map->colors[ci]     = 40;
+                map->colors[ci + 1] = 120;
+                map->colors[ci + 2] = 40;
+            } else if (t < 0.7f) {
+                map->colors[ci]     = 80;
+                map->colors[ci + 1] = 160;
+                map->colors[ci + 2] = 60;
+            } else {
+                map->colors[ci]     = 140;
+                map->colors[ci + 1] = 110;
+                map->colors[ci + 2] = 70;
+            }
+        }
+    }
+
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            vector sum = {0, 0, 0};
+            int count = 0;
+            for (int dr = -1; dr <= 0; dr++) {
+                for (int dc = -1; dc <= 0; dc++) {
+                    int cr = r + dr;
+                    int cc = c + dc;
+                    if (cr < 0 || cr >= rows - 1 || cc < 0 || cc >= cols - 1)
+                        continue;
+                    float h00 = map->heights[cr * cols + cc];
+                    float h10 = map->heights[(cr + 1) * cols + cc];
+                    float h01 = map->heights[cr * cols + cc + 1];
+                    float h11 = map->heights[(cr + 1) * cols + cc + 1];
+
+                    float cw = map->width / (float)(cols - 1);
+                    float cd = map->depth / (float)(rows - 1);
+
+                    vector a0 = {cc * cw, h00, cr * cd};
+                    vector a1 = {cc * cw, h10, (cr + 1) * cd};
+                    vector a2 = {(cc + 1) * cw, h01, cr * cd};
+                    vector fn_a = vector_normalize(vector_cross(
+                        vector_sub(a1, a0), vector_sub(a2, a0)));
+                    sum = vector_add(sum, fn_a);
+                    count++;
+
+                    vector b0 = {cc * cw, h10, (cr + 1) * cd};
+                    vector b1 = {(cc + 1) * cw, h11, (cr + 1) * cd};
+                    vector b2 = {(cc + 1) * cw, h01, cr * cd};
+                    vector fn_b = vector_normalize(vector_cross(
+                        vector_sub(b1, b0), vector_sub(b2, b0)));
+                    sum = vector_add(sum, fn_b);
+                    count++;
+                }
+            }
+            vector n = (count > 0) ? vector_normalize(sum) : (vector){0, 1, 0};
+            int idx = (r * cols + c) * 3;
+            map->normals[idx]     = n.x;
+            map->normals[idx + 1] = n.y;
+            map->normals[idx + 2] = n.z;
+        }
+    }
+}
+
+float bf_map_height_at(const bf_map *map, float x, float z) {
+    if (!map->heights) return 0.0f;
+
+    int cols = map->grid_cols;
+    int rows = map->grid_rows;
+    float cell_w = map->width / (float)(cols - 1);
+    float cell_d = map->depth / (float)(rows - 1);
+
+    float gx = x / cell_w;
+    float gz = z / cell_d;
+
+    if (gx < 0.0f) gx = 0.0f;
+    if (gx > (float)(cols - 2)) gx = (float)(cols - 2);
+    if (gz < 0.0f) gz = 0.0f;
+    if (gz > (float)(rows - 2)) gz = (float)(rows - 2);
+
+    int c0 = (int)floorf(gx);
+    int r0 = (int)floorf(gz);
+    if (c0 >= cols - 1) c0 = cols - 2;
+    if (r0 >= rows - 1) r0 = rows - 2;
+
+    float fx = gx - c0;
+    float fz = gz - r0;
+
+    float h00 = map->heights[r0 * cols + c0];
+    float h01 = map->heights[r0 * cols + c0 + 1];
+    float h10 = map->heights[(r0 + 1) * cols + c0];
+    float h11 = map->heights[(r0 + 1) * cols + c0 + 1];
+
+    float h = h00 * (1.0f - fx) * (1.0f - fz)
+            + h01 * fx * (1.0f - fz)
+            + h10 * (1.0f - fx) * fz
+            + h11 * fx * fz;
+    return h;
+}
+
 bf_engine *bf_create(bf_config config) {
     bf_engine *e = calloc(1, sizeof(bf_engine));
     if (!e) return NULL;
@@ -128,6 +265,9 @@ void bf_destroy(bf_engine *e) {
     free(e->tasks);
     if (e->rt_cam) rt_camera_destroy(e->rt_cam);
     if (e->scene) rt_scene_destroy(e->scene);
+    free(e->map.heights);
+    free(e->map.colors);
+    free(e->map.normals);
     free(e);
 }
 
@@ -271,15 +411,24 @@ void bf_tick(bf_engine *e, float dt) {
         if (!ent->active || ent->speed <= 0.0f) continue;
 
         vector to_target = vector_sub(ent->target, ent->position);
+        to_target.y = 0.0f;  /* XZ-only distance */
         float dist = vector_magnitude(to_target);
         float step = ent->speed * dt;
 
         if (dist <= step) {
-            ent->position = ent->target;
+            ent->position.x = ent->target.x;
+            ent->position.z = ent->target.z;
         } else {
             vector move_dir = vector_scale(to_target, 1.0f / dist);
             ent->direction = move_dir;
-            ent->position = vector_add(ent->position, vector_scale(move_dir, step));
+            ent->position.x += move_dir.x * step;
+            ent->position.z += move_dir.z * step;
+        }
+
+        /* Snap to terrain height */
+        if (e->map_set && e->map.heights) {
+            ent->position.y = bf_map_height_at(&e->map,
+                                                ent->position.x, ent->position.z);
         }
     }
 
@@ -351,12 +500,22 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
             .intensity = e->map.light_intensity
         });
 
-        /* Ground plane */
-        rt_scene_add_plane(e->scene, (rt_plane){
-            .point = {0.0f, 0.0f, 0.0f},
-            .normal = {0.0f, 1.0f, 0.0f},
-            .color = {e->map.r, e->map.g, e->map.b}
-        });
+        /* Heightfield terrain */
+        if (e->map.heights) {
+            rt_heightfield hf = {
+                .heights = e->map.heights,
+                .colors = e->map.colors,
+                .normals = e->map.normals,
+                .rows = e->map.grid_rows,
+                .cols = e->map.grid_cols,
+                .world_width = e->map.width,
+                .world_depth = e->map.depth,
+                .origin_x = 0.0f,
+                .origin_z = 0.0f,
+                .max_height = e->map.max_height
+            };
+            rt_scene_add_heightfield(e->scene, &hf);
+        }
     }
 
     /* Entities as sprites */
@@ -463,13 +622,28 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
         return result;
     }
 
-    /* Test ground plane (y=0) */
-    if (e->map_set && fabsf(ray_dir.y) > 1e-6f) {
-        float t = -origin.y / ray_dir.y;
-        if (t > 0.0f) {
-            result.type = BF_PICK_GROUND;
-            result.position = vector_add(origin, vector_scale(ray_dir, t));
-            return result;
+    /* Test heightfield terrain */
+    if (e->map_set && e->map.heights) {
+        rt_heightfield hf = {
+            .heights = e->map.heights,
+            .colors = e->map.colors,
+            .normals = e->map.normals,
+            .rows = e->map.grid_rows,
+            .cols = e->map.grid_cols,
+            .world_width = e->map.width,
+            .world_depth = e->map.depth,
+            .origin_x = 0.0f,
+            .origin_z = 0.0f,
+            .max_height = e->map.max_height
+        };
+        float t;
+        vector hn;
+        if (rt_intersect_heightfield(&hf, origin, ray_dir, &t, &hn, NULL, NULL)) {
+            if (t > 0.0f) {
+                result.type = BF_PICK_GROUND;
+                result.position = vector_add(origin, vector_scale(ray_dir, t));
+                return result;
+            }
         }
     }
 
