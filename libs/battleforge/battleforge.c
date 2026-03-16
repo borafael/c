@@ -15,6 +15,7 @@
 #define CMD_QUEUE_SIZE 1024
 #define MAX_ENTITIES 1024
 #define MAX_SPRITES 256
+#define MAX_ANGLES 32
 
 typedef struct {
     int id;
@@ -518,13 +519,15 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
         }
     }
 
-    /* Entities as sprites */
-    for (int i = 0; i < e->entity_count; i++) {
+    /* Entities as sprites — frame arrays must outlive the render call,
+       so allocate them outside the loop rather than per-iteration. */
+    int ent_count = e->entity_count;
+    rt_frame (*all_frames)[MAX_ANGLES] = malloc(ent_count * sizeof(*all_frames));
+    for (int i = 0; i < ent_count; i++) {
         bf_entity *ent = &e->entities[i];
         if (!ent->active) continue;
 
-        rt_frame frames[32];
-        slice_sheet *sheet = build_sprite_frames(e, ent, frames);
+        slice_sheet *sheet = build_sprite_frames(e, ent, all_frames[i]);
         if (!sheet) continue;
 
         float spr_h = e->sprites[ent->sprite_id].height;
@@ -537,7 +540,7 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
             .width = e->sprites[ent->sprite_id].width,
             .height = spr_h,
             .frame_count = sheet->angles,
-            .frames = frames
+            .frames = all_frames[i]
         });
     }
 
@@ -560,6 +563,7 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
         thread_pool_submit(e->pool, render_chunk_fn, &e->tasks[i]);
     }
     thread_pool_wait(e->pool);
+    free(all_frames);
 }
 
 bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {

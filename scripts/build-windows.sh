@@ -31,6 +31,7 @@ $CC -O2 -mwindows \
     -I"$ROOT/libs/math" \
     -I"$ROOT/libs/raytrace" \
     -I"$ROOT/libs/battleforge" \
+    -I"$ROOT/libs/slice" \
     -I"$ROOT/libs/thread" \
     -I"$SDL2_DIR/include" \
     -L"$SDL2_DIR/lib" \
@@ -38,6 +39,7 @@ $CC -O2 -mwindows \
     "$ROOT/apps/battleforge/main.c" \
     "$ROOT/libs/battleforge/battleforge.c" \
     "$ROOT/libs/raytrace/raytrace.c" \
+    "$ROOT/libs/slice/slice.c" \
     "$ROOT/libs/thread/thread_pool.c" \
     -lmingw32 -lSDL2main -lSDL2 -lm -lpthread
 
