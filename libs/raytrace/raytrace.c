@@ -40,6 +40,9 @@ struct rt_scene {
     rt_sprite *sprites;
     int sprite_count;
     int sprite_capacity;
+    rt_heightfield *heightfields;
+    int heightfield_count;
+    int heightfield_capacity;
 };
 
 rt_scene *rt_scene_create(void) {
@@ -53,8 +56,9 @@ rt_scene *rt_scene_create(void) {
     s->triangle_capacity = DEFAULT_CAPACITY;
     s->box_capacity      = DEFAULT_CAPACITY;
     s->light_capacity    = DEFAULT_CAPACITY;
-    s->sprite_capacity   = DEFAULT_CAPACITY;
-    s->ambient           = 0.15f;
+    s->sprite_capacity       = DEFAULT_CAPACITY;
+    s->heightfield_capacity  = DEFAULT_CAPACITY;
+    s->ambient               = 0.15f;
 
     s->spheres   = malloc(sizeof(rt_sphere)   * s->sphere_capacity);
     s->planes    = malloc(sizeof(rt_plane)    * s->plane_capacity);
@@ -63,11 +67,12 @@ rt_scene *rt_scene_create(void) {
     s->triangles = malloc(sizeof(rt_triangle) * s->triangle_capacity);
     s->boxes     = malloc(sizeof(rt_box)      * s->box_capacity);
     s->lights    = malloc(sizeof(rt_light)    * s->light_capacity);
-    s->sprites   = malloc(sizeof(rt_sprite)  * s->sprite_capacity);
+    s->sprites      = malloc(sizeof(rt_sprite)       * s->sprite_capacity);
+    s->heightfields = malloc(sizeof(rt_heightfield) * s->heightfield_capacity);
 
     if (!s->spheres || !s->planes || !s->discs ||
         !s->cylinders || !s->triangles || !s->boxes || !s->lights ||
-        !s->sprites) {
+        !s->sprites || !s->heightfields) {
         rt_scene_destroy(s);
         return NULL;
     }
@@ -81,8 +86,9 @@ void rt_scene_clear(rt_scene *scene) {
     scene->cylinder_count = 0;
     scene->triangle_count = 0;
     scene->box_count      = 0;
-    scene->sprite_count   = 0;
-    scene->light_count    = 0;
+    scene->sprite_count      = 0;
+    scene->heightfield_count = 0;
+    scene->light_count       = 0;
 }
 
 int rt_scene_add_sphere(rt_scene *scene, rt_sphere sphere) {
@@ -138,6 +144,12 @@ int rt_scene_add_light(rt_scene *scene, rt_light light) {
     return 0;
 }
 
+int rt_scene_add_heightfield(rt_scene *scene, const rt_heightfield *hf) {
+    if (scene->heightfield_count >= scene->heightfield_capacity) return -1;
+    scene->heightfields[scene->heightfield_count++] = *hf;
+    return 0;
+}
+
 void rt_scene_destroy(rt_scene *scene) {
     if (!scene) return;
     free(scene->spheres);
@@ -148,6 +160,7 @@ void rt_scene_destroy(rt_scene *scene) {
     free(scene->boxes);
     free(scene->lights);
     free(scene->sprites);
+    free(scene->heightfields);
     free(scene);
 }
 
@@ -460,6 +473,194 @@ float rt_pick_sprite(vector ray_origin, vector ray_dir,
     return t;
 }
 
+/* --- Heightfield intersection --- */
+
+static int hf_aabb_test(const rt_heightfield *hf, vector ro, vector rd,
+                         float *t_enter, float *t_exit) {
+    float xmin = hf->origin_x;
+    float xmax = hf->origin_x + hf->world_width;
+    float ymin = 0.0f;
+    float ymax = hf->max_height;
+    float zmin = hf->origin_z;
+    float zmax = hf->origin_z + hf->world_depth;
+
+    float tmin = -FLT_MAX, tmax = FLT_MAX;
+
+    if (fabsf(rd.x) > 1e-6f) {
+        float t0 = (xmin - ro.x) / rd.x;
+        float t1 = (xmax - ro.x) / rd.x;
+        if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }
+        if (t0 > tmin) tmin = t0;
+        if (t1 < tmax) tmax = t1;
+    } else if (ro.x < xmin || ro.x > xmax) return 0;
+
+    if (fabsf(rd.y) > 1e-6f) {
+        float t0 = (ymin - ro.y) / rd.y;
+        float t1 = (ymax - ro.y) / rd.y;
+        if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }
+        if (t0 > tmin) tmin = t0;
+        if (t1 < tmax) tmax = t1;
+    } else if (ro.y < ymin || ro.y > ymax) return 0;
+
+    if (fabsf(rd.z) > 1e-6f) {
+        float t0 = (zmin - ro.z) / rd.z;
+        float t1 = (zmax - ro.z) / rd.z;
+        if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }
+        if (t0 > tmin) tmin = t0;
+        if (t1 < tmax) tmax = t1;
+    } else if (ro.z < zmin || ro.z > zmax) return 0;
+
+    if (tmin > tmax) return 0;
+    *t_enter = tmin > 0.0f ? tmin : 0.0f;
+    *t_exit = tmax;
+    if (tmax < 0.0f) return 0;
+    return 1;
+}
+
+static float hf_intersect_tri(vector ro, vector rd,
+                                vector v0, vector v1, vector v2,
+                                float *out_u, float *out_v) {
+    vector e1 = vector_sub(v1, v0);
+    vector e2 = vector_sub(v2, v0);
+    vector pvec = vector_cross(rd, e2);
+    float det = vector_dot(e1, pvec);
+    if (fabsf(det) < 1e-6f) return -1.0f;
+
+    float inv_det = 1.0f / det;
+    vector tvec = vector_sub(ro, v0);
+    float u = vector_dot(tvec, pvec) * inv_det;
+    if (u < 0.0f || u > 1.0f) return -1.0f;
+
+    vector qvec = vector_cross(tvec, e1);
+    float v = vector_dot(rd, qvec) * inv_det;
+    if (v < 0.0f || u + v > 1.0f) return -1.0f;
+
+    float t = vector_dot(e2, qvec) * inv_det;
+    if (t < 0.0f) return -1.0f;
+
+    *out_u = u;
+    *out_v = v;
+    return t;
+}
+
+static vector hf_vertex_pos(const rt_heightfield *hf, int r, int c) {
+    float cell_w = hf->world_width / (float)(hf->cols - 1);
+    float cell_d = hf->world_depth / (float)(hf->rows - 1);
+    return (vector){
+        hf->origin_x + c * cell_w,
+        hf->heights[r * hf->cols + c],
+        hf->origin_z + r * cell_d
+    };
+}
+
+static vector hf_vertex_normal(const rt_heightfield *hf, int r, int c) {
+    int idx = (r * hf->cols + c) * 3;
+    return (vector){ hf->normals[idx], hf->normals[idx + 1], hf->normals[idx + 2] };
+}
+
+int rt_intersect_heightfield(const rt_heightfield *hf, vector origin, vector dir,
+                              float *out_t, vector *out_normal,
+                              int *out_cell_r, int *out_cell_c) {
+    float t_enter, t_exit;
+    if (!hf_aabb_test(hf, origin, dir, &t_enter, &t_exit)) return 0;
+
+    int cells_x = hf->cols - 1;
+    int cells_z = hf->rows - 1;
+    float cell_w = hf->world_width / (float)cells_x;
+    float cell_d = hf->world_depth / (float)cells_z;
+
+    float eps = 1e-4f;
+    vector entry = vector_add(origin, vector_scale(dir, t_enter + eps));
+
+    float gx = (entry.x - hf->origin_x) / cell_w;
+    float gz = (entry.z - hf->origin_z) / cell_d;
+
+    int cx = (int)floorf(gx);
+    int cz = (int)floorf(gz);
+
+    if (cx < 0) cx = 0; if (cx >= cells_x) cx = cells_x - 1;
+    if (cz < 0) cz = 0; if (cz >= cells_z) cz = cells_z - 1;
+
+    int step_x = (dir.x >= 0.0f) ? 1 : -1;
+    int step_z = (dir.z >= 0.0f) ? 1 : -1;
+
+    float t_delta_x = (fabsf(dir.x) > 1e-6f) ? fabsf(cell_w / dir.x) : FLT_MAX;
+    float t_delta_z = (fabsf(dir.z) > 1e-6f) ? fabsf(cell_d / dir.z) : FLT_MAX;
+
+    float next_x_boundary = hf->origin_x + ((dir.x >= 0.0f) ? (cx + 1) : cx) * cell_w;
+    float next_z_boundary = hf->origin_z + ((dir.z >= 0.0f) ? (cz + 1) : cz) * cell_d;
+
+    float t_max_x = (fabsf(dir.x) > 1e-6f)
+        ? (next_x_boundary - origin.x) / dir.x : FLT_MAX;
+    float t_max_z = (fabsf(dir.z) > 1e-6f)
+        ? (next_z_boundary - origin.z) / dir.z : FLT_MAX;
+
+    float best_t = FLT_MAX;
+    vector best_normal = {0, 1, 0};
+    int best_cr = -1, best_cc = -1;
+
+    int max_steps = cells_x + cells_z + 2;
+    for (int step = 0; step < max_steps; step++) {
+        if (cx < 0 || cx >= cells_x || cz < 0 || cz >= cells_z) break;
+
+        vector v00 = hf_vertex_pos(hf, cz,     cx);
+        vector v10 = hf_vertex_pos(hf, cz + 1, cx);
+        vector v01 = hf_vertex_pos(hf, cz,     cx + 1);
+        vector v11 = hf_vertex_pos(hf, cz + 1, cx + 1);
+
+        vector n00 = hf_vertex_normal(hf, cz,     cx);
+        vector n10 = hf_vertex_normal(hf, cz + 1, cx);
+        vector n01 = hf_vertex_normal(hf, cz,     cx + 1);
+        vector n11 = hf_vertex_normal(hf, cz + 1, cx + 1);
+
+        float u, v;
+        float t = hf_intersect_tri(origin, dir, v00, v10, v01, &u, &v);
+        if (t > 0.0f && t < best_t) {
+            best_t = t;
+            float w = 1.0f - u - v;
+            best_normal = vector_normalize((vector){
+                w * n00.x + u * n10.x + v * n01.x,
+                w * n00.y + u * n10.y + v * n01.y,
+                w * n00.z + u * n10.z + v * n01.z
+            });
+            best_cr = cz;
+            best_cc = cx;
+        }
+
+        t = hf_intersect_tri(origin, dir, v10, v11, v01, &u, &v);
+        if (t > 0.0f && t < best_t) {
+            best_t = t;
+            float w = 1.0f - u - v;
+            best_normal = vector_normalize((vector){
+                w * n10.x + u * n11.x + v * n01.x,
+                w * n10.y + u * n11.y + v * n01.y,
+                w * n10.z + u * n11.z + v * n01.z
+            });
+            best_cr = cz;
+            best_cc = cx;
+        }
+
+        if (best_t < FLT_MAX && best_t <= fminf(t_max_x, t_max_z) + eps) break;
+
+        if (t_max_x < t_max_z) {
+            cx += step_x;
+            t_max_x += t_delta_x;
+        } else {
+            cz += step_z;
+            t_max_z += t_delta_z;
+        }
+    }
+
+    if (best_t < FLT_MAX) {
+        *out_t = best_t;
+        *out_normal = best_normal;
+        if (out_cell_r) *out_cell_r = best_cr;
+        if (out_cell_c) *out_cell_c = best_cc;
+        return 1;
+    }
+    return 0;
+}
+
 void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
                      int y_start, int y_end,
                      const rt_camera *camera, const rt_scene *scene) {
@@ -578,6 +779,27 @@ void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
                     color.g = (pixel >>  8) & 0xFF;
                     color.b =  pixel        & 0xFF;
                     hit = 1;
+                }
+            }
+
+            /* Heightfields */
+            for (int i = 0; i < scene->heightfield_count; i++) {
+                const rt_heightfield *hf = &scene->heightfields[i];
+                float t;
+                vector hn;
+                int cell_r, cell_c;
+                if (rt_intersect_heightfield(hf, camera->origin, dir,
+                                              &t, &hn, &cell_r, &cell_c)) {
+                    if (t > 0.0f && t < closest_t) {
+                        closest_t = t;
+                        normal = hn;
+                        int cells_per_row = hf->cols - 1;
+                        int ci = (cell_r * cells_per_row + cell_c) * 3;
+                        color.r = hf->colors[ci];
+                        color.g = hf->colors[ci + 1];
+                        color.b = hf->colors[ci + 2];
+                        hit = 1;
+                    }
                 }
             }
 
