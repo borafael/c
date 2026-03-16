@@ -527,11 +527,15 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
         slice_sheet *sheet = build_sprite_frames(e, ent, frames);
         if (!sheet) continue;
 
+        float spr_h = e->sprites[ent->sprite_id].height;
+        vector spr_pos = ent->position;
+        spr_pos.y += spr_h * 0.5f;  /* sprite center above ground */
+
         rt_scene_add_sprite(e->scene, (rt_sprite){
-            .position = ent->position,
+            .position = spr_pos,
             .direction = ent->direction,
             .width = e->sprites[ent->sprite_id].width,
-            .height = e->sprites[ent->sprite_id].height,
+            .height = spr_h,
             .frame_count = sheet->angles,
             .frames = frames
         });
