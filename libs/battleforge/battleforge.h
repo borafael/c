@@ -76,6 +76,22 @@ typedef struct {
     vector position;
 } bf_pick_result;
 
+/* --- Logging --- */
+
+typedef enum {
+    BF_LOG_INFO,
+    BF_LOG_WARN,
+    BF_LOG_ERROR
+} bf_log_level;
+
+#define BF_LOG_TEXT_SIZE 256
+#define BF_LOG_BUFFER_SIZE 512
+
+typedef struct {
+    bf_log_level level;
+    char text[BF_LOG_TEXT_SIZE];
+} bf_log_entry;
+
 /* --- Engine --- */
 
 typedef struct bf_engine bf_engine;
@@ -93,5 +109,10 @@ int         bf_command(bf_engine *e, bf_cmd cmd);
 void        bf_tick(bf_engine *e, float dt);
 void        bf_render(bf_engine *e, uint32_t *pixel_buf);
 bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y);
+
+/* --- Logging --- */
+void            bf_log(bf_engine *e, bf_log_level level, const char *fmt, ...);
+int             bf_log_count(const bf_engine *e);
+const bf_log_entry *bf_log_get(const bf_engine *e, int index);
 
 #endif /* BATTLEFORGE_H */

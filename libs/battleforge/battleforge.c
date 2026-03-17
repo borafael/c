@@ -4,8 +4,10 @@
 #include "vector.h"
 #include "slice.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <math.h>
 #include <float.h>
+#include <stdarg.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -66,6 +68,11 @@ struct bf_engine {
     int cmd_head;
     int cmd_tail;
     int cmd_count;
+
+    /* Log ring buffer */
+    bf_log_entry log_buffer[BF_LOG_BUFFER_SIZE];
+    int log_write_pos;
+    int log_count;
 
     rt_scene *scene;
     rt_camera *rt_cam;
@@ -296,6 +303,31 @@ int bf_command(bf_engine *e, bf_cmd cmd) {
     return 0;
 }
 
+/* --- Logging --- */
+
+void bf_log(bf_engine *e, bf_log_level level, const char *fmt, ...) {
+    bf_log_entry *entry = &e->log_buffer[e->log_write_pos];
+    entry->level = level;
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(entry->text, BF_LOG_TEXT_SIZE, fmt, args);
+    va_end(args);
+    e->log_write_pos = (e->log_write_pos + 1) % BF_LOG_BUFFER_SIZE;
+    if (e->log_count < BF_LOG_BUFFER_SIZE)
+        e->log_count++;
+}
+
+int bf_log_count(const bf_engine *e) {
+    return e->log_count;
+}
+
+const bf_log_entry *bf_log_get(const bf_engine *e, int index) {
+    if (index < 0 || index >= e->log_count) return NULL;
+    int pos = (e->log_write_pos - e->log_count + index + BF_LOG_BUFFER_SIZE)
+              % BF_LOG_BUFFER_SIZE;
+    return &e->log_buffer[pos];
+}
+
 /* --- Entity lookup by id --- */
 
 static bf_entity *find_entity(bf_engine *e, int id) {
@@ -318,7 +350,10 @@ static void cmd_camera_move(bf_engine *e, const bf_cmd *cmd) {
 }
 
 static void cmd_entity_create(bf_engine *e, const bf_cmd *cmd) {
-    if (e->entity_count >= MAX_ENTITIES) return;
+    if (e->entity_count >= MAX_ENTITIES) {
+        bf_log(e, BF_LOG_ERROR, "cannot create entity: max entities reached");
+        return;
+    }
     bf_entity ent = {
         .id = cmd->entity_create.id,
         .sprite_id = cmd->entity_create.sprite_id,
@@ -333,6 +368,8 @@ static void cmd_entity_create(bf_engine *e, const bf_cmd *cmd) {
         .anim_fps = 0.0f
     };
     e->entities[e->entity_count++] = ent;
+    bf_log(e, BF_LOG_INFO, "entity %d created at (%.1f, %.1f, %.1f)",
+           ent.id, ent.position.x, ent.position.y, ent.position.z);
 }
 
 static void cmd_entity_destroy(bf_engine *e, const bf_cmd *cmd) {
@@ -341,12 +378,18 @@ static void cmd_entity_destroy(bf_engine *e, const bf_cmd *cmd) {
         ent->active = 0;
         if (e->selected_entity_id == ent->id)
             e->selected_entity_id = 0;
+        bf_log(e, BF_LOG_INFO, "entity %d destroyed", cmd->entity_destroy.id);
     }
 }
 
 static void cmd_entity_move(bf_engine *e, const bf_cmd *cmd) {
     bf_entity *ent = find_entity(e, cmd->entity_move.id);
-    if (ent) ent->target = cmd->entity_move.position;
+    if (ent) {
+        ent->target = cmd->entity_move.position;
+        bf_log(e, BF_LOG_INFO, "entity %d moving to (%.1f, %.1f, %.1f)",
+               cmd->entity_move.id, cmd->entity_move.position.x,
+               cmd->entity_move.position.y, cmd->entity_move.position.z);
+    }
 }
 
 static void cmd_entity_face(bf_engine *e, const bf_cmd *cmd) {
@@ -362,10 +405,14 @@ static void cmd_entity_set_speed(bf_engine *e, const bf_cmd *cmd) {
 static void cmd_select(bf_engine *e, const bf_cmd *cmd) {
     if (cmd->select.id <= 0) {
         e->selected_entity_id = 0;
+        bf_log(e, BF_LOG_INFO, "deselected");
         return;
     }
     bf_entity *ent = find_entity(e, cmd->select.id);
-    if (ent) e->selected_entity_id = cmd->select.id;
+    if (ent) {
+        e->selected_entity_id = cmd->select.id;
+        bf_log(e, BF_LOG_INFO, "selected entity %d", cmd->select.id);
+    }
 }
 
 static void cmd_entity_animate(bf_engine *e, const bf_cmd *cmd) {
