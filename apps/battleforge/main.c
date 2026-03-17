@@ -1,4 +1,5 @@
 #include "battleforge.h"
+#include "console.h"
 #include "slice.h"
 #include <SDL2/SDL.h>
 #include <stdio.h>
@@ -366,6 +367,13 @@ int main(int argc, char *argv[]) {
     char title_buf[128];
     int running = 1;
 
+    console_state console;
+    if (console_init(&console, WINDOW_W, WINDOW_H,
+                     "apps/battleforge/assets/font.png") < 0) {
+        fprintf(stderr, "Warning: console disabled (font not found)\n");
+    }
+    SDL_StartTextInput();
+
     while (running) {
         Uint32 frame_now = SDL_GetTicks();
         float dt = (frame_now - frame_last) / 1000.0f;
@@ -375,6 +383,27 @@ int main(int argc, char *argv[]) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) running = 0;
+
+            /* Backtick toggles console */
+            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_BACKQUOTE) {
+                console_toggle(&console);
+                continue;
+            }
+
+            if (console_is_open(&console)) {
+                /* Console captures all input */
+                if (e.type == SDL_KEYDOWN) {
+                    console_handle_key(&console, e.key.keysym.sym,
+                                       e.key.keysym.scancode, engine);
+                } else if (e.type == SDL_TEXTINPUT) {
+                    /* Filter out backtick from text input */
+                    if (e.text.text[0] != '`')
+                        console_handle_text(&console, e.text.text);
+                }
+                continue;  /* Don't pass to game */
+            }
+
+            /* Normal game input when console is closed */
             if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
                 running = 0;
             if (e.type == SDL_MOUSEBUTTONDOWN) {
@@ -410,32 +439,35 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        /* Continuous key input for camera */
-        const Uint8 *keys = SDL_GetKeyboardState(NULL);
-        float move_x = 0.0f, move_z = 0.0f;
+        if (!console_is_open(&console)) {
+            /* Continuous key input for camera */
+            const Uint8 *keys = SDL_GetKeyboardState(NULL);
+            float move_x = 0.0f, move_z = 0.0f;
 
-        if (keys[SDL_SCANCODE_W]) { move_x += sinf(cam_yaw); move_z += -cosf(cam_yaw); }
-        if (keys[SDL_SCANCODE_S]) { move_x -= sinf(cam_yaw); move_z -= -cosf(cam_yaw); }
-        if (keys[SDL_SCANCODE_A]) { move_x -= cosf(cam_yaw); move_z -= sinf(cam_yaw); }
-        if (keys[SDL_SCANCODE_D]) { move_x += cosf(cam_yaw); move_z += sinf(cam_yaw); }
-        if (keys[SDL_SCANCODE_LEFT])  cam_yaw -= ROT_SPEED * dt;
-        if (keys[SDL_SCANCODE_RIGHT]) cam_yaw += ROT_SPEED * dt;
-        if (keys[SDL_SCANCODE_SPACE]) cam_y += MOVE_SPEED * dt;
-        if (keys[SDL_SCANCODE_LSHIFT]) cam_y -= MOVE_SPEED * dt;
+            if (keys[SDL_SCANCODE_W]) { move_x += sinf(cam_yaw); move_z += -cosf(cam_yaw); }
+            if (keys[SDL_SCANCODE_S]) { move_x -= sinf(cam_yaw); move_z -= -cosf(cam_yaw); }
+            if (keys[SDL_SCANCODE_A]) { move_x -= cosf(cam_yaw); move_z -= sinf(cam_yaw); }
+            if (keys[SDL_SCANCODE_D]) { move_x += cosf(cam_yaw); move_z += sinf(cam_yaw); }
+            if (keys[SDL_SCANCODE_LEFT])  cam_yaw -= ROT_SPEED * dt;
+            if (keys[SDL_SCANCODE_RIGHT]) cam_yaw += ROT_SPEED * dt;
+            if (keys[SDL_SCANCODE_SPACE]) cam_y += MOVE_SPEED * dt;
+            if (keys[SDL_SCANCODE_LSHIFT]) cam_y -= MOVE_SPEED * dt;
 
-        cam_x += move_x * MOVE_SPEED * dt;
-        cam_z += move_z * MOVE_SPEED * dt;
+            cam_x += move_x * MOVE_SPEED * dt;
+            cam_z += move_z * MOVE_SPEED * dt;
 
-        bf_command(engine, (bf_cmd){
-            .type = BF_CMD_CAMERA_SET,
-            .camera_set = {
-                .position = {cam_x, cam_y, cam_z},
-                .direction = {sinf(cam_yaw), -0.3f, -cosf(cam_yaw)}
-            }
-        });
+            bf_command(engine, (bf_cmd){
+                .type = BF_CMD_CAMERA_SET,
+                .camera_set = {
+                    .position = {cam_x, cam_y, cam_z},
+                    .direction = {sinf(cam_yaw), -0.3f, -cosf(cam_yaw)}
+                }
+            });
+        }
 
         bf_tick(engine, dt);
         bf_render(engine, pixels);
+        console_render(&console, pixels, WINDOW_W, WINDOW_H, engine);
 
         SDL_UpdateTexture(texture, NULL, pixels, WINDOW_W * sizeof(uint32_t));
         SDL_RenderCopy(renderer, texture, NULL, NULL);
@@ -454,6 +486,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    console_destroy(&console);
     bf_destroy(engine);
     if (unit_sheet) slice_free(unit_sheet);
     free(pixels);
