@@ -37,6 +37,7 @@ $CC -O2 -mwindows \
     -L"$SDL2_DIR/lib" \
     -o "$OUT_DIR/battleforge.exe" \
     "$ROOT/apps/battleforge/main.c" \
+    "$ROOT/apps/battleforge/console.c" \
     "$ROOT/libs/battleforge/battleforge.c" \
     "$ROOT/libs/raytrace/raytrace.c" \
     "$ROOT/libs/slice/slice.c" \

@@ -391,22 +391,25 @@ int main(int argc, char *argv[]) {
             }
 
             if (console_is_open(&console)) {
-                /* Console captures all input */
+                /* Console captures keyboard input only */
                 if (e.type == SDL_KEYDOWN) {
                     console_handle_key(&console, e.key.keysym.sym,
                                        e.key.keysym.scancode, engine);
+                    continue;
                 } else if (e.type == SDL_TEXTINPUT) {
-                    /* Filter out backtick from text input */
                     if (e.text.text[0] != '`')
                         console_handle_text(&console, e.text.text);
+                    continue;
                 }
-                continue;  /* Don't pass to game */
+                /* Mouse events fall through to game input below */
             }
 
-            /* Normal game input when console is closed */
-            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
+            /* Game input (always for mouse, keyboard only when console closed) */
+            if (!console_is_open(&console) &&
+                e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
                 running = 0;
-            if (e.type == SDL_MOUSEBUTTONDOWN) {
+            if (e.type == SDL_MOUSEBUTTONDOWN &&
+                !(console_is_open(&console) && e.button.y < CONSOLE_HEIGHT)) {
                 bf_pick_result pick = bf_pick(engine, e.button.x, e.button.y);
                 if (e.button.button == SDL_BUTTON_LEFT) {
                     if (pick.type == BF_PICK_ENTITY) {
