@@ -409,7 +409,7 @@ int main(int argc, char *argv[]) {
                 e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
                 running = 0;
             if (e.type == SDL_MOUSEBUTTONDOWN &&
-                !(console_is_open(&console) && e.button.y < CONSOLE_HEIGHT)) {
+                !(console_visible_height(&console) > 0 && e.button.y < console_visible_height(&console))) {
                 bf_pick_result pick = bf_pick(engine, e.button.x, e.button.y);
                 if (e.button.button == SDL_BUTTON_LEFT) {
                     if (pick.type == BF_PICK_ENTITY) {
@@ -468,6 +468,7 @@ int main(int argc, char *argv[]) {
             });
         }
 
+        console_update(&console, dt);
         bf_tick(engine, dt);
         bf_render(engine, pixels);
         console_render(&console, pixels, WINDOW_W, WINDOW_H, engine);

@@ -10,6 +10,7 @@
 /* --- Static forward declarations --- */
 
 static void console_execute(console_state *cs, bf_engine *engine);
+static void console_autocomplete(console_state *cs, bf_engine *engine);
 
 /* --- Init / Destroy --- */
 
@@ -19,6 +20,7 @@ int console_init(console_state *cs, int screen_width, int screen_height,
     memset(cs, 0, sizeof(*cs));
     cs->screen_width = screen_width;
     cs->screen_height = screen_height;
+    cs->history_browse = -1;
 
     int w, h, channels;
     unsigned char *data = stbi_load(font_path, &w, &h, &channels, 4);
@@ -56,6 +58,23 @@ void console_toggle(console_state *cs)
 int console_is_open(const console_state *cs)
 {
     return cs->open;
+}
+
+int console_visible_height(const console_state *cs)
+{
+    return (int)cs->slide_pos;
+}
+
+void console_update(console_state *cs, float dt)
+{
+    float target = cs->open ? (float)CONSOLE_HEIGHT : 0.0f;
+    if (cs->slide_pos < target) {
+        cs->slide_pos += CONSOLE_SLIDE_SPEED * dt;
+        if (cs->slide_pos > target) cs->slide_pos = target;
+    } else if (cs->slide_pos > target) {
+        cs->slide_pos -= CONSOLE_SLIDE_SPEED * dt;
+        if (cs->slide_pos < target) cs->slide_pos = target;
+    }
 }
 
 /* --- Shell messages --- */
@@ -133,9 +152,9 @@ void console_render(const console_state *cs, uint32_t *pixels,
                     int screen_width, int screen_height,
                     const bf_engine *engine)
 {
-    if (!cs->open || !cs->font_loaded) return;
+    if (cs->slide_pos < 1.0f || !cs->font_loaded) return;
 
-    int console_height = CONSOLE_HEIGHT;
+    int console_height = (int)cs->slide_pos;
     if (console_height > screen_height) console_height = screen_height;
 
     console_draw_overlay(pixels, screen_width, console_height);
@@ -320,12 +339,58 @@ void console_handle_key(console_state *cs, int sdl_keycode, int sdl_scancode,
 
     case SDLK_RETURN:
         if (cs->input_len > 0) {
+            /* Save to history */
+            int hi = cs->history_write_pos;
+            strncpy(cs->history[hi], cs->input, CONSOLE_INPUT_SIZE - 1);
+            cs->history[hi][CONSOLE_INPUT_SIZE - 1] = '\0';
+            cs->history_write_pos = (cs->history_write_pos + 1) % CONSOLE_HISTORY_SIZE;
+            if (cs->history_count < CONSOLE_HISTORY_SIZE)
+                cs->history_count++;
             console_execute(cs, engine);
         }
         cs->input[0] = '\0';
         cs->input_len = 0;
         cs->cursor = 0;
         cs->scroll_offset = 0;
+        cs->history_browse = -1;
+        break;
+
+    case SDLK_UP:
+        if (cs->history_count > 0) {
+            if (cs->history_browse < 0) {
+                /* Save current input before browsing */
+                strncpy(cs->input_saved, cs->input, CONSOLE_INPUT_SIZE);
+                cs->history_browse = 0;
+            } else if (cs->history_browse < cs->history_count - 1) {
+                cs->history_browse++;
+            }
+            /* Retrieve: browse=0 is newest, browse=count-1 is oldest */
+            int idx = (cs->history_write_pos - 1 - cs->history_browse
+                       + CONSOLE_HISTORY_SIZE) % CONSOLE_HISTORY_SIZE;
+            strncpy(cs->input, cs->history[idx], CONSOLE_INPUT_SIZE);
+            cs->input_len = (int)strlen(cs->input);
+            cs->cursor = cs->input_len;
+        }
+        break;
+
+    case SDLK_DOWN:
+        if (cs->history_browse >= 0) {
+            cs->history_browse--;
+            if (cs->history_browse < 0) {
+                /* Restore saved input */
+                strncpy(cs->input, cs->input_saved, CONSOLE_INPUT_SIZE);
+            } else {
+                int idx = (cs->history_write_pos - 1 - cs->history_browse
+                           + CONSOLE_HISTORY_SIZE) % CONSOLE_HISTORY_SIZE;
+                strncpy(cs->input, cs->history[idx], CONSOLE_INPUT_SIZE);
+            }
+            cs->input_len = (int)strlen(cs->input);
+            cs->cursor = cs->input_len;
+        }
+        break;
+
+    case SDLK_TAB:
+        console_autocomplete(cs, engine);
         break;
 
     case SDLK_PAGEUP:
@@ -397,7 +462,6 @@ static void cmd_help(console_state *cs, bf_engine *engine, const char *args)
     console_shell_msg(cs, engine, "  entity face id dx dy dz");
     console_shell_msg(cs, engine, "  entity speed id speed");
     console_shell_msg(cs, engine, "  entity animate id anim_index");
-    console_shell_msg(cs, engine, "  camera set x y z dx dy dz");
     console_shell_msg(cs, engine, "  camera move dx dy dz");
     console_shell_msg(cs, engine, "  select id");
 }
@@ -497,20 +561,6 @@ static void cmd_entity_animate(console_state *cs, bf_engine *engine, const char 
     console_shell_msg(cs, engine, "Entity %d animate %d.", id, anim_index);
 }
 
-static void cmd_camera_set(console_state *cs, bf_engine *engine, const char *args)
-{
-    float x, y, z, dx, dy, dz;
-    const char *p = args;
-    if (parse_float(&p, &x) || parse_float(&p, &y) || parse_float(&p, &z) ||
-        parse_float(&p, &dx) || parse_float(&p, &dy) || parse_float(&p, &dz)) {
-        console_shell_msg(cs, engine, "Usage: camera set x y z dx dy dz");
-        return;
-    }
-    bf_command(engine, (bf_cmd){ .type = BF_CMD_CAMERA_SET,
-        .camera_set = { .position = {x, y, z}, .direction = {dx, dy, dz} } });
-    console_shell_msg(cs, engine, "Camera set to (%.1f, %.1f, %.1f).", x, y, z);
-}
-
 static void cmd_camera_move(console_state *cs, bf_engine *engine, const char *args)
 {
     float dx, dy, dz;
@@ -579,16 +629,88 @@ static void console_execute(console_state *cs, bf_engine *engine)
     rest = match_prefix(input, "camera");
     if (rest) {
         const char *sub;
-        sub = match_prefix(rest, "set");
-        if (sub) { cmd_camera_set(cs, engine, sub); return; }
         sub = match_prefix(rest, "move");
         if (sub) { cmd_camera_move(cs, engine, sub); return; }
 
         console_shell_msg(cs, engine,
-            "Unknown camera command. Try: set, move");
+            "Unknown camera command. Try: move");
         return;
     }
 
     console_shell_msg(cs, engine,
         "Unknown command: '%s'. Type 'help' for available commands.", input);
+}
+
+/* --- Autocomplete --- */
+
+static const char *completions[] = {
+    "help",
+    "select ",
+    "entity create ",
+    "entity destroy ",
+    "entity move ",
+    "entity face ",
+    "entity speed ",
+    "entity animate ",
+    "camera move ",
+    NULL
+};
+
+static void console_autocomplete(console_state *cs, bf_engine *engine)
+{
+    (void)engine;
+    if (cs->input_len == 0) return;
+
+    const char *input = cs->input;
+    int input_len = cs->input_len;
+
+    /* Find all completions that start with the current input */
+    const char *match = NULL;
+    int match_count = 0;
+
+    for (int i = 0; completions[i]; i++) {
+        if (strncasecmp(completions[i], input, (size_t)input_len) == 0) {
+            match = completions[i];
+            match_count++;
+        }
+    }
+
+    if (match_count == 1) {
+        /* Single match: fill it in */
+        strncpy(cs->input, match, CONSOLE_INPUT_SIZE - 1);
+        cs->input[CONSOLE_INPUT_SIZE - 1] = '\0';
+        cs->input_len = (int)strlen(cs->input);
+        cs->cursor = cs->input_len;
+    } else if (match_count > 1) {
+        /* Multiple matches: find longest common prefix */
+        int prefix_len = input_len;
+        for (;;) {
+            char c = 0;
+            int all_match = 1;
+            for (int i = 0; completions[i]; i++) {
+                if (strncasecmp(completions[i], input, (size_t)input_len) != 0)
+                    continue;
+                if ((int)strlen(completions[i]) <= prefix_len) {
+                    all_match = 0;
+                    break;
+                }
+                if (c == 0) {
+                    c = completions[i][prefix_len];
+                } else if (tolower((unsigned char)completions[i][prefix_len]) !=
+                           tolower((unsigned char)c)) {
+                    all_match = 0;
+                    break;
+                }
+            }
+            if (!all_match || c == 0) break;
+            prefix_len++;
+        }
+        if (prefix_len > input_len) {
+            /* Extend input to common prefix */
+            memcpy(cs->input, match, (size_t)prefix_len);
+            cs->input[prefix_len] = '\0';
+            cs->input_len = prefix_len;
+            cs->cursor = prefix_len;
+        }
+    }
 }
