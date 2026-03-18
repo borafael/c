@@ -319,14 +319,14 @@ int main(int argc, char *argv[]) {
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_ENTITY_CREATE,
         .entity_create = { .id = 1, .sprite_id = spr_id,
-                           .position = {0.0f, 0.0f, 0.0f},
+                           .position = {30.0f, 0.0f, 40.0f},
                            .direction = {0.0f, 0.0f, 1.0f},
                            .speed = 3.0f }
     });
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_ENTITY_CREATE,
         .entity_create = { .id = 2, .sprite_id = spr_id,
-                           .position = {5.0f, 0.0f, -3.0f},
+                           .position = {35.0f, 0.0f, 37.0f},
                            .direction = {-1.0f, 0.0f, 0.0f},
                            .speed = 3.0f }
     });
@@ -336,7 +336,7 @@ int main(int argc, char *argv[]) {
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_ENTITY_CREATE,
         .entity_create = { .id = 3, .sprite_id = ent3_spr,
-                           .position = {-4.0f, 0.0f, 2.0f},
+                           .position = {26.0f, 0.0f, 42.0f},
                            .direction = {1.0f, 0.0f, 0.0f},
                            .speed = 3.0f }
     });
@@ -352,13 +352,13 @@ int main(int argc, char *argv[]) {
     bf_command(engine, (bf_cmd){
         .type = BF_CMD_CAMERA_SET,
         .camera_set = {
-            .position = {0.0f, 15.0f, 15.0f},
+            .position = {30.0f, 20.0f, 55.0f},
             .direction = {0.0f, -0.4f, -1.0f}
         }
     });
 
     float cam_yaw = 0.0f;  /* facing -Z initially */
-    float cam_x = 0.0f, cam_y = 15.0f, cam_z = 15.0f;
+    float cam_x = 30.0f, cam_y = 20.0f, cam_z = 55.0f;
     int selected_id = 0;
 
     Uint32 fps_last = SDL_GetTicks();

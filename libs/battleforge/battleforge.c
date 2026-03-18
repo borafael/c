@@ -88,6 +88,46 @@ static void render_chunk_fn(void *arg) {
                     t->camera, t->scene);
 }
 
+/* Simple hash-based gradient noise for natural-looking terrain */
+static float noise_hash(int ix, int iz) {
+    int n = ix + iz * 1327;
+    n = (n << 13) ^ n;
+    return 1.0f - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff)
+                  / 1073741824.0f;
+}
+
+static float noise_smooth(float x, float z) {
+    int ix = (int)floorf(x);
+    int iz = (int)floorf(z);
+    float fx = x - ix;
+    float fz = z - iz;
+    /* smoothstep for less grid-aligned artifacts */
+    float sx = fx * fx * (3.0f - 2.0f * fx);
+    float sz = fz * fz * (3.0f - 2.0f * fz);
+
+    float v00 = noise_hash(ix,     iz);
+    float v10 = noise_hash(ix + 1, iz);
+    float v01 = noise_hash(ix,     iz + 1);
+    float v11 = noise_hash(ix + 1, iz + 1);
+
+    float a = v00 + sx * (v10 - v00);
+    float b = v01 + sx * (v11 - v01);
+    return a + sz * (b - a);
+}
+
+static float noise_fbm(float x, float z, int octaves, float lacunarity,
+                        float persistence) {
+    float value = 0.0f;
+    float amp   = 1.0f;
+    float freq  = 1.0f;
+    for (int i = 0; i < octaves; i++) {
+        value += amp * noise_smooth(x * freq, z * freq);
+        amp   *= persistence;
+        freq  *= lacunarity;
+    }
+    return value;
+}
+
 void bf_map_generate_test_terrain(bf_map *map) {
     int rows = map->grid_rows;
     int cols = map->grid_cols;
@@ -104,8 +144,18 @@ void bf_map_generate_test_terrain(bf_map *map) {
         for (int c = 0; c < cols; c++) {
             float wx = c * cell_w;
             float wz = r * cell_d;
-            float h = sinf(wx * 0.3f) * cosf(wz * 0.2f) * 5.0f
-                    + sinf(wx * 0.7f + wz * 0.5f) * 2.5f;
+            /* scale into noise space so features aren't too large or small */
+            float h = noise_fbm(wx * 0.08f, wz * 0.08f, 6, 2.0f, 0.5f);
+
+            /* gaussian mountain peak near the back-right of the map */
+            float mx = 0.5f * map->width;
+            float mz = 0.5f * map->depth;
+            float mr = 12.0f;  /* radius of influence */
+            float dx = wx - mx;
+            float dz = wz - mz;
+            float d2 = (dx * dx + dz * dz) / (mr * mr);
+            h += 18.0f * expf(-d2);
+
             map->heights[r * cols + c] = h;
             if (h < h_min) h_min = h;
             if (h > h_max) h_max = h;

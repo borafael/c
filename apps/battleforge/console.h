@@ -7,7 +7,7 @@
 #define CONSOLE_INPUT_SIZE 256
 #define CONSOLE_MAX_SHELL_MSGS 128
 #define CONSOLE_MSG_TEXT_SIZE 256
-#define CONSOLE_HEIGHT 300       /* pixels from top of screen */
+#define CONSOLE_HEIGHT 150       /* pixels from top of screen (1/4 of 600) */
 #define CONSOLE_FONT_W 8
 #define CONSOLE_FONT_H 16
 #define CONSOLE_HISTORY_SIZE 32
