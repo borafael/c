@@ -18,6 +18,6 @@ AC_CONFIG_FILES([
     libs/battleforge/Makefile
     apps/nbody/Makefile
     apps/rtdemo/Makefile
-    apps/battleforge/Makefile
+    apps/barrier/Makefile
 ])
 AC_OUTPUT

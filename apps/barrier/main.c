@@ -234,7 +234,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    SDL_Window *window = SDL_CreateWindow("Battleforge",
+    SDL_Window *window = SDL_CreateWindow("Barrier",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         WINDOW_W, WINDOW_H, 0);
     if (!window) {
@@ -303,7 +303,7 @@ int main(int argc, char *argv[]) {
     int spr_id = bf_register_sprite(engine, &smiley_sheet, 2.0f, 2.0f);
 
     /* Load 3D-rendered sprite sheet from PNG */
-    slice_sheet *unit_sheet = slice_load("apps/battleforge/assets/test_unit.png");
+    slice_sheet *unit_sheet = slice_load("apps/barrier/assets/test_unit.png");
     int unit_spr = -1;
     int walk_anim = -1;
     if (unit_sheet) {
@@ -369,7 +369,7 @@ int main(int argc, char *argv[]) {
 
     console_state console;
     if (console_init(&console, WINDOW_W, WINDOW_H,
-                     "apps/battleforge/assets/font.png") < 0) {
+                     "apps/barrier/assets/font.png") < 0) {
         fprintf(stderr, "Warning: console disabled (font not found)\n");
     }
     SDL_StartTextInput();
@@ -481,7 +481,7 @@ int main(int argc, char *argv[]) {
         Uint32 now = SDL_GetTicks();
         if (now - fps_last >= 1000) {
             snprintf(title_buf, sizeof(title_buf),
-                     "Battleforge - %d FPS (%dx%d)", fps_frames,
+                     "Barrier - %d FPS (%dx%d)", fps_frames,
                      WINDOW_W, WINDOW_H);
             SDL_SetWindowTitle(window, title_buf);
             fprintf(stderr, "%d FPS\n", fps_frames);

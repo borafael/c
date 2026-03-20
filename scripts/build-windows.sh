@@ -1,7 +1,7 @@
 #!/bin/bash
-# Cross-compile battleforge for Windows (x86_64)
+# Cross-compile barrier for Windows (x86_64)
 # Requires: gcc-mingw-w64-x86-64-posix
-# Produces: build/battleforge-win64/ with exe + SDL2.dll
+# Produces: build/barrier-win64/ with exe + SDL2.dll
 
 set -e
 
@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$SCRIPT_DIR/.."
 CC=x86_64-w64-mingw32-gcc
 SDL2_DIR="$ROOT/deps/SDL2-2.30.11/x86_64-w64-mingw32"
-OUT_DIR="$ROOT/build/battleforge-win64"
+OUT_DIR="$ROOT/build/barrier-win64"
 
 # Verify toolchain
 if ! command -v $CC &> /dev/null; then
@@ -23,7 +23,7 @@ if [ ! -d "$SDL2_DIR" ]; then
     exit 1
 fi
 
-echo "Cross-compiling battleforge for Windows..."
+echo "Cross-compiling barrier for Windows..."
 
 mkdir -p "$OUT_DIR"
 
@@ -35,9 +35,9 @@ $CC -O2 -mwindows \
     -I"$ROOT/libs/thread" \
     -I"$SDL2_DIR/include" \
     -L"$SDL2_DIR/lib" \
-    -o "$OUT_DIR/battleforge.exe" \
-    "$ROOT/apps/battleforge/main.c" \
-    "$ROOT/apps/battleforge/console.c" \
+    -o "$OUT_DIR/barrier.exe" \
+    "$ROOT/apps/barrier/main.c" \
+    "$ROOT/apps/barrier/console.c" \
     "$ROOT/libs/battleforge/battleforge.c" \
     "$ROOT/libs/raytrace/raytrace.c" \
     "$ROOT/libs/slice/slice.c" \
@@ -52,4 +52,4 @@ echo ""
 echo "Build complete: $OUT_DIR/"
 ls -lh "$OUT_DIR/"
 echo ""
-echo "Zip it up with: cd $ROOT/build && zip -r battleforge-win64.zip battleforge-win64/"
+echo "Zip it up with: cd $ROOT/build && zip -r barrier-win64.zip barrier-win64/"

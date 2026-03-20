@@ -20,7 +20,7 @@ FPS = 4
 CAMERA_DISTANCE = 4.0
 CAMERA_HEIGHT = 1.5
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "..", "apps", "battleforge", "assets")
+                          "..", "apps", "barrier", "assets")
 MODEL_NAME = "test_unit"
 
 ANIMATIONS = {
