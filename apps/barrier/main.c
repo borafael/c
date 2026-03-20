@@ -358,6 +358,7 @@ int main(int argc, char *argv[]) {
     });
 
     float cam_yaw = 0.0f;  /* facing -Z initially */
+    float cam_pitch = -0.3f;
     float cam_x = 30.0f, cam_y = 20.0f, cam_z = 55.0f;
     int selected_id = 0;
 
@@ -445,25 +446,38 @@ int main(int argc, char *argv[]) {
         if (!console_is_open(&console)) {
             /* Continuous key input for camera */
             const Uint8 *keys = SDL_GetKeyboardState(NULL);
-            float move_x = 0.0f, move_z = 0.0f;
+            float move_x = 0.0f, move_y = 0.0f, move_z = 0.0f;
 
-            if (keys[SDL_SCANCODE_W]) { move_x += sinf(cam_yaw); move_z += -cosf(cam_yaw); }
-            if (keys[SDL_SCANCODE_S]) { move_x -= sinf(cam_yaw); move_z -= -cosf(cam_yaw); }
-            if (keys[SDL_SCANCODE_A]) { move_x -= cosf(cam_yaw); move_z -= sinf(cam_yaw); }
-            if (keys[SDL_SCANCODE_D]) { move_x += cosf(cam_yaw); move_z += sinf(cam_yaw); }
+            /* Forward/back follow the full camera direction (yaw + pitch) */
+            float fw_x = cosf(cam_pitch) * sinf(cam_yaw);
+            float fw_y = sinf(cam_pitch);
+            float fw_z = cosf(cam_pitch) * -cosf(cam_yaw);
+            /* Strafe stays horizontal */
+            float rt_x = cosf(cam_yaw);
+            float rt_z = sinf(cam_yaw);
+
+            if (keys[SDL_SCANCODE_W]) { move_x += fw_x; move_y += fw_y; move_z += fw_z; }
+            if (keys[SDL_SCANCODE_S]) { move_x -= fw_x; move_y -= fw_y; move_z -= fw_z; }
+            if (keys[SDL_SCANCODE_A]) { move_x -= rt_x; move_z -= rt_z; }
+            if (keys[SDL_SCANCODE_D]) { move_x += rt_x; move_z += rt_z; }
             if (keys[SDL_SCANCODE_LEFT])  cam_yaw -= ROT_SPEED * dt;
             if (keys[SDL_SCANCODE_RIGHT]) cam_yaw += ROT_SPEED * dt;
+            if (keys[SDL_SCANCODE_UP])    cam_pitch += ROT_SPEED * dt;
+            if (keys[SDL_SCANCODE_DOWN])  cam_pitch -= ROT_SPEED * dt;
+            if (cam_pitch >  1.4f) cam_pitch =  1.4f;
+            if (cam_pitch < -1.4f) cam_pitch = -1.4f;
             if (keys[SDL_SCANCODE_SPACE]) cam_y += MOVE_SPEED * dt;
             if (keys[SDL_SCANCODE_LSHIFT]) cam_y -= MOVE_SPEED * dt;
 
             cam_x += move_x * MOVE_SPEED * dt;
+            cam_y += move_y * MOVE_SPEED * dt;
             cam_z += move_z * MOVE_SPEED * dt;
 
             bf_command(engine, (bf_cmd){
                 .type = BF_CMD_CAMERA_SET,
                 .camera_set = {
                     .position = {cam_x, cam_y, cam_z},
-                    .direction = {sinf(cam_yaw), -0.3f, -cosf(cam_yaw)}
+                    .direction = {cosf(cam_pitch) * sinf(cam_yaw), sinf(cam_pitch), cosf(cam_pitch) * -cosf(cam_yaw)}
                 }
             });
         }

@@ -3,145 +3,17 @@
 
 #include <stdint.h>
 #include "vector.h"
-
-typedef struct {
-    uint8_t r, g, b;
-} rt_color;
-
-typedef struct {
-    uint32_t *pixels;   /* ARGB8888 pixel data (not owned by raytracer) */
-    int width;
-    int height;
-} rt_frame;
-
-typedef struct {
-    vector position;     /* center in world space */
-    vector direction;    /* facing direction (for angle selection only) */
-    float width;         /* world-space quad width */
-    float height;        /* world-space quad height */
-    int frame_count;     /* number of viewing angles */
-    rt_frame *frames;    /* one frame per angle, clockwise from front */
-} rt_sprite;
-
-typedef struct {
-    vector center;
-    float radius;
-    rt_color color;
-} rt_sphere;
-
-typedef struct {
-    vector normal;
-    vector point;
-    rt_color color;
-} rt_plane;
-
-typedef struct {
-    vector center;
-    vector normal;
-    float radius;
-    rt_color color;
-} rt_disc;
-
-typedef struct {
-    vector center;
-    vector axis;
-    float radius;
-    float half_height;
-    rt_color color;
-} rt_cylinder;
-
-typedef struct {
-    vector v0, v1, v2;
-    rt_color color;
-} rt_triangle;
-
-typedef struct {
-    vector min;
-    vector max;
-    rt_color color;
-} rt_box;
-
-typedef struct {
-    float *heights;           /* rows * cols vertex heights (borrowed) */
-    uint8_t *colors;          /* (rows-1)*(cols-1)*3 RGB per cell (borrowed) */
-    float *normals;           /* rows * cols * 3 vertex normals (borrowed) */
-    int rows, cols;           /* vertex grid dimensions */
-    float world_width;        /* X extent in world units */
-    float world_depth;        /* Z extent in world units */
-    float origin_x, origin_z; /* world position of grid corner (0,0) */
-    float max_height;         /* for AABB early-out */
-} rt_heightfield;
-
-typedef struct {
-    vector direction;
-    float intensity;
-} rt_light;
-
-typedef struct rt_camera rt_camera;
-
-/**
- * Create a camera at position, looking toward direction.
- * Computes internal orientation vectors automatically.
- */
-rt_camera *rt_camera_create(vector position, vector direction);
-
-/**
- * Reposition the camera and change its direction.
- */
-void rt_camera_place(rt_camera *cam, vector position, vector direction);
-
-/**
- * Destroy the camera and free resources.
- */
-void rt_camera_destroy(rt_camera *cam);
-
-/**
- * Extract the camera's position and orientation basis vectors.
- */
-void rt_camera_get_basis(const rt_camera *cam,
-                         vector *origin, vector *forward,
-                         vector *right, vector *up);
-
-/**
- * Test ray against a billboard sprite with alpha transparency.
- * Returns t > 0 on opaque hit, -1 on miss or transparent.
- * hit_point is set to the world-space hit position on success.
- */
-float rt_pick_sprite(vector ray_origin, vector ray_dir,
-                     const rt_sprite *sprite, vector camera_origin,
-                     vector *hit_point);
-
-typedef struct rt_scene rt_scene;
-
-/**
- * Create an empty scene.
- */
-rt_scene *rt_scene_create(void);
-
-/**
- * Clear all shapes from the scene.
- */
-void rt_scene_clear(rt_scene *scene);
-
-void rt_scene_set_ambient(rt_scene *scene, float ambient);
-int rt_scene_add_light(rt_scene *scene, rt_light light);
-int rt_scene_add_sphere(rt_scene *scene, rt_sphere sphere);
-int rt_scene_add_plane(rt_scene *scene, rt_plane plane);
-int rt_scene_add_disc(rt_scene *scene, rt_disc disc);
-int rt_scene_add_cylinder(rt_scene *scene, rt_cylinder cylinder);
-int rt_scene_add_triangle(rt_scene *scene, rt_triangle triangle);
-int rt_scene_add_box(rt_scene *scene, rt_box box);
-int rt_scene_add_sprite(rt_scene *scene, rt_sprite sprite);
-int rt_scene_add_heightfield(rt_scene *scene, const rt_heightfield *hf);
-
-int rt_intersect_heightfield(const rt_heightfield *hf, vector origin, vector dir,
-                              float *out_t, vector *out_normal,
-                              int *out_cell_r, int *out_cell_c);
-
-/**
- * Destroy the scene and free resources.
- */
-void rt_scene_destroy(rt_scene *scene);
+#include "rt_color.h"
+#include "sphere.h"
+#include "plane.h"
+#include "disc.h"
+#include "cylinder.h"
+#include "triangle.h"
+#include "box.h"
+#include "sprite.h"
+#include "heightfield.h"
+#include "scene.h"
+#include "camera.h"
 
 /**
  * Viewport defining projection parameters.

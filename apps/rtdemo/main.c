@@ -269,16 +269,12 @@ static void build_scene(rt_scene **scene, rt_camera **camera) {
     );
 }
 
-static void update_scene(rt_camera *camera, float angle,
-                         float cam_dist, float cam_height) {
-    vector cam_pos = {
-        cam_dist * cosf(angle),
-        cam_height,
-        cam_dist * sinf(angle)
+static vector cam_dir_from_yaw_pitch(float yaw, float pitch) {
+    return (vector){
+        cosf(pitch) * sinf(yaw),
+        sinf(pitch),
+        cosf(pitch) * cosf(yaw)
     };
-    /* Look at the origin */
-    vector cam_dir = vector_sub((vector){0.0f, 0.5f, 0.0f}, cam_pos);
-    rt_camera_place(camera, cam_pos, cam_dir);
 }
 
 int main(void) {
@@ -316,9 +312,11 @@ int main(void) {
         SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
         render_w, render_h);
 
-    float angle = 0.0f;
-    float cam_dist = 10.0f;
-    float cam_height = 3.0f;
+    vector cam_pos = {5.0f, 3.0f, 5.0f};
+    float cam_yaw = -2.356f;   /* ~-135 deg, facing toward origin */
+    float cam_pitch = -0.3f;
+    float move_speed = 5.0f;
+    float look_speed = 2.0f;
     int running = 1;
 
     Uint32 fps_last = SDL_GetTicks();
@@ -365,8 +363,28 @@ int main(void) {
             }
         }
 
-        angle += 0.5f * dt;  /* ~0.5 radians/sec, consistent regardless of FPS */
-        update_scene(camera, angle, cam_dist, cam_height);
+        const Uint8 *keys = SDL_GetKeyboardState(NULL);
+
+        /* Look: arrow keys */
+        if (keys[SDL_SCANCODE_LEFT])  cam_yaw   -= look_speed * dt;
+        if (keys[SDL_SCANCODE_RIGHT]) cam_yaw   += look_speed * dt;
+        if (keys[SDL_SCANCODE_UP])    cam_pitch += look_speed * dt;
+        if (keys[SDL_SCANCODE_DOWN])  cam_pitch -= look_speed * dt;
+        if (cam_pitch >  1.4f) cam_pitch =  1.4f;
+        if (cam_pitch < -1.4f) cam_pitch = -1.4f;
+
+        /* Movement: WASD + Space/Shift for vertical */
+        vector forward = { sinf(cam_yaw), 0.0f, cosf(cam_yaw) };
+        vector right   = { cosf(cam_yaw), 0.0f, -sinf(cam_yaw) };
+        if (keys[SDL_SCANCODE_W]) cam_pos = vector_add(cam_pos, vector_scale(forward, move_speed * dt));
+        if (keys[SDL_SCANCODE_S]) cam_pos = vector_add(cam_pos, vector_scale(forward, -move_speed * dt));
+        if (keys[SDL_SCANCODE_D]) cam_pos = vector_add(cam_pos, vector_scale(right, move_speed * dt));
+        if (keys[SDL_SCANCODE_A]) cam_pos = vector_add(cam_pos, vector_scale(right, -move_speed * dt));
+        if (keys[SDL_SCANCODE_SPACE])  cam_pos.y += move_speed * dt;
+        if (keys[SDL_SCANCODE_LSHIFT]) cam_pos.y -= move_speed * dt;
+
+        vector cam_dir = cam_dir_from_yaw_pitch(cam_yaw, cam_pitch);
+        rt_camera_place(camera, cam_pos, cam_dir);
 
         /* Split scanlines across threads */
         int rows_per = render_h / num_threads;
