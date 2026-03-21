@@ -302,49 +302,59 @@ int main(int argc, char *argv[]) {
 
     int spr_id = bf_register_sprite(engine, &smiley_sheet, 2.0f, 2.0f);
 
-    /* Load 3D-rendered sprite sheet from PNG */
-    slice_sheet *unit_sheet = slice_load("apps/barrier/assets/test_unit.png");
-    int unit_spr = -1;
-    int walk_anim = -1;
-    if (unit_sheet) {
-        unit_spr = bf_register_sprite(engine, unit_sheet, 2.0f, 2.0f);
-        walk_anim = slice_anim_index(unit_sheet, "walk");
-        fprintf(stderr, "Loaded test_unit sprite (id=%d, walk_anim=%d)\n",
-                unit_spr, walk_anim);
-    } else {
-        fprintf(stderr, "Warning: could not load test_unit.png, using smiley only\n");
+    /* Load unit sprite sheets */
+    static const char *unit_names[] = {
+        "rifleman", "heavy", "scout", "sniper", "medic",
+        "mech", "drone", "flamethrower", "engineer", "commander",
+        "artillery", "grenadier", "shield", "jetpack", "hacker",
+        "berserker", "stealth", "tank", "turret", "psychic"
+    };
+    #define NUM_UNIT_TYPES 20
+    #define ARMY_SIZE 10
+
+    slice_sheet *unit_sheets[NUM_UNIT_TYPES] = {0};
+    int unit_spr_ids[NUM_UNIT_TYPES];
+    int loaded_count = 0;
+
+    for (int i = 0; i < NUM_UNIT_TYPES; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), "apps/barrier/assets/%s.png", unit_names[i]);
+        unit_sheets[i] = slice_load(path);
+        if (unit_sheets[i]) {
+            unit_spr_ids[i] = bf_register_sprite(engine, unit_sheets[i], 2.0f, 2.0f);
+            fprintf(stderr, "Loaded %s sprite (id=%d)\n", unit_names[i], unit_spr_ids[i]);
+            loaded_count++;
+        } else {
+            unit_spr_ids[i] = spr_id;  /* fallback to smiley */
+            fprintf(stderr, "Warning: could not load %s.png, using fallback\n", unit_names[i]);
+        }
     }
+    fprintf(stderr, "Loaded %d/%d unit sprites\n", loaded_count, NUM_UNIT_TYPES);
 
-    /* Create entities */
-    bf_command(engine, (bf_cmd){
-        .type = BF_CMD_ENTITY_CREATE,
-        .entity_create = { .id = 1, .sprite_id = spr_id,
-                           .position = {30.0f, 0.0f, 40.0f},
-                           .direction = {0.0f, 0.0f, 1.0f},
-                           .speed = 3.0f }
-    });
-    bf_command(engine, (bf_cmd){
-        .type = BF_CMD_ENTITY_CREATE,
-        .entity_create = { .id = 2, .sprite_id = spr_id,
-                           .position = {35.0f, 0.0f, 37.0f},
-                           .direction = {-1.0f, 0.0f, 0.0f},
-                           .speed = 3.0f }
-    });
-
-    /* Entity 3: use the PNG-loaded sprite if available */
-    int ent3_spr = (unit_spr >= 0) ? unit_spr : spr_id;
-    bf_command(engine, (bf_cmd){
-        .type = BF_CMD_ENTITY_CREATE,
-        .entity_create = { .id = 3, .sprite_id = ent3_spr,
-                           .position = {26.0f, 0.0f, 42.0f},
-                           .direction = {1.0f, 0.0f, 0.0f},
-                           .speed = 3.0f }
-    });
-    /* Play walk animation on entity 3 */
-    if (walk_anim >= 0) {
+    /* Create two armies on opposite sides of the field */
+    /* Army 1 (units 0-9): near z=15, facing south toward center */
+    for (int i = 0; i < ARMY_SIZE; i++) {
+        float x = 30.0f + (i % 5) * 4.0f;
+        float z = 15.0f + (i / 5) * 4.0f;
         bf_command(engine, (bf_cmd){
-            .type = BF_CMD_ENTITY_ANIMATE,
-            .entity_animate = { .id = 3, .anim_index = walk_anim }
+            .type = BF_CMD_ENTITY_CREATE,
+            .entity_create = { .id = i + 1, .sprite_id = unit_spr_ids[i],
+                               .position = {x, 0.0f, z},
+                               .direction = {0.0f, 0.0f, 1.0f},
+                               .speed = 3.0f }
+        });
+    }
+    /* Army 2 (units 10-19): near z=85, facing north toward center */
+    for (int i = 0; i < ARMY_SIZE; i++) {
+        float x = 30.0f + (i % 5) * 4.0f;
+        float z = 85.0f - (i / 5) * 4.0f;
+        bf_command(engine, (bf_cmd){
+            .type = BF_CMD_ENTITY_CREATE,
+            .entity_create = { .id = ARMY_SIZE + i + 1,
+                               .sprite_id = unit_spr_ids[ARMY_SIZE + i],
+                               .position = {x, 0.0f, z},
+                               .direction = {0.0f, 0.0f, -1.0f},
+                               .speed = 3.0f }
         });
     }
 
@@ -506,7 +516,8 @@ int main(int argc, char *argv[]) {
 
     console_destroy(&console);
     bf_destroy(engine);
-    if (unit_sheet) slice_free(unit_sheet);
+    for (int i = 0; i < NUM_UNIT_TYPES; i++)
+        if (unit_sheets[i]) slice_free(unit_sheets[i]);
     free(pixels);
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
