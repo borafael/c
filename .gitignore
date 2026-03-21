@@ -90,6 +90,11 @@ test-driver
 
 # --- Executables ---
 apps/nbody/nbody
+apps/barrier/barrier
+apps/rtdemo/rtdemo
+
+# --- Build stamps ---
+libs/math/tests/.dirstamp
 
 # --- Cross-compilation ---
 deps/
