@@ -40,6 +40,16 @@ $CC -O2 -mwindows \
     "$ROOT/apps/barrier/console.c" \
     "$ROOT/libs/battleforge/battleforge.c" \
     "$ROOT/libs/raytrace/raytrace.c" \
+    "$ROOT/libs/raytrace/sphere.c" \
+    "$ROOT/libs/raytrace/plane.c" \
+    "$ROOT/libs/raytrace/disc.c" \
+    "$ROOT/libs/raytrace/cylinder.c" \
+    "$ROOT/libs/raytrace/triangle.c" \
+    "$ROOT/libs/raytrace/box.c" \
+    "$ROOT/libs/raytrace/sprite.c" \
+    "$ROOT/libs/raytrace/heightfield.c" \
+    "$ROOT/libs/raytrace/scene.c" \
+    "$ROOT/libs/raytrace/camera.c" \
     "$ROOT/libs/slice/slice.c" \
     "$ROOT/libs/thread/thread_pool.c" \
     -lmingw32 -lSDL2main -lSDL2 -lm -lpthread
