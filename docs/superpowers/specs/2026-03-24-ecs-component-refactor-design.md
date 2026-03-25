@@ -9,12 +9,12 @@ This refactor restructures existing functionality without adding new game mechan
 ## Architecture
 
 ```
-Client (SDL shell)
+Client (e.g., SDL shell — implementation-specific)
   |  INI parsing (libs/ini), sprite loading (libs/slice), input
   v
 Engine (libs/battleforge)
   |-- ECS: component arrays, bitmasks, free list
-  |-- Systems: locomotion, animation, terrain snap
+  |-- Systems: locomotion, animation
   |-- Unit defs: stored by index, name for lookup/debugging
   |-- Game rules: state interactions, ability execution (future, C then scripting)
   |-- Uses: libs/raytrace (rendering), libs/thread (multithreading)
@@ -61,12 +61,27 @@ typedef enum {
 } bf_loco_type;
 
 typedef struct {
-    bf_loco_type type;
     vector origin;
     vector target;
     float speed;
-    float arc_height;   /* parabolic only */
     float progress;     /* 0.0 to 1.0 */
+} bf_trajectory_linear;
+
+typedef struct {
+    vector origin;
+    vector target;
+    float speed;
+    float progress;     /* 0.0 to 1.0 */
+    float arc_height;   /* peak height of the arc */
+} bf_trajectory_parabolic;
+
+typedef struct {
+    bf_loco_type type;
+    union {
+        bf_trajectory_linear linear;
+        bf_trajectory_parabolic parabolic;
+        /* instant needs no data — just set position to target and remove component */
+    };
 } bf_locomotion;
 
 typedef struct {
@@ -99,14 +114,14 @@ Entity creation pops from the free stack. Destruction pushes back. IDs are reusa
 
 ### Component Lifetime
 
-| Component | Lifetime | Notes |
-|-----------|----------|-------|
-| Position | Permanent | Every entity has this |
-| Visual | Permanent | Set at spawn from unit def |
-| Locomotion | Transient | Added by move commands, removed on arrival |
-| Selection | Permanent | Tracks whether entity is selected |
+All components can be added or removed at any time via the bitmask. There is no permanent/transient distinction in the architecture. For example:
 
-Locomotion is the key transient component. An entity at rest has no Locomotion component. When a move command arrives, the engine adds Locomotion with type, target, speed. When the entity arrives, the Locomotion component is removed (bitmask cleared).
+- Locomotion is added when a move command arrives, removed on arrival
+- Team/faction could be stripped to make a unit rogue
+- Selection could be removed to make an entity unpickable
+- Visual could be removed to make an entity invisible
+
+The bitmask naturally supports all of these cases without special handling.
 
 ## Systems
 
@@ -116,18 +131,25 @@ Systems are static functions in `battleforge.c` that iterate entities by compone
 
 Requires: `BF_COMP_POSITION | BF_COMP_LOCOMOTION`
 
-Moves entities toward their target based on locomotion type:
-- **LINEAR** — straight-line movement at speed, updates direction to face movement
-- **PARABOLIC** — interpolates position along an arc using progress (0.0 to 1.0)
-- **INSTANT** — sets position directly to target (teleport)
+Moves entities toward their target based on locomotion type. Each trajectory type has its own advance function, dispatched via a function pointer table indexed by `bf_loco_type` (same pattern as command handlers):
 
-When `progress >= 1.0` or entity reaches target, removes `BF_COMP_LOCOMOTION` from the entity's mask.
+```c
+static void advance_linear(bf_locomotion *loco, bf_position *pos, float dt);
+static void advance_parabolic(bf_locomotion *loco, bf_position *pos, float dt);
+static void advance_instant(bf_locomotion *loco, bf_position *pos, float dt);
 
-### Terrain Snap System
+static void (*loco_advance[])(bf_locomotion *, bf_position *, float) = {
+    [BF_LOCO_LINEAR]    = advance_linear,
+    [BF_LOCO_PARABOLIC] = advance_parabolic,
+    [BF_LOCO_INSTANT]   = advance_instant,
+};
+```
 
-Requires: `BF_COMP_POSITION | BF_COMP_LOCOMOTION`
+- **LINEAR** — straight-line movement at speed, updates direction to face movement, snaps Y to terrain height
+- **PARABOLIC** — interpolates position along an arc using progress (0.0 to 1.0), snaps Y on landing
+- **INSTANT** — sets position directly to target (teleport), snaps Y
 
-Snaps entity Y to terrain height after locomotion updates. Only operates on moving entities (static entities already have correct Y from spawn).
+When `progress >= 1.0` or entity reaches target, removes `BF_COMP_LOCOMOTION` from the entity's mask. Terrain height snapping is handled within each advance function — no separate system needed.
 
 ### Animation System
 
@@ -144,7 +166,6 @@ void bf_tick(bf_engine *e, float dt) {
 
     /* Run systems */
     system_locomotion(e, dt);
-    system_terrain_snap(e);
     system_animation(e, dt);
 }
 ```
@@ -175,7 +196,7 @@ typedef struct {
 
 ### Registration
 
-New command `BF_CMD_REGISTER_UNIT` carries a `bf_unit_def`. The engine stores it and returns the index.
+New command `BF_CMD_REGISTER_UNIT` carries a `bf_unit_def`. The engine stores it at the next available index. The client tracks indices by registration order (first registered = 0, second = 1, etc.), same convention as `bf_register_sprite`.
 
 ### Entity Creation
 
@@ -199,6 +220,10 @@ Maps are loaded from INI by the client and sent to the engine via `bf_set_map` (
 
 ### Map INI Format
 
+Map definition and terrain generation are separate concerns:
+
+**Map definition** — describes the grid and its properties:
+
 ```ini
 [map]
 width = 100.0
@@ -211,15 +236,13 @@ max_height = 10.0
 ambient = 0.15
 light_dir = 1.0, 1.0, -1.0
 light_intensity = 0.85
-
-[terrain]
-seed = 42
-octaves = 6
-lacunarity = 2.0
-persistence = 0.5
 ```
 
-The client parses this, builds a `bf_map` struct, calls `bf_map_generate_test_terrain` (or a future seed-based generator), and sends it via `bf_set_map`.
+The map INI defines the grid dimensions, bounds, and lighting. The actual terrain height data can come from a heightmap image or a separate generation step — that is not part of the map definition.
+
+**Terrain generation** — a separate tool/step that produces height data. Parameters like noise seed, octaves, lacunarity, and persistence belong to the generator, not the map definition. The current `bf_map_generate_test_terrain` is one such generator. Future generators could read from heightmap images or other sources.
+
+The client parses the map INI, builds a `bf_map` struct, populates height data (from a generator or heightmap), and sends it via `bf_set_map`.
 
 ## Unit INI Format
 
@@ -250,7 +273,7 @@ speed = 3.0
 
 The client parses this file, loads the sprite sheet from the `[visual]` section (using `libs/slice` which also uses `libs/ini`), registers the sprite with the engine, then builds a `bf_unit_def` with the sprite_id and base_speed, and sends `BF_CMD_REGISTER_UNIT`.
 
-Sections map to components. Dot-separated sub-sections (e.g., `[visual.animation.idle]`) are nested data within that component.
+Sections map to components. Dot-separated sub-sections (e.g., `[visual.animation.idle]`) are nested data within that component. A section with no keys (e.g., `[selection]`) is valid — its mere presence grants the component flag.
 
 ## libs/ini
 
@@ -337,12 +360,12 @@ libs/ini/
     ini.c              (implementation)
     Makefile.am
 
-units/                 (unit definition INI files)
+apps/barrier/units/    (unit definition INI files)
     rifleman.ini
     scout.ini
     ...
 
-maps/                  (map definition INI files)
+apps/barrier/maps/     (map definition INI files)
     battlefield.ini
 ```
 
@@ -367,16 +390,29 @@ Makefile.am            (add libs/ini to SUBDIRS)
 
 The following are documented here to ensure the architecture accommodates them. None are part of the first implementation pass.
 
+### Generic Resource Type
+
+Health, Stamina, and Morale share the same shape. A generic resource struct avoids duplication:
+
+```c
+typedef struct {
+    float current;
+    float max;
+} bf_resource;
+```
+
+Each resource component is a `bf_resource` stored in its own array, with its own bitmask flag.
+
 ### Additional Components
 
-| Component | Fields | Lifetime |
-|-----------|--------|----------|
-| Health | current, max | Permanent |
-| Stamina | current, max | Permanent |
-| Morale | current, max | Permanent |
-| Leadership | radius, morale_bonus | Permanent |
-| Team | faction_id | Permanent |
-| State | flags (bitmask) | Permanent |
+| Component | Type | Notes |
+|-----------|------|-------|
+| Health | bf_resource | Can take damage, dies at zero |
+| Stamina | bf_resource | Fuels abilities like charge |
+| Morale | bf_resource | Determines fight/flee |
+| Leadership | radius, morale_bonus | Buffs nearby friendly morale |
+| Team | faction_id | Friend/foe determination, can be added/removed |
+| State | flags (bitmask) | Current condition of the entity |
 
 ### States (Bitmask)
 
@@ -415,7 +451,6 @@ Abilities are sequences of primitives defined in INI files. The engine provides 
 | Knockback | Move(linear, forced) |
 | Teleport | Move(instant) |
 | Deploy | Modify(add rooted, remove locomotion capability) |
-| Artillery | Spawn(projectile) |
 
 ### Scripting
 
