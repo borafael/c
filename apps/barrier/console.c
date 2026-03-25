@@ -463,6 +463,7 @@ static void cmd_help(console_state *cs, bf_engine *engine, const char *args)
     console_shell_msg(cs, engine, "  entity animate id anim_index");
     console_shell_msg(cs, engine, "  camera move dx dy dz");
     console_shell_msg(cs, engine, "  select id");
+    console_shell_msg(cs, engine, "  map load name            - load map INI from maps/");
 }
 
 static void cmd_entity_create(console_state *cs, bf_engine *engine, const char *args)
@@ -570,6 +571,30 @@ static void cmd_select(console_state *cs, bf_engine *engine, const char *args)
     console_shell_msg(cs, engine, "Selected entity %d.", id);
 }
 
+static void cmd_map_load(console_state *cs, bf_engine *engine, const char *args)
+{
+    const char *name = skip_ws(args);
+    if (*name == '\0') {
+        console_shell_msg(cs, engine, "Usage: map load <name>");
+        return;
+    }
+    /* Strip trailing whitespace from name */
+    char name_buf[128];
+    int len = 0;
+    while (name[len] && !isspace((unsigned char)name[len]) && len < 127)
+        name_buf[len] = name[len], len++;
+    name_buf[len] = '\0';
+
+    if (!cs->load_map) {
+        console_shell_msg(cs, engine, "Map loading not available.");
+        return;
+    }
+    if (cs->load_map(name_buf, engine, cs->load_map_user_data) == 0)
+        console_shell_msg(cs, engine, "Map '%s' loaded.", name_buf);
+    else
+        console_shell_msg(cs, engine, "Failed to load map '%s'.", name_buf);
+}
+
 /* --- Main command dispatcher --- */
 
 static void console_execute(console_state *cs, bf_engine *engine)
@@ -607,6 +632,18 @@ static void console_execute(console_state *cs, bf_engine *engine)
         return;
     }
 
+    /* map sub-commands */
+    rest = match_prefix(input, "map");
+    if (rest) {
+        const char *sub;
+        sub = match_prefix(rest, "load");
+        if (sub) { cmd_map_load(cs, engine, sub); return; }
+
+        console_shell_msg(cs, engine,
+            "Unknown map command. Try: load");
+        return;
+    }
+
     /* camera sub-commands */
     rest = match_prefix(input, "camera");
     if (rest) {
@@ -634,6 +671,7 @@ static const char *completions[] = {
     "entity face ",
     "entity animate ",
     "camera move ",
+    "map load ",
     NULL
 };
 

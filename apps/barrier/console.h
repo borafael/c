@@ -41,6 +41,10 @@ typedef struct {
     /* Screen dimensions (set at init) */
     int screen_width;
     int screen_height;
+
+    /* Client callbacks — set by main.c */
+    int (*load_map)(const char *name, bf_engine *engine, void *user_data);
+    void *load_map_user_data;
 } console_state;
 
 int  console_init(console_state *cs, int screen_width, int screen_height,

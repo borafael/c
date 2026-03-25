@@ -1,9 +1,12 @@
 #include "battleforge.h"
 #include "console.h"
 #include "slice.h"
+#include "ini.h"
+#include "stb_image.h"    /* declarations only — implementation lives in slice.c */
 #include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define _USE_MATH_DEFINES
 #include <math.h>
 
@@ -224,6 +227,123 @@ static void init_sprite_frames(void) {
     set(frame_data[15], 8, 10, mouth);
 }
 
+/* --- Map loading --- */
+
+static int load_map_from_ini(const char *name, bf_engine *engine, void *user_data) {
+    (void)user_data;
+    char ini_path[256];
+    snprintf(ini_path, sizeof(ini_path), "apps/barrier/maps/%s.ini", name);
+
+    ini_file *ini = ini_load(ini_path);
+    if (!ini) {
+        fprintf(stderr, "load_map: cannot open '%s'\n", ini_path);
+        return -1;
+    }
+
+    bf_map map = {0};
+    map.width       = ini_get_float(ini, "map", "width", 100.0f);
+    map.depth       = ini_get_float(ini, "map", "depth", 100.0f);
+    map.grid_cols   = ini_get_int(ini, "map", "grid_cols", 64);
+    map.grid_rows   = ini_get_int(ini, "map", "grid_rows", 64);
+    map.max_height  = ini_get_float(ini, "map", "max_height", 10.0f);
+    map.ambient     = ini_get_float(ini, "lighting", "ambient", 0.15f);
+    map.light_intensity = ini_get_float(ini, "lighting", "light_intensity", 0.85f);
+
+    /* Parse light_dir as "x, y, z" */
+    const char *ld = ini_get(ini, "lighting", "light_dir");
+    if (ld) {
+        float lx = 1.0f, ly = 1.0f, lz = -1.0f;
+        sscanf(ld, "%f , %f , %f", &lx, &ly, &lz);
+        map.light_dir = (vector){lx, ly, lz};
+    } else {
+        map.light_dir = (vector){1.0f, 1.0f, -1.0f};
+    }
+
+    /* Load heightmap if specified */
+    const char *hm_file = ini_get(ini, "map", "heightmap");
+    int have_heightmap = 0;
+    if (hm_file) {
+        char hm_path[256];
+        snprintf(hm_path, sizeof(hm_path), "apps/barrier/maps/%s", hm_file);
+        int img_w, img_h, channels;
+        unsigned char *img = stbi_load(hm_path, &img_w, &img_h, &channels, 1);
+        if (img) {
+            if (img_w == map.grid_cols && img_h == map.grid_rows) {
+                map.heights = malloc(sizeof(float) * map.grid_rows * map.grid_cols);
+                if (map.heights) {
+                    for (int i = 0; i < map.grid_rows * map.grid_cols; i++)
+                        map.heights[i] = (img[i] / 255.0f) * map.max_height;
+                    have_heightmap = 1;
+                }
+            } else {
+                fprintf(stderr, "load_map: heightmap %s is %dx%d, expected %dx%d\n",
+                        hm_file, img_w, img_h, map.grid_cols, map.grid_rows);
+            }
+            stbi_image_free(img);
+        } else {
+            fprintf(stderr, "load_map: cannot load heightmap '%s'\n", hm_path);
+        }
+    }
+
+    ini_free(ini);
+
+    if (!have_heightmap) {
+        /* Fall back to procedural terrain */
+        bf_map_generate_test_terrain(&map);
+    } else {
+        /* Generate colors and normals from heightmap */
+        int rows = map.grid_rows;
+        int cols = map.grid_cols;
+        map.colors = calloc((rows - 1) * (cols - 1) * 3, sizeof(uint8_t));
+        map.normals = calloc(rows * cols * 3, sizeof(float));
+
+        /* Color by height */
+        for (int r = 0; r < rows - 1; r++) {
+            for (int c = 0; c < cols - 1; c++) {
+                float avg = (map.heights[r * cols + c]
+                           + map.heights[r * cols + c + 1]
+                           + map.heights[(r + 1) * cols + c]
+                           + map.heights[(r + 1) * cols + c + 1]) * 0.25f;
+                float t = avg / map.max_height;
+                int ci = (r * (cols - 1) + c) * 3;
+                if (t < 0.3f) {
+                    map.colors[ci] = 40; map.colors[ci+1] = 120; map.colors[ci+2] = 40;
+                } else if (t < 0.7f) {
+                    map.colors[ci] = 80; map.colors[ci+1] = 160; map.colors[ci+2] = 60;
+                } else {
+                    map.colors[ci] = 140; map.colors[ci+1] = 110; map.colors[ci+2] = 70;
+                }
+            }
+        }
+
+        /* Vertex normals from finite differences */
+        float cell_w = map.width / (float)(cols - 1);
+        float cell_d = map.depth / (float)(rows - 1);
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                float hL = map.heights[r * cols + (c > 0 ? c - 1 : c)];
+                float hR = map.heights[r * cols + (c < cols - 1 ? c + 1 : c)];
+                float hD = map.heights[(r > 0 ? r - 1 : r) * cols + c];
+                float hU = map.heights[(r < rows - 1 ? r + 1 : r) * cols + c];
+                vector n = vector_normalize((vector){
+                    (hL - hR) / (2.0f * cell_w),
+                    1.0f,
+                    (hD - hU) / (2.0f * cell_d)
+                });
+                int ni = (r * cols + c) * 3;
+                map.normals[ni] = n.x;
+                map.normals[ni + 1] = n.y;
+                map.normals[ni + 2] = n.z;
+            }
+        }
+    }
+
+    bf_set_map(engine, map);
+    fprintf(stderr, "Loaded map '%s' (%dx%d, max_h=%.1f)\n",
+            name, map.grid_cols, map.grid_rows, map.max_height);
+    return 0;
+}
+
 /* --- Main --- */
 
 int main(int argc, char *argv[]) {
@@ -403,6 +523,8 @@ int main(int argc, char *argv[]) {
                      "apps/barrier/assets/font.png") < 0) {
         fprintf(stderr, "Warning: console disabled (font not found)\n");
     }
+    console.load_map = load_map_from_ini;
+    console.load_map_user_data = NULL;
     SDL_StartTextInput();
 
     while (running) {
