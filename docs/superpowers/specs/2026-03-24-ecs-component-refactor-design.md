@@ -231,6 +231,7 @@ depth = 100.0
 grid_cols = 64
 grid_rows = 64
 max_height = 10.0
+heightmap = battlefield_heights.png
 
 [lighting]
 ambient = 0.15
@@ -238,11 +239,13 @@ light_dir = 1.0, 1.0, -1.0
 light_intensity = 0.85
 ```
 
-The map INI defines the grid dimensions, bounds, and lighting. The actual terrain height data can come from a heightmap image or a separate generation step — that is not part of the map definition.
+The map INI defines the grid dimensions, bounds, and lighting. `width` and `depth` set the world-space size in game units. `grid_cols` and `grid_rows` set the terrain mesh resolution.
 
-**Terrain generation** — a separate tool/step that produces height data. Parameters like noise seed, octaves, lacunarity, and persistence belong to the generator, not the map definition. The current `bf_map_generate_test_terrain` is one such generator. Future generators could read from heightmap images or other sources.
+If `heightmap` is present, the client loads the grayscale PNG (must match grid_cols x grid_rows pixels) and maps pixel brightness (0-255) to height values (0 to max_height). If absent, the client can fall back to the procedural generator (`bf_map_generate_test_terrain`) or leave the terrain flat.
 
-The client parses the map INI, builds a `bf_map` struct, populates height data (from a generator or heightmap), and sends it via `bf_set_map`.
+**Terrain generation** — a separate concern from map definition. Parameters like noise seed, octaves, lacunarity, and persistence belong to the generator, not the map INI. The current `bf_map_generate_test_terrain` is one such generator.
+
+The client parses the map INI, builds a `bf_map` struct, populates height data (from heightmap PNG or generator), and sends it via `bf_set_map`.
 
 ## Unit INI Format
 
