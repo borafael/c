@@ -11,6 +11,8 @@ int         ini_get_int(const ini_file *ini, const char *section, const char *ke
 float       ini_get_float(const ini_file *ini, const char *section, const char *key, float fallback);
 int         ini_get_bool(const ini_file *ini, const char *section, const char *key, int fallback);
 
+/* Iteration — index 0 is always the global (unnamed) section with name "".
+   Named sections start at index 1. */
 int         ini_section_count(const ini_file *ini);
 const char *ini_section_name(const ini_file *ini, int index);
 int         ini_key_count(const ini_file *ini, const char *section);

@@ -88,6 +88,9 @@ START_TEST(test_dot_separated_sections)
     const char *v = ini_get(ini, "visual.animation.idle", "columns");
     ck_assert_ptr_nonnull(v);
     ck_assert_str_eq(v, "0");
+    const char *loop = ini_get(ini, "visual.animation.idle", "loop");
+    ck_assert_ptr_nonnull(loop);
+    ck_assert_str_eq(loop, "true");
     ini_free(ini);
 }
 END_TEST
