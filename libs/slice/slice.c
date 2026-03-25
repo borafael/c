@@ -76,6 +76,7 @@ static int parse_ini(const char *ini_path, slice_sheet *sheet) {
         if (frames_str) {
             int tmp[256];
             int n = parse_int_list(frames_str, tmp, 256);
+            if (n <= 0) continue;
             anims[anim_count].columns = malloc(sizeof(int) * n);
             if (anims[anim_count].columns) {
                 memcpy(anims[anim_count].columns, tmp, sizeof(int) * n);
