@@ -390,26 +390,47 @@ Makefile.am            (add libs/ini to SUBDIRS)
 
 The following are documented here to ensure the architecture accommodates them. None are part of the first implementation pass.
 
-### Generic Resource Type
+### Resource System
 
-Health, Stamina, and Morale share the same shape. A generic resource struct avoids duplication:
+Health, Stamina, and Morale share the same shape. Rather than separate component arrays for each, a single resource manager component holds all of an entity's resources:
 
 ```c
 typedef struct {
     float current;
     float max;
 } bf_resource;
+
+typedef enum {
+    BF_RES_HEALTH,
+    BF_RES_STAMINA,
+    BF_RES_MORALE,
+    BF_RES_COUNT
+} bf_resource_type;
+
+typedef struct {
+    bf_resource resources[BF_RES_COUNT];
+    uint32_t resource_mask;   /* which resources this entity has */
+} bf_resource_set;
 ```
 
-Each resource component is a `bf_resource` stored in its own array, with its own bitmask flag.
+One component (`BF_COMP_RESOURCES`), one array (`bf_resource_set resource_sets[MAX_ENTITIES]`). Each entity's `resource_mask` tracks which resource types are active. Adding a new resource type means adding to the `bf_resource_type` enum — no new arrays or component flags needed.
+
+INI configuration:
+
+```ini
+[resources]
+health = 100
+stamina = 50
+morale = 80
+```
+
+The presence and value of each key determines which resources the entity gets and their max (current starts at max).
 
 ### Additional Components
 
 | Component | Type | Notes |
 |-----------|------|-------|
-| Health | bf_resource | Can take damage, dies at zero |
-| Stamina | bf_resource | Fuels abilities like charge |
-| Morale | bf_resource | Determines fight/flee |
+| Resources | bf_resource_set | Health, Stamina, Morale managed via resource_mask |
 | Leadership | radius, morale_bonus | Buffs nearby friendly morale |
 | Team | faction_id | Friend/foe determination, can be added/removed |
 | State | flags (bitmask) | Current condition of the entity |
