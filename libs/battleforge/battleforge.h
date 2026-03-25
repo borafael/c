@@ -56,6 +56,11 @@ typedef struct { int selected; } bf_selection;
 #define MAX_UNIT_DEFS 256
 typedef struct { char name[BF_UNIT_NAME_SIZE]; int sprite_id; float base_speed; int has_selection; } bf_unit_def;
 
+/* --- Map Registry --- */
+
+#define BF_MAP_NAME_SIZE 32
+#define MAX_MAPS 64
+
 /* --- Commands --- */
 
 typedef enum {
@@ -66,6 +71,8 @@ typedef enum {
     BF_CMD_ENTITY_MOVE,
     BF_CMD_ENTITY_FACE,
     BF_CMD_REGISTER_UNIT,
+    BF_CMD_LOAD_MAP,
+    BF_CMD_SELECT_MAP,
     BF_CMD_SELECT,
     BF_CMD_ENTITY_ANIMATE,
     BF_CMD_COUNT
@@ -81,6 +88,8 @@ typedef struct {
         struct { int id; vector target; float speed; bf_loco_type loco_type; } entity_move;
         struct { int id; vector direction; } entity_face;
         struct { bf_unit_def def; } register_unit;
+        struct { char name[BF_MAP_NAME_SIZE]; bf_map *map; } load_map;  /* engine takes ownership */
+        struct { int index; } select_map;
         struct { int id; } select;
         struct { int id; int anim_index; } entity_animate;
     };

@@ -5,6 +5,7 @@
 #include "slice.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <math.h>
 #include <float.h>
 #include <stdarg.h>
@@ -38,6 +39,13 @@ struct bf_engine {
     bf_camera_state camera;
     bf_map map;
     int map_set;
+
+    /* Map registry */
+    struct {
+        char name[BF_MAP_NAME_SIZE];
+        bf_map *map;
+    } maps[MAX_MAPS];
+    int map_count;
 
     struct {
         slice_sheet *sheet;
@@ -328,9 +336,21 @@ void bf_destroy(bf_engine *e) {
     free(e->tasks);
     if (e->rt_cam) rt_camera_destroy(e->rt_cam);
     if (e->scene) rt_scene_destroy(e->scene);
-    free(e->map.heights);
-    free(e->map.colors);
-    free(e->map.normals);
+    /* Free registered maps (they own the height/color/normal data) */
+    for (int i = 0; i < e->map_count; i++) {
+        if (e->maps[i].map) {
+            free(e->maps[i].map->heights);
+            free(e->maps[i].map->colors);
+            free(e->maps[i].map->normals);
+            free(e->maps[i].map);
+        }
+    }
+    /* If the active map was set via bf_set_map (not from registry), free it */
+    if (e->map_set && e->map_count == 0) {
+        free(e->map.heights);
+        free(e->map.colors);
+        free(e->map.normals);
+    }
     free(e);
 }
 
@@ -585,6 +605,44 @@ static void cmd_entity_animate(bf_engine *e, const bf_cmd *cmd) {
     e->visuals[id].anim_fps = sheet->fps;
 }
 
+/* --- Map commands --- */
+
+static void resnap_entities(bf_engine *e) {
+    if (!e->map_set || !e->map.heights) return;
+    for (int i = 0; i < MAX_ENTITIES; i++) {
+        if (!(e->component_masks[i] & BF_COMP_POSITION)) continue;
+        if (e->component_masks[i] & BF_COMP_LOCOMOTION) continue; /* moving entities snap via locomotion */
+        e->positions[i].position.y = bf_map_height_at(&e->map,
+            e->positions[i].position.x, e->positions[i].position.z);
+    }
+}
+
+static void cmd_load_map(bf_engine *e, const bf_cmd *cmd) {
+    if (e->map_count >= MAX_MAPS) {
+        bf_log(e, BF_LOG_ERROR, "cannot load map: max maps reached");
+        return;
+    }
+    int idx = e->map_count;
+    strncpy(e->maps[idx].name, cmd->load_map.name, BF_MAP_NAME_SIZE - 1);
+    e->maps[idx].name[BF_MAP_NAME_SIZE - 1] = '\0';
+    e->maps[idx].map = cmd->load_map.map; /* engine takes ownership */
+    e->map_count++;
+    bf_log(e, BF_LOG_INFO, "loaded map '%s' (id=%d)", e->maps[idx].name, idx);
+}
+
+static void cmd_select_map(bf_engine *e, const bf_cmd *cmd) {
+    int idx = cmd->select_map.index;
+    if (idx < 0 || idx >= e->map_count) {
+        bf_log(e, BF_LOG_ERROR, "invalid map index %d", idx);
+        return;
+    }
+    /* Point active map at registry entry — registry owns the data */
+    e->map = *e->maps[idx].map;
+    e->map_set = 1;
+    resnap_entities(e);
+    bf_log(e, BF_LOG_INFO, "selected map '%s'", e->maps[idx].name);
+}
+
 /* --- Dispatch table --- */
 
 static void (*cmd_handlers[BF_CMD_COUNT])(bf_engine *, const bf_cmd *) = {
@@ -595,6 +653,8 @@ static void (*cmd_handlers[BF_CMD_COUNT])(bf_engine *, const bf_cmd *) = {
     [BF_CMD_ENTITY_MOVE]       = cmd_entity_move,
     [BF_CMD_ENTITY_FACE]       = cmd_entity_face,
     [BF_CMD_REGISTER_UNIT]     = cmd_register_unit,
+    [BF_CMD_LOAD_MAP]          = cmd_load_map,
+    [BF_CMD_SELECT_MAP]        = cmd_select_map,
     [BF_CMD_SELECT]            = cmd_select,
     [BF_CMD_ENTITY_ANIMATE]    = cmd_entity_animate,
 };

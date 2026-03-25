@@ -338,9 +338,36 @@ static int load_map_from_ini(const char *name, bf_engine *engine, void *user_dat
         }
     }
 
-    bf_set_map(engine, map);
-    fprintf(stderr, "Loaded map '%s' (%dx%d, max_h=%.1f)\n",
-            name, map.grid_cols, map.grid_rows, map.max_height);
+    /* Allocate map on heap — engine takes ownership */
+    bf_map *heap_map = malloc(sizeof(bf_map));
+    if (!heap_map) {
+        free(map.heights);
+        free(map.colors);
+        free(map.normals);
+        return -1;
+    }
+    *heap_map = map;
+
+    /* Register map with engine */
+    bf_cmd load_cmd = { .type = BF_CMD_LOAD_MAP };
+    snprintf(load_cmd.load_map.name, BF_MAP_NAME_SIZE, "%s", name);
+    load_cmd.load_map.map = heap_map;
+    bf_command(engine, load_cmd);
+
+    /* Flush the load command, then select the map */
+    bf_tick(engine, 0.0f);
+
+    /* Find the map index (it's the latest registered) */
+    static int map_count = 0;
+    int map_idx = map_count++;
+
+    bf_command(engine, (bf_cmd){
+        .type = BF_CMD_SELECT_MAP,
+        .select_map = { .index = map_idx }
+    });
+
+    fprintf(stderr, "Loaded map '%s' (idx=%d, %dx%d, max_h=%.1f)\n",
+            name, map_idx, map.grid_cols, map.grid_rows, map.max_height);
     return 0;
 }
 
@@ -377,19 +404,8 @@ int main(int argc, char *argv[]) {
         .num_threads = 0
     });
 
-    /* Set map and generate terrain */
-    bf_map map = {
-        .width = 100.0f,
-        .depth = 100.0f,
-        .grid_cols = 64,
-        .grid_rows = 64,
-        .max_height = 10.0f,
-        .ambient = 0.15f,
-        .light_dir = {1.0f, 1.0f, -1.0f},
-        .light_intensity = 0.85f
-    };
-    bf_map_generate_test_terrain(&map);
-    bf_set_map(engine, map);
+    /* Load default map via the command system */
+    load_map_from_ini("battlefield", engine, NULL);
 
     /* Build a programmatic slice_sheet from procedural frame data.
        Static storage: engine borrows these pointers for its lifetime. */
