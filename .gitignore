@@ -93,6 +93,11 @@ apps/nbody/nbody
 apps/barrier/barrier
 apps/rtdemo/rtdemo
 
+# --- Test binaries and results ---
+libs/math/tests/check_vector
+libs/ini/tests/check_ini
+*.trs
+
 # --- Build stamps ---
 libs/math/tests/.dirstamp
 
