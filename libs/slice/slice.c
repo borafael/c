@@ -1,4 +1,5 @@
 #include "slice.h"
+#include "ini.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,7 +8,6 @@
 #include "stb_image.h"
 
 #define MAX_ANIMS 64
-#define MAX_LINE 256
 
 int slice_anim_index(const slice_sheet *sheet, const char *name) {
     if (!sheet || !name) return -1;
@@ -46,68 +46,46 @@ static int parse_int_list(const char *str, int *out, int max) {
 }
 
 static int parse_ini(const char *ini_path, slice_sheet *sheet) {
-    FILE *f = fopen(ini_path, "r");
-    if (!f) {
+    ini_file *ini = ini_load(ini_path);
+    if (!ini) {
         fprintf(stderr, "slice: cannot open INI '%s'\n", ini_path);
         return -1;
     }
 
+    /* Global keys (before any section) */
+    sheet->frame_width  = ini_get_int(ini, "", "frame_width", 0);
+    sheet->frame_height = ini_get_int(ini, "", "frame_height", 0);
+    sheet->angles       = ini_get_int(ini, "", "angles", 0);
+    sheet->fps          = ini_get_float(ini, "", "fps", 0.0f);
+
+    /* Count animation sections (any non-empty section name) */
+    int sec_count = ini_section_count(ini);
     slice_anim anims[MAX_ANIMS];
     int anim_count = 0;
-    int in_section = 0;
-    char line[MAX_LINE];
 
-    while (fgets(line, sizeof(line), f)) {
-        char *nl = strchr(line, '\n');
-        if (nl) *nl = '\0';
-        char *cr = strchr(line, '\r');
-        if (cr) *cr = '\0';
+    for (int i = 0; i < sec_count && anim_count < MAX_ANIMS; i++) {
+        const char *name = ini_section_name(ini, i);
+        if (!name || name[0] == '\0') continue; /* skip global section */
 
-        if (line[0] == '\0' || line[0] == '#' || line[0] == ';')
-            continue;
+        memset(&anims[anim_count], 0, sizeof(slice_anim));
+        strncpy(anims[anim_count].name, name, 31);
+        anims[anim_count].name[31] = '\0';
+        anims[anim_count].loop = ini_get_bool(ini, name, "loop", 1);
 
-        if (line[0] == '[') {
-            char *end = strchr(line, ']');
-            if (!end) continue;
-            *end = '\0';
-            if (anim_count >= MAX_ANIMS) continue;
-            memset(&anims[anim_count], 0, sizeof(slice_anim));
-            strncpy(anims[anim_count].name, line + 1, 31);
-            anims[anim_count].name[31] = '\0';
-            anims[anim_count].loop = 1;
-            in_section = 1;
-            anim_count++;
-            continue;
-        }
-
-        char *eq = strchr(line, '=');
-        if (!eq) continue;
-        *eq = '\0';
-        char *key = line;
-        char *val = eq + 1;
-
-        if (!in_section) {
-            if (strcmp(key, "frame_width") == 0) sheet->frame_width = atoi(val);
-            else if (strcmp(key, "frame_height") == 0) sheet->frame_height = atoi(val);
-            else if (strcmp(key, "angles") == 0) sheet->angles = atoi(val);
-            else if (strcmp(key, "fps") == 0) sheet->fps = (float)atof(val);
-        } else {
-            slice_anim *a = &anims[anim_count - 1];
-            if (strcmp(key, "frames") == 0) {
-                int tmp[256];
-                int n = parse_int_list(val, tmp, 256);
-                a->columns = malloc(sizeof(int) * n);
-                if (a->columns) {
-                    memcpy(a->columns, tmp, sizeof(int) * n);
-                    a->column_count = n;
-                }
-            } else if (strcmp(key, "loop") == 0) {
-                a->loop = (strcmp(val, "false") != 0);
+        const char *frames_str = ini_get(ini, name, "frames");
+        if (frames_str) {
+            int tmp[256];
+            int n = parse_int_list(frames_str, tmp, 256);
+            anims[anim_count].columns = malloc(sizeof(int) * n);
+            if (anims[anim_count].columns) {
+                memcpy(anims[anim_count].columns, tmp, sizeof(int) * n);
+                anims[anim_count].column_count = n;
             }
         }
+        anim_count++;
     }
 
-    fclose(f);
+    ini_free(ini);
 
     if (anim_count > 0) {
         sheet->anims = malloc(sizeof(slice_anim) * anim_count);
