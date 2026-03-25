@@ -456,11 +456,10 @@ static void cmd_help(console_state *cs, bf_engine *engine, const char *args)
     (void)args;
     console_shell_msg(cs, engine, "Available commands:");
     console_shell_msg(cs, engine, "  help                     - show this help");
-    console_shell_msg(cs, engine, "  entity create id spr x y z dx dy dz speed");
+    console_shell_msg(cs, engine, "  entity create id unit_def_id x y z dx dy dz");
     console_shell_msg(cs, engine, "  entity destroy id");
     console_shell_msg(cs, engine, "  entity move id x y z");
     console_shell_msg(cs, engine, "  entity face id dx dy dz");
-    console_shell_msg(cs, engine, "  entity speed id speed");
     console_shell_msg(cs, engine, "  entity animate id anim_index");
     console_shell_msg(cs, engine, "  camera move dx dy dz");
     console_shell_msg(cs, engine, "  select id");
@@ -468,26 +467,24 @@ static void cmd_help(console_state *cs, bf_engine *engine, const char *args)
 
 static void cmd_entity_create(console_state *cs, bf_engine *engine, const char *args)
 {
-    int id, sprite_id;
-    float x, y, z, dx, dy, dz, speed;
+    int id, unit_def_id;
+    float x, y, z, dx, dy, dz;
     const char *p = args;
 
-    if (parse_int(&p, &id) || parse_int(&p, &sprite_id) ||
+    if (parse_int(&p, &id) || parse_int(&p, &unit_def_id) ||
         parse_float(&p, &x) || parse_float(&p, &y) || parse_float(&p, &z) ||
-        parse_float(&p, &dx) || parse_float(&p, &dy) || parse_float(&p, &dz) ||
-        parse_float(&p, &speed)) {
+        parse_float(&p, &dx) || parse_float(&p, &dy) || parse_float(&p, &dz)) {
         console_shell_msg(cs, engine,
-            "Usage: entity create id sprite_id x y z dx dy dz speed");
+            "Usage: entity create id unit_def_id x y z dx dy dz");
         return;
     }
 
     bf_cmd cmd = {
         .type = BF_CMD_ENTITY_CREATE,
         .entity_create = {
-            .id = id, .sprite_id = sprite_id,
+            .id = id, .unit_def_id = unit_def_id,
             .position = {x, y, z},
-            .direction = {dx, dy, dz},
-            .speed = speed
+            .direction = {dx, dy, dz}
         }
     };
     bf_command(engine, cmd);
@@ -516,7 +513,8 @@ static void cmd_entity_move(console_state *cs, bf_engine *engine, const char *ar
         return;
     }
     bf_command(engine, (bf_cmd){ .type = BF_CMD_ENTITY_MOVE,
-        .entity_move = { .id = id, .position = {x, y, z} } });
+        .entity_move = { .id = id, .target = {x, y, z},
+                         .speed = 3.0f, .loco_type = BF_LOCO_LINEAR } });
     console_shell_msg(cs, engine, "Entity %d moving to (%.1f, %.1f, %.1f).", id, x, y, z);
 }
 
@@ -532,20 +530,6 @@ static void cmd_entity_face(console_state *cs, bf_engine *engine, const char *ar
     bf_command(engine, (bf_cmd){ .type = BF_CMD_ENTITY_FACE,
         .entity_face = { .id = id, .direction = {dx, dy, dz} } });
     console_shell_msg(cs, engine, "Entity %d facing (%.1f, %.1f, %.1f).", id, dx, dy, dz);
-}
-
-static void cmd_entity_speed(console_state *cs, bf_engine *engine, const char *args)
-{
-    int id;
-    float speed;
-    const char *p = args;
-    if (parse_int(&p, &id) || parse_float(&p, &speed)) {
-        console_shell_msg(cs, engine, "Usage: entity speed id speed");
-        return;
-    }
-    bf_command(engine, (bf_cmd){ .type = BF_CMD_ENTITY_SET_SPEED,
-        .entity_set_speed = { .id = id, .speed = speed } });
-    console_shell_msg(cs, engine, "Entity %d speed set to %.1f.", id, speed);
 }
 
 static void cmd_entity_animate(console_state *cs, bf_engine *engine, const char *args)
@@ -615,13 +599,11 @@ static void console_execute(console_state *cs, bf_engine *engine)
         if (sub) { cmd_entity_move(cs, engine, sub); return; }
         sub = match_prefix(rest, "face");
         if (sub) { cmd_entity_face(cs, engine, sub); return; }
-        sub = match_prefix(rest, "speed");
-        if (sub) { cmd_entity_speed(cs, engine, sub); return; }
         sub = match_prefix(rest, "animate");
         if (sub) { cmd_entity_animate(cs, engine, sub); return; }
 
         console_shell_msg(cs, engine,
-            "Unknown entity command. Try: create, destroy, move, face, speed, animate");
+            "Unknown entity command. Try: create, destroy, move, face, animate");
         return;
     }
 
@@ -650,7 +632,6 @@ static const char *completions[] = {
     "entity destroy ",
     "entity move ",
     "entity face ",
-    "entity speed ",
     "entity animate ",
     "camera move ",
     NULL

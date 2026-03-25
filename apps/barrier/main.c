@@ -302,6 +302,16 @@ int main(int argc, char *argv[]) {
 
     int spr_id = bf_register_sprite(engine, &smiley_sheet, 2.0f, 2.0f);
 
+    /* Register smiley as unit def 0 */
+    {
+        bf_unit_def smiley_def = { .sprite_id = spr_id, .base_speed = 3.0f, .has_selection = 1 };
+        snprintf(smiley_def.name, BF_UNIT_NAME_SIZE, "smiley");
+        bf_command(engine, (bf_cmd){
+            .type = BF_CMD_REGISTER_UNIT,
+            .register_unit = { .def = smiley_def }
+        });
+    }
+
     /* Load unit sprite sheets */
     static const char *unit_names[] = {
         "rifleman", "heavy", "scout", "sniper", "medic",
@@ -313,23 +323,35 @@ int main(int argc, char *argv[]) {
     #define ARMY_SIZE 10
 
     slice_sheet *unit_sheets[NUM_UNIT_TYPES] = {0};
-    int unit_spr_ids[NUM_UNIT_TYPES];
+    int unit_def_ids[NUM_UNIT_TYPES];  /* unit def index (1..20) */
     int loaded_count = 0;
 
     for (int i = 0; i < NUM_UNIT_TYPES; i++) {
         char path[256];
         snprintf(path, sizeof(path), "apps/barrier/assets/%s.png", unit_names[i]);
         unit_sheets[i] = slice_load(path);
+        int sprite_id;
         if (unit_sheets[i]) {
-            unit_spr_ids[i] = bf_register_sprite(engine, unit_sheets[i], 2.0f, 2.0f);
-            fprintf(stderr, "Loaded %s sprite (id=%d)\n", unit_names[i], unit_spr_ids[i]);
+            sprite_id = bf_register_sprite(engine, unit_sheets[i], 2.0f, 2.0f);
+            fprintf(stderr, "Loaded %s sprite (id=%d)\n", unit_names[i], sprite_id);
             loaded_count++;
         } else {
-            unit_spr_ids[i] = spr_id;  /* fallback to smiley */
+            sprite_id = spr_id;  /* fallback to smiley */
             fprintf(stderr, "Warning: could not load %s.png, using fallback\n", unit_names[i]);
         }
+        /* Register unit def (index i+1, since smiley is 0) */
+        bf_unit_def udef = { .sprite_id = sprite_id, .base_speed = 3.0f, .has_selection = 1 };
+        snprintf(udef.name, BF_UNIT_NAME_SIZE, "%s", unit_names[i]);
+        bf_command(engine, (bf_cmd){
+            .type = BF_CMD_REGISTER_UNIT,
+            .register_unit = { .def = udef }
+        });
+        unit_def_ids[i] = i + 1;  /* unit def index */
     }
     fprintf(stderr, "Loaded %d/%d unit sprites\n", loaded_count, NUM_UNIT_TYPES);
+
+    /* Process registration commands before creating entities */
+    bf_tick(engine, 0.0f);
 
     /* Create two armies on opposite sides of the field */
     /* Army 1 (units 0-9): near z=15, facing south toward center */
@@ -338,10 +360,9 @@ int main(int argc, char *argv[]) {
         float z = 15.0f + (i / 5) * 4.0f;
         bf_command(engine, (bf_cmd){
             .type = BF_CMD_ENTITY_CREATE,
-            .entity_create = { .id = i + 1, .sprite_id = unit_spr_ids[i],
+            .entity_create = { .id = i + 1, .unit_def_id = unit_def_ids[i],
                                .position = {x, 0.0f, z},
-                               .direction = {0.0f, 0.0f, 1.0f},
-                               .speed = 3.0f }
+                               .direction = {0.0f, 0.0f, 1.0f} }
         });
     }
     /* Army 2 (units 10-19): near z=85, facing north toward center */
@@ -351,10 +372,9 @@ int main(int argc, char *argv[]) {
         bf_command(engine, (bf_cmd){
             .type = BF_CMD_ENTITY_CREATE,
             .entity_create = { .id = ARMY_SIZE + i + 1,
-                               .sprite_id = unit_spr_ids[ARMY_SIZE + i],
+                               .unit_def_id = unit_def_ids[ARMY_SIZE + i],
                                .position = {x, 0.0f, z},
-                               .direction = {0.0f, 0.0f, -1.0f},
-                               .speed = 3.0f }
+                               .direction = {0.0f, 0.0f, -1.0f} }
         });
     }
 
@@ -370,7 +390,7 @@ int main(int argc, char *argv[]) {
     float cam_yaw = 0.0f;  /* facing -Z initially */
     float cam_pitch = -0.3f;
     float cam_x = 30.0f, cam_y = 20.0f, cam_z = 55.0f;
-    int selected_id = 0;
+    int selected_id = -1;
 
     Uint32 fps_last = SDL_GetTicks();
     Uint32 frame_last = SDL_GetTicks();
@@ -431,20 +451,22 @@ int main(int argc, char *argv[]) {
                         });
                         fprintf(stderr, "Selected entity %d\n", pick.entity_id);
                     } else {
-                        selected_id = 0;
+                        selected_id = -1;
                         bf_command(engine, (bf_cmd){
                             .type = BF_CMD_SELECT,
-                            .select = { .id = 0 }
+                            .select = { .id = -1 }
                         });
                         fprintf(stderr, "Deselected\n");
                     }
                 } else if (e.button.button == SDL_BUTTON_RIGHT) {
-                    if (selected_id > 0 && pick.type == BF_PICK_GROUND) {
+                    if (selected_id >= 0 && pick.type == BF_PICK_GROUND) {
                         vector dest = pick.position;
                         bf_command(engine, (bf_cmd){
                             .type = BF_CMD_ENTITY_MOVE,
                             .entity_move = { .id = selected_id,
-                                             .position = dest }
+                                             .target = dest,
+                                             .speed = 3.0f,
+                                             .loco_type = BF_LOCO_LINEAR }
                         });
                         fprintf(stderr, "Move entity %d to (%.1f, %.1f, %.1f)\n",
                                 selected_id, dest.x, dest.y, dest.z);
