@@ -32,6 +32,30 @@ typedef struct {
     float light_intensity;
 } bf_map;
 
+/* --- ECS Components --- */
+
+typedef enum {
+    BF_COMP_NONE       = 0,
+    BF_COMP_POSITION   = (1 << 0),
+    BF_COMP_VISUAL     = (1 << 1),
+    BF_COMP_LOCOMOTION = (1 << 2),
+    BF_COMP_SELECTION  = (1 << 3),
+} bf_component;
+
+typedef struct { vector position; vector direction; } bf_position;
+typedef struct { int sprite_id; int anim_index; int anim_frame; float frame_timer; float anim_fps; } bf_visual;
+typedef enum { BF_LOCO_LINEAR, BF_LOCO_PARABOLIC, BF_LOCO_INSTANT } bf_loco_type;
+typedef struct { vector origin; vector target; float speed; float progress; } bf_trajectory_linear;
+typedef struct { vector origin; vector target; float speed; float progress; float arc_height; } bf_trajectory_parabolic;
+typedef struct { bf_loco_type type; union { bf_trajectory_linear linear; bf_trajectory_parabolic parabolic; }; } bf_locomotion;
+typedef struct { int selected; } bf_selection;
+
+/* --- Unit Definitions --- */
+
+#define BF_UNIT_NAME_SIZE 32
+#define MAX_UNIT_DEFS 256
+typedef struct { char name[BF_UNIT_NAME_SIZE]; int sprite_id; float base_speed; int has_selection; } bf_unit_def;
+
 /* --- Commands --- */
 
 typedef enum {
@@ -41,7 +65,7 @@ typedef enum {
     BF_CMD_ENTITY_DESTROY,
     BF_CMD_ENTITY_MOVE,
     BF_CMD_ENTITY_FACE,
-    BF_CMD_ENTITY_SET_SPEED,
+    BF_CMD_REGISTER_UNIT,
     BF_CMD_SELECT,
     BF_CMD_ENTITY_ANIMATE,
     BF_CMD_COUNT
@@ -52,11 +76,11 @@ typedef struct {
     union {
         struct { vector position; vector direction; } camera_set;
         struct { vector delta; } camera_move;
-        struct { int id; int sprite_id; vector position; vector direction; float speed; } entity_create;
+        struct { int id; int unit_def_id; vector position; vector direction; } entity_create;
         struct { int id; } entity_destroy;
-        struct { int id; vector position; } entity_move;
+        struct { int id; vector target; float speed; bf_loco_type loco_type; } entity_move;
         struct { int id; vector direction; } entity_face;
-        struct { int id; float speed; } entity_set_speed;
+        struct { bf_unit_def def; } register_unit;
         struct { int id; } select;
         struct { int id; int anim_index; } entity_animate;
     };
