@@ -20,20 +20,6 @@
 #define MAX_ANGLES 32
 
 typedef struct {
-    int id;
-    int sprite_id;
-    vector position;
-    vector direction;
-    vector target;
-    float speed;
-    int active;
-    int anim_index;     /* -1 = no animation */
-    int anim_frame;     /* current frame within animation */
-    float frame_timer;  /* time accumulator */
-    float anim_fps;     /* playback speed */
-} bf_entity;
-
-typedef struct {
     vector position;
     vector direction;
 } bf_camera_state;
@@ -60,8 +46,21 @@ struct bf_engine {
     } sprites[MAX_SPRITES];
     int sprite_count;
 
-    bf_entity entities[MAX_ENTITIES];
-    int entity_count;
+    /* ECS component arrays */
+    uint32_t component_masks[MAX_ENTITIES];
+    bf_position positions[MAX_ENTITIES];
+    bf_visual visuals[MAX_ENTITIES];
+    bf_locomotion locomotions[MAX_ENTITIES];
+    bf_selection selections[MAX_ENTITIES];
+
+    /* Free list for entity allocation */
+    int free_stack[MAX_ENTITIES];
+    int free_top;
+
+    /* Unit definitions */
+    bf_unit_def unit_defs[MAX_UNIT_DEFS];
+    int unit_def_count;
+
     int selected_entity_id;
 
     bf_cmd cmd_queue[CMD_QUEUE_SIZE];
@@ -282,6 +281,12 @@ bf_engine *bf_create(bf_config config) {
     e->config = config;
     e->viewport = (rt_viewport){ config.render_width, config.render_height, config.fov };
 
+    /* Initialize free list (push all indices, highest first so 0 is popped first) */
+    e->free_top = -1;
+    for (int i = MAX_ENTITIES - 1; i >= 0; i--)
+        e->free_stack[++e->free_top] = i;
+    e->selected_entity_id = -1;
+
     /* Default camera */
     e->camera.position = (vector){0.0f, 5.0f, 10.0f};
     e->camera.direction = (vector){0.0f, -0.3f, -1.0f};
@@ -378,14 +383,17 @@ const bf_log_entry *bf_log_get(const bf_engine *e, int index) {
     return &e->log_buffer[pos];
 }
 
-/* --- Entity lookup by id --- */
+/* --- Entity allocation helpers --- */
 
-static bf_entity *find_entity(bf_engine *e, int id) {
-    for (int i = 0; i < e->entity_count; i++) {
-        if (e->entities[i].id == id && e->entities[i].active)
-            return &e->entities[i];
-    }
-    return NULL;
+static int alloc_entity(bf_engine *e) {
+    if (e->free_top < 0) return -1;
+    return e->free_stack[e->free_top--];
+}
+
+static void free_entity(bf_engine *e, int id) {
+    if (id < 0 || id >= MAX_ENTITIES) return;
+    e->component_masks[id] = BF_COMP_NONE;
+    e->free_stack[++e->free_top] = id;
 }
 
 /* --- Command handlers --- */
@@ -399,84 +407,173 @@ static void cmd_camera_move(bf_engine *e, const bf_cmd *cmd) {
     e->camera.position = vector_add(e->camera.position, cmd->camera_move.delta);
 }
 
+static void cmd_register_unit(bf_engine *e, const bf_cmd *cmd) {
+    if (e->unit_def_count >= MAX_UNIT_DEFS) {
+        bf_log(e, BF_LOG_ERROR, "cannot register unit: max unit defs reached");
+        return;
+    }
+    e->unit_defs[e->unit_def_count] = cmd->register_unit.def;
+    bf_log(e, BF_LOG_INFO, "registered unit def %d: '%s'",
+           e->unit_def_count, cmd->register_unit.def.name);
+    e->unit_def_count++;
+}
+
 static void cmd_entity_create(bf_engine *e, const bf_cmd *cmd) {
-    if (e->entity_count >= MAX_ENTITIES) {
+    int def_id = cmd->entity_create.unit_def_id;
+    if (def_id < 0 || def_id >= e->unit_def_count) {
+        bf_log(e, BF_LOG_ERROR, "cannot create entity: invalid unit_def_id %d", def_id);
+        return;
+    }
+
+    int id = alloc_entity(e);
+    if (id < 0) {
         bf_log(e, BF_LOG_ERROR, "cannot create entity: max entities reached");
         return;
     }
-    bf_entity ent = {
-        .id = cmd->entity_create.id,
-        .sprite_id = cmd->entity_create.sprite_id,
-        .position = cmd->entity_create.position,
-        .direction = cmd->entity_create.direction,
-        .target = cmd->entity_create.position,
-        .speed = cmd->entity_create.speed,
-        .active = 1,
-        .anim_index = -1,
-        .anim_frame = 0,
-        .frame_timer = 0.0f,
-        .anim_fps = 0.0f
-    };
-    e->entities[e->entity_count++] = ent;
+
+    /* The client passes an id hint in cmd->entity_create.id but we use
+       our own allocator.  To let the client reference entities by the id
+       we return, we still honour the hint: if the requested slot is free
+       we use it; otherwise we use whatever alloc gave us. */
+    int requested = cmd->entity_create.id;
+    if (requested >= 0 && requested < MAX_ENTITIES && requested != id) {
+        /* Check if requested slot is free (i.e., mask == NONE) and swap back */
+        if (e->component_masks[requested] == BF_COMP_NONE) {
+            /* Push the id we got back, and use the requested one */
+            e->free_stack[++e->free_top] = id;
+            id = requested;
+            /* Remove 'requested' from the free stack */
+            for (int i = 0; i <= e->free_top; i++) {
+                if (e->free_stack[i] == requested) {
+                    e->free_stack[i] = e->free_stack[e->free_top--];
+                    break;
+                }
+            }
+        }
+    }
+
+    bf_unit_def *def = &e->unit_defs[def_id];
+
+    /* Position component */
+    e->positions[id].position = cmd->entity_create.position;
+    e->positions[id].direction = cmd->entity_create.direction;
+
+    /* Snap to terrain */
+    if (e->map_set && e->map.heights) {
+        e->positions[id].position.y = bf_map_height_at(&e->map,
+            cmd->entity_create.position.x, cmd->entity_create.position.z);
+    }
+
+    /* Visual component */
+    e->visuals[id].sprite_id = def->sprite_id;
+    e->visuals[id].anim_index = -1;
+    e->visuals[id].anim_frame = 0;
+    e->visuals[id].frame_timer = 0.0f;
+    e->visuals[id].anim_fps = 0.0f;
+
+    /* Selection component */
+    e->selections[id].selected = 0;
+
+    uint32_t mask = BF_COMP_POSITION | BF_COMP_VISUAL;
+    if (def->has_selection)
+        mask |= BF_COMP_SELECTION;
+    e->component_masks[id] = mask;
+
     bf_log(e, BF_LOG_INFO, "entity %d created at (%.1f, %.1f, %.1f)",
-           ent.id, ent.position.x, ent.position.y, ent.position.z);
+           id, e->positions[id].position.x, e->positions[id].position.y,
+           e->positions[id].position.z);
 }
 
 static void cmd_entity_destroy(bf_engine *e, const bf_cmd *cmd) {
-    bf_entity *ent = find_entity(e, cmd->entity_destroy.id);
-    if (ent) {
-        ent->active = 0;
-        if (e->selected_entity_id == ent->id)
-            e->selected_entity_id = 0;
-        bf_log(e, BF_LOG_INFO, "entity %d destroyed", cmd->entity_destroy.id);
-    }
+    int id = cmd->entity_destroy.id;
+    if (id < 0 || id >= MAX_ENTITIES) return;
+    if (!(e->component_masks[id] & BF_COMP_POSITION)) return;
+    if (e->selected_entity_id == id)
+        e->selected_entity_id = -1;
+    free_entity(e, id);
+    bf_log(e, BF_LOG_INFO, "entity %d destroyed", id);
 }
 
 static void cmd_entity_move(bf_engine *e, const bf_cmd *cmd) {
-    bf_entity *ent = find_entity(e, cmd->entity_move.id);
-    if (ent) {
-        ent->target = cmd->entity_move.position;
-        bf_log(e, BF_LOG_INFO, "entity %d moving to (%.1f, %.1f, %.1f)",
-               cmd->entity_move.id, cmd->entity_move.position.x,
-               cmd->entity_move.position.y, cmd->entity_move.position.z);
+    int id = cmd->entity_move.id;
+    if (id < 0 || id >= MAX_ENTITIES) return;
+    if (!(e->component_masks[id] & BF_COMP_POSITION)) return;
+
+    bf_loco_type ltype = cmd->entity_move.loco_type;
+
+    if (ltype == BF_LOCO_INSTANT) {
+        /* Instant: just set position directly */
+        e->positions[id].position = cmd->entity_move.target;
+        if (e->map_set && e->map.heights) {
+            e->positions[id].position.y = bf_map_height_at(&e->map,
+                cmd->entity_move.target.x, cmd->entity_move.target.z);
+        }
+        e->component_masks[id] &= ~BF_COMP_LOCOMOTION;
+        bf_log(e, BF_LOG_INFO, "entity %d teleported to (%.1f, %.1f, %.1f)",
+               id, e->positions[id].position.x, e->positions[id].position.y,
+               e->positions[id].position.z);
+        return;
     }
+
+    e->locomotions[id].type = ltype;
+    if (ltype == BF_LOCO_LINEAR) {
+        e->locomotions[id].linear = (bf_trajectory_linear){
+            .origin = e->positions[id].position,
+            .target = cmd->entity_move.target,
+            .speed = cmd->entity_move.speed,
+            .progress = 0.0f
+        };
+    } else if (ltype == BF_LOCO_PARABOLIC) {
+        e->locomotions[id].parabolic = (bf_trajectory_parabolic){
+            .origin = e->positions[id].position,
+            .target = cmd->entity_move.target,
+            .speed = cmd->entity_move.speed,
+            .progress = 0.0f,
+            .arc_height = 5.0f
+        };
+    }
+    e->component_masks[id] |= BF_COMP_LOCOMOTION;
+
+    bf_log(e, BF_LOG_INFO, "entity %d moving to (%.1f, %.1f, %.1f)",
+           id, cmd->entity_move.target.x,
+           cmd->entity_move.target.y, cmd->entity_move.target.z);
 }
 
 static void cmd_entity_face(bf_engine *e, const bf_cmd *cmd) {
-    bf_entity *ent = find_entity(e, cmd->entity_face.id);
-    if (ent) ent->direction = cmd->entity_face.direction;
-}
-
-static void cmd_entity_set_speed(bf_engine *e, const bf_cmd *cmd) {
-    bf_entity *ent = find_entity(e, cmd->entity_set_speed.id);
-    if (ent) ent->speed = cmd->entity_set_speed.speed;
+    int id = cmd->entity_face.id;
+    if (id < 0 || id >= MAX_ENTITIES) return;
+    if (!(e->component_masks[id] & BF_COMP_POSITION)) return;
+    e->positions[id].direction = cmd->entity_face.direction;
 }
 
 static void cmd_select(bf_engine *e, const bf_cmd *cmd) {
-    if (cmd->select.id <= 0) {
-        e->selected_entity_id = 0;
+    if (cmd->select.id < 0) {
+        e->selected_entity_id = -1;
         bf_log(e, BF_LOG_INFO, "deselected");
         return;
     }
-    bf_entity *ent = find_entity(e, cmd->select.id);
-    if (ent) {
-        e->selected_entity_id = cmd->select.id;
-        bf_log(e, BF_LOG_INFO, "selected entity %d", cmd->select.id);
-    }
+    int id = cmd->select.id;
+    if (id >= MAX_ENTITIES) return;
+    if (!(e->component_masks[id] & BF_COMP_SELECTION)) return;
+    e->selections[id].selected = 1;
+    e->selected_entity_id = id;
+    bf_log(e, BF_LOG_INFO, "selected entity %d", id);
 }
 
 static void cmd_entity_animate(bf_engine *e, const bf_cmd *cmd) {
-    bf_entity *ent = find_entity(e, cmd->entity_animate.id);
-    if (!ent) return;
-    if (ent->sprite_id < 0 || ent->sprite_id >= e->sprite_count) return;
-    slice_sheet *sheet = e->sprites[ent->sprite_id].sheet;
+    int id = cmd->entity_animate.id;
+    if (id < 0 || id >= MAX_ENTITIES) return;
+    if (!(e->component_masks[id] & BF_COMP_VISUAL)) return;
+    int sprite_id = e->visuals[id].sprite_id;
+    if (sprite_id < 0 || sprite_id >= e->sprite_count) return;
+    slice_sheet *sheet = e->sprites[sprite_id].sheet;
     if (!sheet) return;
     int ai = cmd->entity_animate.anim_index;
     if (ai < 0 || ai >= sheet->anim_count) return;
-    ent->anim_index = ai;
-    ent->anim_frame = 0;
-    ent->frame_timer = 0.0f;
-    ent->anim_fps = sheet->fps;
+    e->visuals[id].anim_index = ai;
+    e->visuals[id].anim_frame = 0;
+    e->visuals[id].frame_timer = 0.0f;
+    e->visuals[id].anim_fps = sheet->fps;
 }
 
 /* --- Dispatch table --- */
@@ -488,10 +585,131 @@ static void (*cmd_handlers[BF_CMD_COUNT])(bf_engine *, const bf_cmd *) = {
     [BF_CMD_ENTITY_DESTROY]    = cmd_entity_destroy,
     [BF_CMD_ENTITY_MOVE]       = cmd_entity_move,
     [BF_CMD_ENTITY_FACE]       = cmd_entity_face,
-    [BF_CMD_ENTITY_SET_SPEED]  = cmd_entity_set_speed,
+    [BF_CMD_REGISTER_UNIT]     = cmd_register_unit,
     [BF_CMD_SELECT]            = cmd_select,
     [BF_CMD_ENTITY_ANIMATE]    = cmd_entity_animate,
 };
+
+/* --- Locomotion system --- */
+
+static void advance_linear(bf_engine *e, int id, float dt) {
+    bf_trajectory_linear *traj = &e->locomotions[id].linear;
+    vector to_target = vector_sub(traj->target, e->positions[id].position);
+    to_target.y = 0.0f;  /* XZ-only distance */
+    float dist = vector_magnitude(to_target);
+    float step = traj->speed * dt;
+
+    if (dist <= step) {
+        e->positions[id].position.x = traj->target.x;
+        e->positions[id].position.z = traj->target.z;
+        traj->progress = 1.0f;
+    } else {
+        vector move_dir = vector_scale(to_target, 1.0f / dist);
+        e->positions[id].direction = move_dir;
+        e->positions[id].position.x += move_dir.x * step;
+        e->positions[id].position.z += move_dir.z * step;
+    }
+
+    /* Snap to terrain height */
+    if (e->map_set && e->map.heights) {
+        e->positions[id].position.y = bf_map_height_at(&e->map,
+            e->positions[id].position.x, e->positions[id].position.z);
+    }
+}
+
+static void advance_parabolic(bf_engine *e, int id, float dt) {
+    bf_trajectory_parabolic *traj = &e->locomotions[id].parabolic;
+    vector to_target = vector_sub(traj->target, traj->origin);
+    to_target.y = 0.0f;
+    float total_dist = vector_magnitude(to_target);
+    if (total_dist < 1e-6f) {
+        traj->progress = 1.0f;
+        e->positions[id].position = traj->target;
+        return;
+    }
+
+    float step = (traj->speed * dt) / total_dist;
+    traj->progress += step;
+    if (traj->progress > 1.0f) traj->progress = 1.0f;
+
+    float t = traj->progress;
+    /* Lerp XZ */
+    e->positions[id].position.x = traj->origin.x + (traj->target.x - traj->origin.x) * t;
+    e->positions[id].position.z = traj->origin.z + (traj->target.z - traj->origin.z) * t;
+    /* Parabolic arc for Y */
+    float base_y = traj->origin.y + (traj->target.y - traj->origin.y) * t;
+    float arc = 4.0f * traj->arc_height * t * (1.0f - t);
+    e->positions[id].position.y = base_y + arc;
+
+    /* Update direction */
+    vector dir = vector_sub(traj->target, traj->origin);
+    dir.y = 0.0f;
+    float mag = vector_magnitude(dir);
+    if (mag > 1e-6f)
+        e->positions[id].direction = vector_scale(dir, 1.0f / mag);
+}
+
+typedef void (*loco_advance_fn)(bf_engine *, int, float);
+static loco_advance_fn loco_advancers[] = {
+    [BF_LOCO_LINEAR]    = advance_linear,
+    [BF_LOCO_PARABOLIC] = advance_parabolic,
+    [BF_LOCO_INSTANT]   = NULL,  /* handled at command time */
+};
+
+static void system_locomotion(bf_engine *e, float dt) {
+    uint32_t required = BF_COMP_POSITION | BF_COMP_LOCOMOTION;
+    for (int i = 0; i < MAX_ENTITIES; i++) {
+        if ((e->component_masks[i] & required) != required) continue;
+
+        bf_loco_type ltype = e->locomotions[i].type;
+        if (ltype >= 0 && ltype <= BF_LOCO_PARABOLIC && loco_advancers[ltype])
+            loco_advancers[ltype](e, i, dt);
+
+        /* Check if movement complete */
+        float progress = 0.0f;
+        if (ltype == BF_LOCO_LINEAR)
+            progress = e->locomotions[i].linear.progress;
+        else if (ltype == BF_LOCO_PARABOLIC)
+            progress = e->locomotions[i].parabolic.progress;
+
+        if (progress >= 1.0f) {
+            e->component_masks[i] &= ~BF_COMP_LOCOMOTION;
+            /* Snap to terrain for parabolic landing */
+            if (ltype == BF_LOCO_PARABOLIC && e->map_set && e->map.heights) {
+                e->positions[i].position.y = bf_map_height_at(&e->map,
+                    e->positions[i].position.x, e->positions[i].position.z);
+            }
+        }
+    }
+}
+
+static void system_animation(bf_engine *e, float dt) {
+    for (int i = 0; i < MAX_ENTITIES; i++) {
+        if (!(e->component_masks[i] & BF_COMP_VISUAL)) continue;
+        bf_visual *vis = &e->visuals[i];
+        if (vis->anim_index < 0) continue;
+        if (vis->sprite_id < 0 || vis->sprite_id >= e->sprite_count) continue;
+
+        slice_sheet *sheet = e->sprites[vis->sprite_id].sheet;
+        if (!sheet || vis->anim_index >= sheet->anim_count) continue;
+        slice_anim *anim = &sheet->anims[vis->anim_index];
+        if (anim->column_count <= 1) continue;
+        if (vis->anim_fps <= 0.0f) continue;
+
+        vis->frame_timer += dt;
+        float interval = 1.0f / vis->anim_fps;
+        while (vis->frame_timer >= interval) {
+            vis->frame_timer -= interval;
+            vis->anim_frame++;
+            if (vis->anim_frame >= anim->column_count) {
+                if (anim->loop)
+                    vis->anim_frame = 0;
+                else
+                    vis->anim_frame = anim->column_count - 1;
+            }
+        }
+    }
+}
 
 void bf_tick(bf_engine *e, float dt) {
     /* Process command queue */
@@ -503,72 +721,23 @@ void bf_tick(bf_engine *e, float dt) {
         e->cmd_count--;
     }
 
-    /* Advance entity movement */
-    for (int i = 0; i < e->entity_count; i++) {
-        bf_entity *ent = &e->entities[i];
-        if (!ent->active || ent->speed <= 0.0f) continue;
-
-        vector to_target = vector_sub(ent->target, ent->position);
-        to_target.y = 0.0f;  /* XZ-only distance */
-        float dist = vector_magnitude(to_target);
-        float step = ent->speed * dt;
-
-        if (dist <= step) {
-            ent->position.x = ent->target.x;
-            ent->position.z = ent->target.z;
-        } else {
-            vector move_dir = vector_scale(to_target, 1.0f / dist);
-            ent->direction = move_dir;
-            ent->position.x += move_dir.x * step;
-            ent->position.z += move_dir.z * step;
-        }
-
-        /* Snap to terrain height */
-        if (e->map_set && e->map.heights) {
-            ent->position.y = bf_map_height_at(&e->map,
-                                                ent->position.x, ent->position.z);
-        }
-    }
-
-    /* Advance animation */
-    for (int i = 0; i < e->entity_count; i++) {
-        bf_entity *ent = &e->entities[i];
-        if (!ent->active || ent->anim_index < 0) continue;
-        if (ent->sprite_id < 0 || ent->sprite_id >= e->sprite_count) continue;
-
-        slice_sheet *sheet = e->sprites[ent->sprite_id].sheet;
-        if (!sheet || ent->anim_index >= sheet->anim_count) continue;
-        slice_anim *anim = &sheet->anims[ent->anim_index];
-        if (anim->column_count <= 1) continue;
-        if (ent->anim_fps <= 0.0f) continue;
-
-        ent->frame_timer += dt;
-        float interval = 1.0f / ent->anim_fps;
-        while (ent->frame_timer >= interval) {
-            ent->frame_timer -= interval;
-            ent->anim_frame++;
-            if (ent->anim_frame >= anim->column_count) {
-                if (anim->loop)
-                    ent->anim_frame = 0;
-                else
-                    ent->anim_frame = anim->column_count - 1;
-            }
-        }
-    }
+    system_locomotion(e, dt);
+    system_animation(e, dt);
 }
 
-static slice_sheet *build_sprite_frames(bf_engine *e, bf_entity *ent,
+static slice_sheet *build_sprite_frames(bf_engine *e, int entity_id,
                                         rt_frame *out_frames) {
-    if (ent->sprite_id < 0 || ent->sprite_id >= e->sprite_count)
+    bf_visual *vis = &e->visuals[entity_id];
+    if (vis->sprite_id < 0 || vis->sprite_id >= e->sprite_count)
         return NULL;
-    slice_sheet *sheet = e->sprites[ent->sprite_id].sheet;
+    slice_sheet *sheet = e->sprites[vis->sprite_id].sheet;
     if (!sheet) return NULL;
 
     int col = 0;
-    if (ent->anim_index >= 0 && ent->anim_index < sheet->anim_count) {
-        slice_anim *anim = &sheet->anims[ent->anim_index];
-        if (anim->column_count > 0 && ent->anim_frame < anim->column_count)
-            col = anim->columns[ent->anim_frame];
+    if (vis->anim_index >= 0 && vis->anim_index < sheet->anim_count) {
+        slice_anim *anim = &sheet->anims[vis->anim_index];
+        if (anim->column_count > 0 && vis->anim_frame < anim->column_count)
+            col = anim->columns[vis->anim_frame];
     }
 
     if (col < 0 || col >= sheet->total_columns) col = 0;
@@ -618,27 +787,38 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
 
     /* Entities as sprites — frame arrays must outlive the render call,
        so allocate them outside the loop rather than per-iteration. */
-    int ent_count = e->entity_count;
-    rt_frame (*all_frames)[MAX_ANGLES] = malloc(ent_count * sizeof(*all_frames));
-    for (int i = 0; i < ent_count; i++) {
-        bf_entity *ent = &e->entities[i];
-        if (!ent->active) continue;
+    /* Count active entities for allocation */
+    int active_count = 0;
+    for (int i = 0; i < MAX_ENTITIES; i++) {
+        if ((e->component_masks[i] & (BF_COMP_POSITION | BF_COMP_VISUAL)) ==
+            (BF_COMP_POSITION | BF_COMP_VISUAL))
+            active_count++;
+    }
+    rt_frame (*all_frames)[MAX_ANGLES] = malloc(
+        (active_count > 0 ? active_count : 1) * sizeof(*all_frames));
+    int frame_idx = 0;
+    for (int i = 0; i < MAX_ENTITIES; i++) {
+        if ((e->component_masks[i] & (BF_COMP_POSITION | BF_COMP_VISUAL)) !=
+            (BF_COMP_POSITION | BF_COMP_VISUAL))
+            continue;
 
-        slice_sheet *sheet = build_sprite_frames(e, ent, all_frames[i]);
+        slice_sheet *sheet = build_sprite_frames(e, i, all_frames[frame_idx]);
         if (!sheet) continue;
 
-        float spr_h = e->sprites[ent->sprite_id].height;
-        vector spr_pos = ent->position;
+        int sprite_id = e->visuals[i].sprite_id;
+        float spr_h = e->sprites[sprite_id].height;
+        vector spr_pos = e->positions[i].position;
         spr_pos.y += spr_h * 0.5f;  /* sprite center above ground */
 
         rt_scene_add_sprite(e->scene, (rt_sprite){
             .position = spr_pos,
-            .direction = ent->direction,
-            .width = e->sprites[ent->sprite_id].width,
+            .direction = e->positions[i].direction,
+            .width = e->sprites[sprite_id].width,
             .height = spr_h,
             .frame_count = sheet->angles,
-            .frames = all_frames[i]
+            .frames = all_frames[frame_idx]
         });
+        frame_idx++;
     }
 
     /* Multithreaded render */
@@ -691,22 +871,23 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
 
     /* Test entities (closest wins) */
     float closest_t = FLT_MAX;
-    int closest_id = 0;
+    int closest_id = -1;
     vector closest_pos = {0};
 
-    for (int i = 0; i < e->entity_count; i++) {
-        bf_entity *ent = &e->entities[i];
-        if (!ent->active) continue;
+    uint32_t pick_mask = BF_COMP_POSITION | BF_COMP_VISUAL | BF_COMP_SELECTION;
+    for (int i = 0; i < MAX_ENTITIES; i++) {
+        if ((e->component_masks[i] & pick_mask) != pick_mask) continue;
 
         rt_frame frames[32];
-        slice_sheet *sheet = build_sprite_frames(e, ent, frames);
+        slice_sheet *sheet = build_sprite_frames(e, i, frames);
         if (!sheet) continue;
 
+        int sprite_id = e->visuals[i].sprite_id;
         rt_sprite spr = {
-            .position = ent->position,
-            .direction = ent->direction,
-            .width = e->sprites[ent->sprite_id].width,
-            .height = e->sprites[ent->sprite_id].height,
+            .position = e->positions[i].position,
+            .direction = e->positions[i].direction,
+            .width = e->sprites[sprite_id].width,
+            .height = e->sprites[sprite_id].height,
             .frame_count = sheet->angles,
             .frames = frames
         };
@@ -715,12 +896,12 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
         float t = rt_pick_sprite(origin, ray_dir, &spr, origin, &hp);
         if (t > 0.0f && t < closest_t) {
             closest_t = t;
-            closest_id = ent->id;
+            closest_id = i;
             closest_pos = hp;
         }
     }
 
-    if (closest_id > 0) {
+    if (closest_id >= 0) {
         result.type = BF_PICK_ENTITY;
         result.entity_id = closest_id;
         result.position = closest_pos;
