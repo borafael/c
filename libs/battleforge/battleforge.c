@@ -464,17 +464,20 @@ static void cmd_entity_create(bf_engine *e, const bf_cmd *cmd) {
             cmd->entity_create.position.x, cmd->entity_create.position.z);
     }
 
+    uint32_t mask = BF_COMP_POSITION;
+
     /* Visual component */
-    e->visuals[id].sprite_id = def->sprite_id;
-    e->visuals[id].anim_index = -1;
-    e->visuals[id].anim_frame = 0;
-    e->visuals[id].frame_timer = 0.0f;
-    e->visuals[id].anim_fps = 0.0f;
+    if (def->sprite_id >= 0) {
+        e->visuals[id].sprite_id = def->sprite_id;
+        e->visuals[id].anim_index = -1;
+        e->visuals[id].anim_frame = 0;
+        e->visuals[id].frame_timer = 0.0f;
+        e->visuals[id].anim_fps = 0.0f;
+        mask |= BF_COMP_VISUAL;
+    }
 
     /* Selection component */
     e->selections[id].selected = 0;
-
-    uint32_t mask = BF_COMP_POSITION | BF_COMP_VISUAL;
     if (def->has_selection)
         mask |= BF_COMP_SELECTION;
     e->component_masks[id] = mask;
@@ -547,6 +550,12 @@ static void cmd_entity_face(bf_engine *e, const bf_cmd *cmd) {
 }
 
 static void cmd_select(bf_engine *e, const bf_cmd *cmd) {
+    /* Deselect previous */
+    if (e->selected_entity_id >= 0 && e->selected_entity_id < MAX_ENTITIES &&
+        (e->component_masks[e->selected_entity_id] & BF_COMP_SELECTION)) {
+        e->selections[e->selected_entity_id].selected = 0;
+    }
+
     if (cmd->select.id < 0) {
         e->selected_entity_id = -1;
         bf_log(e, BF_LOG_INFO, "deselected");
@@ -608,6 +617,9 @@ static void advance_linear(bf_engine *e, int id, float dt) {
         e->positions[id].direction = move_dir;
         e->positions[id].position.x += move_dir.x * step;
         e->positions[id].position.z += move_dir.z * step;
+        float total_dist = vector_magnitude(vector_sub(traj->target, traj->origin));
+        if (total_dist > 1e-6f)
+            traj->progress = 1.0f - (dist - step) / total_dist;
     }
 
     /* Snap to terrain height */
@@ -796,6 +808,7 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
     }
     rt_frame (*all_frames)[MAX_ANGLES] = malloc(
         (active_count > 0 ? active_count : 1) * sizeof(*all_frames));
+    if (!all_frames) return;
     int frame_idx = 0;
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((e->component_masks[i] & (BF_COMP_POSITION | BF_COMP_VISUAL)) !=
@@ -844,7 +857,7 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
 }
 
 bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
-    bf_pick_result result = { .type = BF_PICK_SKY, .entity_id = 0,
+    bf_pick_result result = { .type = BF_PICK_SKY, .entity_id = -1,
                               .position = {0.0f, 0.0f, 0.0f} };
 
     /* Bounds check */
