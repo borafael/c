@@ -7,7 +7,16 @@ Seeded project concepts that haven't been started yet. Each subfolder holds:
 
 Unlike `docs/plans/` (active work) or `docs/superpowers/specs/` (designs being implemented), ideas here are unstarted and may never be built. Seeding them ensures the thought work isn't lost.
 
-## Current seeds
+## Two kinds of seeds
+
+Seeds in this folder fall into two categories:
+
+- **Engine concepts** describe *how to render* — a new rendering technique, data format, or low-level engine approach. They're technical and architectural. Example: `raycast-grid/` (how do you render a Wolfenstein 3D-style grid world?).
+- **Game concepts** describe *what game to build* — a genre, mechanic, setting, or gameplay pitch — on top of one (or more) existing engine concepts. They depend on engines and have different considerations (fiction, unit types, campaign structure, mechanics). Example: `origami-armies/` (what game do you build on top of `flat-poly/`?).
+
+The distinction matters because mixing rendering-technique questions with game-design questions in a single seed makes both harder to reason about. A game concept can change its backing engine; an engine concept can host many different games.
+
+## Engine concepts
 
 | Folder | Concept | Status |
 |---|---|---|
@@ -18,9 +27,15 @@ Unlike `docs/plans/` (active work) or `docs/superpowers/specs/` (designs being i
 | [`voxel-space/`](voxel-space/) | Comanche-style heightmap marcher — vast outdoor terrain on 386-class hardware | seeded |
 | [`flat-poly/`](flat-poly/) | Elite/Stunts-style flat-shaded polygonal renderer — minimum-viable software 3D | seeded |
 
+## Game concepts
+
+| Folder | Concept | Depends on | Status |
+|---|---|---|---|
+| [`origami-armies/`](origami-armies/) | Dark Omen / Shogun-style regimental tactics with polygonal low-poly soldiers — tiny origami armies | `flat-poly/` | seeded |
+
 ## The shared architectural pattern
 
-All six ideas are expected to follow the same layered pattern already used in this repo by `libs/raytrace` + `libs/battleforge` + `apps/barrier`:
+All engine concepts are expected to follow the same layered pattern already used in this repo by `libs/raytrace` + `libs/battleforge` + `apps/barrier`:
 
 ```
 apps/<client>       SDL2 client (input, windowing, main loop)

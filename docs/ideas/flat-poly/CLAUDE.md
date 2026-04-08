@@ -45,10 +45,64 @@
 
 ## Dark Omen crossover — the motivating use case
 
-One of the specific conversations that motivated this seed was: "could a Dark Omen-like game (regimental tactics, hundreds of soldiers on a battlefield) work if the soldiers were actual polygon meshes instead of 2D billboard sprites?" That question has its own engineering trade-offs (triangle budgets, LOD cascades, animation costs), but the relevant point for *this* seed is:
+The conversation that seeded this idea asked: *"could a Dark Omen-like game (regimental tactics, hundreds of soldiers on a battlefield) work if the soldiers were actual polygon meshes instead of 2D billboard sprites?"* This section captures the math behind the answer so a future session doesn't have to rederive it.
 
-**Flat-poly is the right renderer for that game** if you want it to work on low-spec. Low-poly soldiers (10-30 triangles each) + flat shading + painter's algorithm naturally produces a high-instance-count regimental battle scene within the hardware budget of a modern weak CPU. The exact feasibility on period hardware (Pentium-class) is borderline and discussed elsewhere; on a Raspberry Pi Zero 2 or similar it's comfortable.
+The game-concept seed that came out of this analysis lives at **`../origami-armies/`** — see that folder for the game design, setting, unit types, and v1 scope. This section is just the engine-level feasibility analysis.
 
-The historical reference point is **Shogun: Total War** (Creative Assembly, 2000) — fully polygonal regimental tactics, shipped on Pentium II/III hardware with 3D acceleration. A pure-software `flat-poly` version on modern low-spec hardware is achievable.
+### Triangle budget per soldier
 
-If that game direction is pursued, this seed is where it should live. Consider also seeding the game concept separately if it becomes a committed project.
+| Fidelity | Tris / soldier |
+|---|---:|
+| Stick figure / box body | 6-12 |
+| Minimalist low-poly (box body + limb hints) | 12-30 |
+| PS1-era low-poly (rough anatomy) | 50-150 |
+| PS2-era low-poly | 300-600 |
+
+### Software rasterizer capacity at realtime framerates
+
+| Era / hardware | Triangles per frame (software) |
+|---|---:|
+| 486 (1993-ish) | ~200-500 |
+| Pentium 75 (1995) | ~1,000 |
+| Pentium 133 (1996) | ~2,000-3,000 |
+| Pentium II 300 (1998) | ~5,000-10,000 |
+| Modern Pi Zero 2 / cheap SBC (no GPU) | ~50,000-200,000 |
+
+### Scenarios
+
+**Scenario A — full Dark Omen scale**: 500 soldiers × 20 tris = 10,000 tris/frame
+- 486 / Pentium 75: impossible (10-20× too slow)
+- Pentium II 300: borderline, ~10-15 fps
+- **Modern Pi Zero 2 class: comfortable 30-60 fps**
+
+**Scenario B — smaller battles**: 200 soldiers × 30 tris = 6,000 tris/frame
+- Pentium 75: marginal (~5-8 fps, not really playable)
+- Pentium II: playable (20-30 fps)
+- **Pi Zero 2 class: trivially comfortable**
+
+**Scenario C — Shogun: Total War scale with LOD cascade**: 1,000+ soldiers, close units at 300 tris, mid at 50 tris, far as sprites. Total ~16,500 tris + sprite overhead.
+- Historically shipped in 2000 on Pentium II + 3D acceleration (Shogun: Total War itself)
+- Pure software on period hardware: sluggish
+- **Modern Pi Zero 2 class: very comfortable**
+
+### The honest answer
+
+"Old hardware" has two meanings in this repo and they give different answers:
+
+1. **Period-correct 1998 hardware, pure software**: **No**, not at Dark Omen scale with polygonal soldiers. Dark Omen used sprites for a mathematical reason — 500 × 20 triangles was ~10× what software rendering could do at the time. Shogun: Total War (2000) is the historical proof that it took two more years plus hardware acceleration to make polygonal regimental tactics work.
+
+2. **Modern low-spec without a GPU** (Pi Zero 2, cheap ARM SBCs, old netbooks): **Yes, comfortably**. Modern CPUs without GPUs are 50-200× faster than a Pentium 75. A naive software rasterizer has the budget for 500-1000 polygonal soldiers at 20-50 triangles each, without needing any 1996-era tricks (no BSP, no PVS, no surface caching, no mandatory LOD cascade).
+
+For this repo, "low spec" has consistently meant interpretation (2). Under that interpretation, polygonal regimental tactics are absolutely achievable, and `flat-poly` is the right renderer for them.
+
+### Design choices that make it work at scale
+
+- **Stylized low-poly soldiers, 20-30 triangles each.** Not realistic. "Tiny origami warriors" — art style embraces the polygon budget rather than fighting it. Distinctive, currently unoccupied visual niche.
+- **Rigid-body animation, not skeletal skinning.** Each limb is a rigid mesh with a parent transform. Animation is just rotating child transforms. Per-soldier animation cost: a handful of matrix multiplies. 500 soldiers × ~5 mults each = ~2,500 mults per frame = trivial.
+- **Unified flat-poly terrain.** Battlefield is a big flat-shaded mesh generated from a heightmap, rendered by the same flat-poly pipeline as the soldiers. Clean, single renderer, no compositing between different rendering techniques.
+- **Regiments as engine-layer abstraction.** Individual soldiers are ECS entities; the player-facing logical unit is a regiment (position, facing, formation, morale, orders). The engine spawns N soldier entities per regiment and drives their positions from formation rules. Battleforge's ECS pattern already accommodates this with a small extension.
+- **Aggressive frustum culling.** In a rotating isometric-ish camera, roughly half the battlefield is typically off-screen. Skipping transforms on off-screen soldiers halves the effective triangle cost.
+
+### Historical reference
+
+**Shogun: Total War** (Creative Assembly, 2000) is the closest existing game to this idea. Fully polygonal regimental tactics, regiments of ~60-100 individual polygonal soldiers, battles of 10,000+ total units with LOD cascading to sprites at distance. Shipped on Pentium II / III hardware with optional 3D acceleration; the pure-software mode was compromised even on period hardware. Pre-dates the "modern low-spec hardware" class entirely — making `origami-armies` on `flat-poly` is essentially "what Shogun would have looked like if you built it for a Raspberry Pi in 2026 with no GPU."
