@@ -18,20 +18,24 @@ The distinction matters because mixing rendering-technique questions with game-d
 
 ## Engine concepts
 
-| Folder | Concept | Status |
-|---|---|---|
-| [`raycast-grid/`](raycast-grid/) | Wolfenstein 3D-style grid raycaster — maximally low-spec retro FPS feel | seeded |
-| [`raster-software/`](raster-software/) | MDK-style software triangle rasterizer — Pentium-class low-spec 3D | seeded |
-| [`sphere-bricks/`](sphere-bricks/) | Worlds built entirely from spheres, rendered with existing `libs/raytrace` unchanged | seeded |
-| [`sphere-voxel/`](sphere-voxel/) | Sphere-voxel renderer — 3D uniform grid + DDA + sphere intersection | seeded |
-| [`voxel-space/`](voxel-space/) | Comanche-style heightmap marcher — vast outdoor terrain on 386-class hardware | seeded |
-| [`flat-poly/`](flat-poly/) | Elite/Stunts-style flat-shaded polygonal renderer — minimum-viable software 3D | seeded |
+Most target the "low-spec" theme (ranging from 286-class to modern Raspberry Pi class). One exception, noted below, deliberately breaks that theme to explore the opposite direction.
+
+| Folder | Concept | Hardware target | Status |
+|---|---|---|---|
+| [`raycast-grid/`](raycast-grid/) | Wolfenstein 3D-style grid raycaster — maximally low-spec retro FPS feel | low-spec | seeded |
+| [`raster-software/`](raster-software/) | MDK-style software triangle rasterizer — Pentium-class low-spec 3D | low-spec | seeded |
+| [`sphere-bricks/`](sphere-bricks/) | Worlds built entirely from spheres, rendered with existing `libs/raytrace` unchanged | low-spec | seeded |
+| [`sphere-voxel/`](sphere-voxel/) | Sphere-voxel renderer — 3D uniform grid + DDA + sphere intersection | low-spec | seeded |
+| [`voxel-space/`](voxel-space/) | Comanche-style heightmap marcher — vast outdoor terrain on 386-class hardware | low-spec | seeded |
+| [`flat-poly/`](flat-poly/) | Elite/Stunts-style flat-shaded polygonal renderer — minimum-viable software 3D | low-spec | seeded |
+| [`gpu-raytrace/`](gpu-raytrace/) | Real-time GPU-accelerated raytracer built on `libs/raytrace` — targets RTX-class hardware | **high-spec** (breaks theme) | seeded |
 
 ## Game concepts
 
 | Folder | Concept | Depends on | Status |
 |---|---|---|---|
 | [`origami-armies/`](origami-armies/) | Dark Omen / Shogun-style regimental tactics with polygonal low-poly soldiers — tiny origami armies | `flat-poly/` | seeded |
+| [`barnstorm/`](barnstorm/) | Corncob 3D / F-19-style low-altitude flight combat, flat-shaded polygonal | `flat-poly/` | seeded |
 
 ## The shared architectural pattern
 

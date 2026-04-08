@@ -42,6 +42,28 @@
 - `../raster-software/` — Sibling at the complexity ladder's top rung. Same technique category (software polygon rendering) but vastly larger scope and late-90s aesthetic. If you ever find `flat-poly` growing features, recognize the drift toward `raster-software` territory and decide consciously: keep it simple, or commit to the bigger project.
 - `../voxel-space/` — Completely different technique. Heightmap marching, not polygons. But comparable in "how simple the renderer is."
 - `../raycast-grid/`, `../sphere-bricks/`, `../sphere-voxel/` — All non-polygonal approaches. `flat-poly` is the first and only polygonal renderer in the seeded set (below the full `raster-software` tier).
+- **Game concept seeds that depend on this engine**: `../origami-armies/` (regimental tactics), `../barnstorm/` (low-altitude flight combat in the Corncob 3D lineage).
+
+## Historical reference points
+
+Games that actually shipped with this technique (flat-shaded polygons, painter's algorithm or equivalent, modest hardware) as proof the approach is sound:
+
+- **Elite** (Braben & Bell, 1984) — BBC Micro, **2 MHz 6502**, 32 KB RAM. Wireframe planets and flat-shaded ships. The founding work. Proves the technique runs on effectively *anything*.
+- **Starglider** (Argonaut, 1986) — Atari ST / Amiga. Flat-shaded abstract enemies over a wireframe landscape.
+- **Carrier Command** (Realtime Games, 1988) — Amiga / ST / 286. Flat-shaded polygonal strategy/action with multiple entities and a larger world.
+- **MechWarrior** (Dynamix, 1989) — 286/386. Flat-shaded mechs and terrain before the series grew texture mapping.
+- **Hard Drivin'** (Atari Games, 1989) — arcade custom hardware. Flat-shaded driving sim. Hazards, track, car, all polygonal at playable framerates.
+- **Stunts / 4D Sports Driving** (Distinctive, 1990) — 286/386. Consumer PC flat-shaded driving with stunt tracks. The Hard Drivin' approach ported to home hardware.
+- **F-19 Stealth Fighter** (MicroProse, 1988, then 1991 update) — 286/386. Flat-shaded flight combat sim with missions.
+- **Virtua Racing** (Sega, 1992) — Model 1 arcade. Flat-shaded cars and tracks at 60 fps — the gold standard of the era.
+- **Alone in the Dark** (Infogrames, 1992) — 386. Polygonal characters composited over pre-rendered 2D backgrounds. Hybrid approach that concentrates polygon budget on the few things in motion.
+- **Corncob 3D / Corncob Deluxe** (Pie in the Sky, 1992) — **286, shareware**. Flat-shaded flight combat with outdoor polygonal world including buildings, vehicles, and other aircraft. Notable because it's the same era and same hardware class as Wolfenstein 3D but renders fully 3D polygonal outdoor content — a completely different architectural answer to the same "1992 low-end PC" constraint.
+- **X-Wing** (Totally Games, 1993) — 386/486. Flat + gouraud polygonal space combat. Showed you could get a "real space sim" feel from flat-shaded geometry.
+- **Red Baron** (Dynamix, 1990) — 286/386. WWI-era polygonal flight combat.
+
+The shared lesson: **flat-shaded polygonal rendering is not a niche aesthetic, it's a proven foundation for a wide range of game types** — space combat, driving, mech combat, flight combat, stealth action, strategy. Any of these shapes is viable on top of `flat-poly`, and on modern no-GPU hardware you have 50-200× more compute budget than any of these games shipped with.
+
+Seeded game concepts directly inspired by this lineage: `../origami-armies/` (regimental tactics, not a 1990s game type but a natural fit for the aesthetic) and `../barnstorm/` (low-altitude flight combat, directly in the Corncob 3D / F-19 / Red Baron lineage).
 
 ## Dark Omen crossover — the motivating use case
 
