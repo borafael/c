@@ -15,10 +15,11 @@ Unlike `docs/plans/` (active work) or `docs/superpowers/specs/` (designs being i
 | [`raster-software/`](raster-software/) | MDK-style software triangle rasterizer — Pentium-class low-spec 3D | seeded |
 | [`sphere-bricks/`](sphere-bricks/) | Worlds built entirely from spheres, rendered with existing `libs/raytrace` unchanged | seeded |
 | [`sphere-voxel/`](sphere-voxel/) | Sphere-voxel renderer — 3D uniform grid + DDA + sphere intersection | seeded |
+| [`voxel-space/`](voxel-space/) | Comanche-style heightmap marcher — vast outdoor terrain on 386-class hardware | seeded |
 
 ## The shared architectural pattern
 
-All four ideas are expected to follow the same layered pattern already used in this repo by `libs/raytrace` + `libs/battleforge` + `apps/barrier`:
+All five ideas are expected to follow the same layered pattern already used in this repo by `libs/raytrace` + `libs/battleforge` + `apps/barrier`:
 
 ```
 apps/<client>       SDL2 client (input, windowing, main loop)
