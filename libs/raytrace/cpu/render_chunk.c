@@ -1,4 +1,12 @@
-#include "raytrace.h"
+#include "render_chunk.h"
+#include "sphere.h"
+#include "plane.h"
+#include "disc.h"
+#include "cylinder.h"
+#include "triangle.h"
+#include "box.h"
+#include "sprite.h"
+#include "heightfield.h"
 #include <math.h>
 #include <float.h>
 

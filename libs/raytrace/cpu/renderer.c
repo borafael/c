@@ -1,5 +1,5 @@
 #include "renderer.h"
-#include "raytrace.h"       /* rt_render_chunk (will move to cpu/render_chunk.h later) */
+#include "render_chunk.h"
 #include "thread_pool.h"
 
 #include <stdint.h>
