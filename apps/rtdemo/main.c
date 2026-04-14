@@ -1,5 +1,16 @@
-#include "raytrace.h"
-#include "thread_pool.h"
+#include "renderer.h"
+#include "viewport.h"
+#include "scene.h"
+#include "camera.h"
+#include "sphere.h"
+#include "plane.h"
+#include "box.h"
+#include "disc.h"
+#include "cylinder.h"
+#include "triangle.h"
+#include "sprite.h"
+#include "heightfield.h"
+#include "rt_color.h"
 #include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,20 +23,6 @@
 #define RENDER_SCALE_MIN 1
 #define RENDER_SCALE_MAX 4
 
-typedef struct {
-    uint32_t *pixels;
-    const rt_viewport *viewport;
-    int y_start;
-    int y_end;
-    const rt_camera *camera;
-    const rt_scene *scene;
-} render_task;
-
-static void render_chunk_task(void *arg) {
-    render_task *t = (render_task *)arg;
-    rt_render_chunk(t->pixels, t->viewport, t->y_start, t->y_end,
-                    t->camera, t->scene);
-}
 
 #define S 16  /* sprite frame size */
 
@@ -293,11 +290,15 @@ int main(void) {
 
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
 
-    int num_threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
-    if (num_threads < 1) num_threads = 4;
-    thread_pool *pool = thread_pool_create(num_threads);
-    render_task *tasks = malloc(sizeof(render_task) * num_threads);
-    fprintf(stderr, "Using %d render threads\n", num_threads);
+    rt_renderer *rnd = rt_renderer_create();
+    if (!rnd) {
+        fprintf(stderr, "Failed to create renderer\n");
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    fprintf(stderr, "Using renderer: %s\n", rt_renderer_name(rnd));
 
     rt_scene *scene;
     rt_camera *camera;
@@ -386,22 +387,7 @@ int main(void) {
         vector cam_dir = cam_dir_from_yaw_pitch(cam_yaw, cam_pitch);
         rt_camera_place(camera, cam_pos, cam_dir);
 
-        /* Split scanlines across threads */
-        int rows_per = render_h / num_threads;
-        if (rows_per < 1) rows_per = 1;
-        int actual_chunks = render_h / rows_per;
-        for (int i = 0; i < actual_chunks; i++) {
-            tasks[i] = (render_task){
-                .pixels = pixels,
-                .viewport = &viewport,
-                .y_start = i * rows_per,
-                .y_end = (i == actual_chunks - 1) ? render_h : (i + 1) * rows_per,
-                .camera = camera,
-                .scene = scene
-            };
-            thread_pool_submit(pool, render_chunk_task, &tasks[i]);
-        }
-        thread_pool_wait(pool);
+        rt_renderer_render(rnd, scene, camera, &viewport, pixels);
 
         SDL_UpdateTexture(texture, NULL, pixels, render_w * sizeof(uint32_t));
         SDL_RenderCopy(renderer, texture, NULL, NULL);
@@ -411,8 +397,8 @@ int main(void) {
         Uint32 now = SDL_GetTicks();
         if (now - fps_last >= 1000) {
             snprintf(title_buf, sizeof(title_buf),
-                     "Raytrace Demo - %d FPS (%dx%d, 1/%d scale, %d threads)",
-                     fps_frames, render_w, render_h, render_scale, num_threads);
+                     "Raytrace Demo - %d FPS (%dx%d, 1/%d scale, %s)",
+                     fps_frames, render_w, render_h, render_scale, rt_renderer_name(rnd));
             SDL_SetWindowTitle(window, title_buf);
             fprintf(stderr, "%d FPS\n", fps_frames);
             fps_frames = 0;
@@ -420,8 +406,7 @@ int main(void) {
         }
     }
 
-    free(tasks);
-    thread_pool_destroy(pool);
+    rt_renderer_destroy(rnd);
     free(pixels);
     rt_camera_destroy(camera);
     rt_scene_destroy(scene);
