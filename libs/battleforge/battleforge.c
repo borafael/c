@@ -1,6 +1,5 @@
 #include "battleforge.h"
-#include "raytrace.h"
-#include "thread_pool.h"
+#include "renderer.h"
 #include "vector.h"
 #include "slice.h"
 #include <stdlib.h>
@@ -9,11 +8,6 @@
 #include <math.h>
 #include <float.h>
 #include <stdarg.h>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
 
 #define CMD_QUEUE_SIZE 1024
 #define MAX_ENTITIES 1024
@@ -24,15 +18,6 @@ typedef struct {
     vector position;
     vector direction;
 } bf_camera_state;
-
-typedef struct {
-    uint32_t *pixels;
-    const rt_viewport *viewport;
-    int y_start;
-    int y_end;
-    const rt_camera *camera;
-    const rt_scene *scene;
-} render_task;
 
 struct bf_engine {
     bf_config config;
@@ -84,16 +69,8 @@ struct bf_engine {
     rt_scene *scene;
     rt_camera *rt_cam;
     rt_viewport viewport;
-    thread_pool *pool;
-    int num_threads;
-    render_task *tasks;
+    rt_renderer *renderer;
 };
-
-static void render_chunk_fn(void *arg) {
-    render_task *t = (render_task *)arg;
-    rt_render_chunk(t->pixels, t->viewport, t->y_start, t->y_end,
-                    t->camera, t->scene);
-}
 
 /* Simple hash-based gradient noise for natural-looking terrain */
 static float noise_hash(int ix, int iz) {
@@ -307,22 +284,8 @@ bf_engine *bf_create(bf_config config) {
         return NULL;
     }
 
-    /* Thread pool */
-    int nt = config.num_threads;
-    if (nt <= 0) {
-#ifdef _WIN32
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        nt = (int)si.dwNumberOfProcessors;
-#else
-        nt = (int)sysconf(_SC_NPROCESSORS_ONLN);
-#endif
-        if (nt < 1) nt = 4;
-    }
-    e->num_threads = nt;
-    e->pool = thread_pool_create(nt);
-    e->tasks = malloc(sizeof(render_task) * nt);
-    if (!e->pool || !e->tasks) {
+    e->renderer = rt_renderer_create();
+    if (!e->renderer) {
         bf_destroy(e);
         return NULL;
     }
@@ -332,8 +295,7 @@ bf_engine *bf_create(bf_config config) {
 
 void bf_destroy(bf_engine *e) {
     if (!e) return;
-    if (e->pool) thread_pool_destroy(e->pool);
-    free(e->tasks);
+    if (e->renderer) rt_renderer_destroy(e->renderer);
     if (e->rt_cam) rt_camera_destroy(e->rt_cam);
     if (e->scene) rt_scene_destroy(e->scene);
     /* Free registered maps (they own the height/color/normal data) */
@@ -894,25 +856,7 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
         frame_idx++;
     }
 
-    /* Multithreaded render */
-    int render_h = e->viewport.height;
-    int rows_per = render_h / e->num_threads;
-    if (rows_per < 1) rows_per = 1;
-    int chunks = render_h / rows_per;
-    if (chunks > e->num_threads) chunks = e->num_threads;
-
-    for (int i = 0; i < chunks; i++) {
-        e->tasks[i] = (render_task){
-            .pixels = pixel_buf,
-            .viewport = &e->viewport,
-            .y_start = i * rows_per,
-            .y_end = (i == chunks - 1) ? render_h : (i + 1) * rows_per,
-            .camera = e->rt_cam,
-            .scene = e->scene
-        };
-        thread_pool_submit(e->pool, render_chunk_fn, &e->tasks[i]);
-    }
-    thread_pool_wait(e->pool);
+    rt_renderer_render(e->renderer, e->scene, e->rt_cam, &e->viewport, pixel_buf);
     free(all_frames);
 }
 

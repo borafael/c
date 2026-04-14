@@ -3,7 +3,17 @@
 
 #include <stdint.h>
 #include "vector.h"
-#include "raytrace.h"
+#include "viewport.h"
+#include "scene.h"
+#include "camera.h"
+#include "sphere.h"
+#include "plane.h"
+#include "box.h"
+#include "disc.h"
+#include "cylinder.h"
+#include "triangle.h"
+#include "sprite.h"
+#include "heightfield.h"
 
 /* Forward declaration — full definition in slice.h */
 typedef struct slice_sheet slice_sheet;
