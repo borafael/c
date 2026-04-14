@@ -2,7 +2,19 @@
 #include "render.h"
 #include "vector.h"
 #include "thread_pool.h"
-#include "raytrace.h"
+#include "renderer.h"
+#include "viewport.h"
+#include "scene.h"
+#include "camera.h"
+#include "sphere.h"
+#include "plane.h"
+#include "box.h"
+#include "disc.h"
+#include "cylinder.h"
+#include "triangle.h"
+#include "sprite.h"
+#include "heightfield.h"
+#include "rt_color.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,15 +97,7 @@ static uint32_t *pixel_buffer = NULL;
 static void *rt_texture = NULL;
 static int rt_width = 0;
 static int rt_height = 0;
-
-typedef struct {
-    uint32_t *pixel_buf;
-    const rt_viewport *viewport;
-    int y_start;
-    int y_end;
-    const rt_camera *camera;
-    const rt_scene *scene;
-} render_chunk_args;
+static rt_renderer *rt_rnd = NULL;
 
 static int create_entity(void) {
     if (top >= 0) {
@@ -198,6 +202,15 @@ void nbody_init(const nbody_config *config) {
         exit(EXIT_FAILURE);
     }
 
+    rt_rnd = rt_renderer_create();
+    if (!rt_rnd) {
+        fprintf(stderr, "Failed to create raytrace renderer\n");
+        thread_pool_destroy(pool);
+        pool = NULL;
+        exit(EXIT_FAILURE);
+    }
+    fprintf(stderr, "Using renderer: %s\n", rt_renderer_name(rt_rnd));
+
     camera = rt_camera_create((vector){0, 0, 0}, (vector){0, 0, -1});
     if (!camera) {
         fprintf(stderr, "Failed to create camera\n");
@@ -251,13 +264,11 @@ void nbody_reset(void) {
     update_camera_from_orbital();
 }
 
-static void render_chunk_task(void *arg) {
-    render_chunk_args *a = (render_chunk_args *)arg;
-    rt_render_chunk(a->pixel_buf, a->viewport,
-                    a->y_start, a->y_end, a->camera, a->scene);
-}
-
 void nbody_cleanup(void) {
+    if (rt_rnd) {
+        rt_renderer_destroy(rt_rnd);
+        rt_rnd = NULL;
+    }
     if (pool) {
         thread_pool_destroy(pool);
         pool = NULL;
@@ -472,20 +483,7 @@ static void ensure_render_resources(int w, int h) {
 }
 
 static void render_scene(const rt_camera *cam, const rt_viewport *vp) {
-    int num_chunks = num_threads;
-    render_chunk_args chunk_args[MAX_THREADS];
-    int rows_per_chunk = vp->height / num_chunks;
-
-    for (int c = 0; c < num_chunks; c++) {
-        chunk_args[c].pixel_buf = pixel_buffer;
-        chunk_args[c].viewport = vp;
-        chunk_args[c].y_start = c * rows_per_chunk;
-        chunk_args[c].y_end = (c == num_chunks - 1) ? vp->height : (c + 1) * rows_per_chunk;
-        chunk_args[c].camera = cam;
-        chunk_args[c].scene = rt_scene_ptr;
-        thread_pool_submit(pool, render_chunk_task, &chunk_args[c]);
-    }
-    thread_pool_wait(pool);
+    rt_renderer_render(rt_rnd, rt_scene_ptr, cam, vp, pixel_buffer);
 
     render_clear();
     render_texture_update(rt_texture, pixel_buffer, vp->width * (int)sizeof(uint32_t));
