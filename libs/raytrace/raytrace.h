@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "vector.h"
 #include "rt_color.h"
+#include "viewport.h"
 #include "sphere.h"
 #include "plane.h"
 #include "disc.h"
@@ -14,15 +15,6 @@
 #include "heightfield.h"
 #include "scene.h"
 #include "camera.h"
-
-/**
- * Viewport defining projection parameters.
- */
-typedef struct {
-    int width;
-    int height;
-    float fov;
-} rt_viewport;
 
 /**
  * Render a chunk of scanlines [y_start, y_end) into pixel_buf.
