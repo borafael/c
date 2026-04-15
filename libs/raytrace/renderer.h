@@ -13,6 +13,24 @@
 typedef struct rt_renderer rt_renderer;
 
 /**
+ * Available backend implementations. Each value corresponds to a
+ * concrete rt_renderer implementation. Which backends are actually
+ * built into the library depends on configure-time flags — use
+ * rt_renderer_available() to check at runtime.
+ */
+typedef enum {
+    RT_BACKEND_CPU = 0,
+} rt_backend;
+
+/**
+ * Return non-zero if the given backend was compiled into the library
+ * and can be instantiated via rt_renderer_create(). Zero otherwise.
+ * This is a pure predicate — it never allocates, never fails, and is
+ * safe to call before any other rt_* function.
+ */
+int rt_renderer_available(rt_backend type);
+
+/**
  * Create a new renderer. Returns NULL on allocation or thread-pool
  * creation failure. The returned handle must be freed with
  * rt_renderer_destroy.

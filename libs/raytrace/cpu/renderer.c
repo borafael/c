@@ -88,3 +88,10 @@ const char *rt_renderer_name(const rt_renderer *r) {
     (void)r;
     return "CPU";
 }
+
+int rt_renderer_available(rt_backend type) {
+    switch (type) {
+    case RT_BACKEND_CPU: return 1;
+    }
+    return 0;
+}
