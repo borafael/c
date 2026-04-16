@@ -12,6 +12,11 @@
 #include "heightfield.h"
 #include "rt_color.h"
 #include <SDL2/SDL.h>
+
+#define GL_GLEXT_PROTOTYPES 1
+#include <GL/gl.h>
+#include <GL/glext.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -274,31 +279,73 @@ static vector cam_dir_from_yaw_pitch(float yaw, float pitch) {
     };
 }
 
+/* Upload a uint32 pixel buffer to a GL texture and blit it to the window.
+ * Source rows run top-to-bottom (y=0 is top). Destination flips Y so
+ * the image displays right-side-up. */
+static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
+                           int render_w, int render_h,
+                           int window_w, int window_h) {
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, render_w, render_h,
+                    GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, render_w, render_h,
+                      0, window_h, window_w, 0,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+}
+
 int main(void) {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
         return 1;
     }
 
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
     SDL_Window *window = SDL_CreateWindow("Raytrace Demo",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        WINDOW_W, WINDOW_H, 0);
+        WINDOW_W, WINDOW_H, SDL_WINDOW_OPENGL);
     if (!window) {
         fprintf(stderr, "Window creation failed: %s\n", SDL_GetError());
+        SDL_Quit();
         return 1;
     }
 
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-
-    rt_renderer *rnd = rt_renderer_create(RT_BACKEND_CPU);
-    if (!rnd) {
-        fprintf(stderr, "Failed to create renderer\n");
-        SDL_DestroyRenderer(renderer);
+    SDL_GLContext gl_ctx = SDL_GL_CreateContext(window);
+    if (!gl_ctx) {
+        fprintf(stderr, "GL context creation failed: %s\n", SDL_GetError());
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
-    fprintf(stderr, "Using renderer: %s\n", rt_renderer_name(rnd));
+    SDL_GL_SetSwapInterval(0);  /* no vsync — measure raw throughput */
+
+    fprintf(stderr, "GL version: %s\n", (const char *)glGetString(GL_VERSION));
+
+    rt_renderer *cpu_rnd = rt_renderer_available(RT_BACKEND_CPU)
+                         ? rt_renderer_create(RT_BACKEND_CPU) : NULL;
+    rt_renderer *gpu_rnd = rt_renderer_available(RT_BACKEND_OPENGL)
+                         ? rt_renderer_create(RT_BACKEND_OPENGL) : NULL;
+
+    if (!cpu_rnd && !gpu_rnd) {
+        fprintf(stderr, "No renderers available\n");
+        SDL_GL_DeleteContext(gl_ctx);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    rt_renderer *active = gpu_rnd ? gpu_rnd : cpu_rnd;
+    fprintf(stderr, "Active: %s (press TAB to toggle)\n",
+            rt_renderer_name(active));
 
     rt_scene *scene;
     rt_camera *camera;
@@ -307,14 +354,21 @@ int main(void) {
     int render_scale = 1;
     int render_w = WINDOW_W / render_scale;
     int render_h = WINDOW_H / render_scale;
-    uint32_t *pixels = calloc(render_w * render_h, sizeof(uint32_t));
+    uint32_t *pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
     rt_viewport viewport = { render_w, render_h, FOV };
-    SDL_Texture *texture = SDL_CreateTexture(renderer,
-        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-        render_w, render_h);
+
+    /* Display texture + framebuffer for blitting */
+    GLuint display_tex, display_fbo;
+    glGenTextures(1, &display_tex);
+    glBindTexture(GL_TEXTURE_2D, display_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, render_w, render_h, 0,
+                 GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &display_fbo);
 
     vector cam_pos = {5.0f, 3.0f, 5.0f};
-    float cam_yaw = -2.356f;   /* ~-135 deg, facing toward origin */
+    float cam_yaw = -2.356f;
     float cam_pitch = -0.3f;
     float move_speed = 5.0f;
     float look_speed = 2.0f;
@@ -323,7 +377,8 @@ int main(void) {
     Uint32 fps_last = SDL_GetTicks();
     Uint32 frame_last = SDL_GetTicks();
     int fps_frames = 0;
-    char title_buf[128];
+    Uint32 render_ms_accum = 0;
+    char title_buf[160];
 
     while (running) {
         Uint32 frame_now = SDL_GetTicks();
@@ -334,6 +389,11 @@ int main(void) {
             if (e.type == SDL_QUIT) running = 0;
             if (e.type == SDL_KEYDOWN) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
+                if (e.key.keysym.sym == SDLK_TAB) {
+                    if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
+                    else if (active == gpu_rnd && cpu_rnd) active = cpu_rnd;
+                    fprintf(stderr, "Active: %s\n", rt_renderer_name(active));
+                }
                 if (e.key.keysym.sym == SDLK_MINUS ||
                     e.key.keysym.sym == SDLK_KP_MINUS) {
                     if (render_scale < RENDER_SCALE_MAX) {
@@ -353,12 +413,11 @@ int main(void) {
                     render_w = WINDOW_W / render_scale;
                     render_h = WINDOW_H / render_scale;
                     free(pixels);
-                    pixels = calloc(render_w * render_h, sizeof(uint32_t));
+                    pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
                     viewport = (rt_viewport){ render_w, render_h, FOV };
-                    SDL_DestroyTexture(texture);
-                    texture = SDL_CreateTexture(renderer,
-                        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-                        render_w, render_h);
+                    glBindTexture(GL_TEXTURE_2D, display_tex);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, render_w, render_h, 0,
+                                 GL_BGRA, GL_UNSIGNED_BYTE, NULL);
                     fprintf(stderr, "Render scale: 1/%d (%dx%d)\n",
                             render_scale, render_w, render_h);
             }
@@ -366,7 +425,6 @@ int main(void) {
 
         const Uint8 *keys = SDL_GetKeyboardState(NULL);
 
-        /* Look: arrow keys */
         if (keys[SDL_SCANCODE_LEFT])  cam_yaw   -= look_speed * dt;
         if (keys[SDL_SCANCODE_RIGHT]) cam_yaw   += look_speed * dt;
         if (keys[SDL_SCANCODE_UP])    cam_pitch += look_speed * dt;
@@ -374,7 +432,6 @@ int main(void) {
         if (cam_pitch >  1.4f) cam_pitch =  1.4f;
         if (cam_pitch < -1.4f) cam_pitch = -1.4f;
 
-        /* Movement: WASD + Space/Shift for vertical */
         vector forward = { sinf(cam_yaw), 0.0f, cosf(cam_yaw) };
         vector right   = { cosf(cam_yaw), 0.0f, -sinf(cam_yaw) };
         if (keys[SDL_SCANCODE_W]) cam_pos = vector_add(cam_pos, vector_scale(forward, move_speed * dt));
@@ -387,31 +444,40 @@ int main(void) {
         vector cam_dir = cam_dir_from_yaw_pitch(cam_yaw, cam_pitch);
         rt_camera_place(camera, cam_pos, cam_dir);
 
-        rt_renderer_render(rnd, scene, camera, &viewport, pixels);
+        Uint32 r_start = SDL_GetTicks();
+        rt_renderer_render(active, scene, camera, &viewport, pixels);
+        render_ms_accum += SDL_GetTicks() - r_start;
 
-        SDL_UpdateTexture(texture, NULL, pixels, render_w * sizeof(uint32_t));
-        SDL_RenderCopy(renderer, texture, NULL, NULL);
-        SDL_RenderPresent(renderer);
+        display_pixels(display_tex, display_fbo, pixels,
+                       render_w, render_h, WINDOW_W, WINDOW_H);
+        SDL_GL_SwapWindow(window);
 
         fps_frames++;
         Uint32 now = SDL_GetTicks();
         if (now - fps_last >= 1000) {
+            float avg_ms = (fps_frames > 0)
+                ? (float)render_ms_accum / (float)fps_frames : 0.0f;
             snprintf(title_buf, sizeof(title_buf),
-                     "Raytrace Demo - %d FPS (%dx%d, 1/%d scale, %s)",
-                     fps_frames, render_w, render_h, render_scale, rt_renderer_name(rnd));
+                     "Raytrace Demo - %s %d FPS (%.2f ms/frame, %dx%d, 1/%d)",
+                     rt_renderer_name(active), fps_frames, avg_ms,
+                     render_w, render_h, render_scale);
             SDL_SetWindowTitle(window, title_buf);
-            fprintf(stderr, "%d FPS\n", fps_frames);
+            fprintf(stderr, "[%s] %d FPS, %.2f ms/frame\n",
+                    rt_renderer_name(active), fps_frames, avg_ms);
             fps_frames = 0;
+            render_ms_accum = 0;
             fps_last = now;
         }
     }
 
-    rt_renderer_destroy(rnd);
+    glDeleteFramebuffers(1, &display_fbo);
+    glDeleteTextures(1, &display_tex);
+    if (cpu_rnd) rt_renderer_destroy(cpu_rnd);
+    if (gpu_rnd) rt_renderer_destroy(gpu_rnd);
     free(pixels);
     rt_camera_destroy(camera);
     rt_scene_destroy(scene);
-    SDL_DestroyTexture(texture);
-    SDL_DestroyRenderer(renderer);
+    SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);
     SDL_Quit();
     return 0;
