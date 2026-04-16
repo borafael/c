@@ -4,7 +4,21 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
+
+static int detect_cpu_count(void) {
+#ifdef _WIN32
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (int)si.dwNumberOfProcessors;
+#else
+    return (int)sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+}
 
 typedef struct {
     uint32_t *pixels;
@@ -78,7 +92,7 @@ rt_renderer *rt_cpu_renderer_create(void) {
         return NULL;
     }
 
-    int n = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    int n = detect_cpu_count();
     if (n < 1) n = 4;
 
     d->num_threads = n;
