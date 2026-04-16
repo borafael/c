@@ -16,3 +16,9 @@ libraytrace_la_CPPFLAGS = -I$(top_srcdir)/libs/math \
                           -I$(top_srcdir)/libs/thread \
                           -I$(top_srcdir)/libs/raytrace
 libraytrace_la_LIBADD = -lm
+
+if BUILD_OPENGL_BACKEND
+libraytrace_la_SOURCES += opengl/renderer.c
+libraytrace_la_CPPFLAGS += $(GL_CFLAGS)
+libraytrace_la_LIBADD += $(GL_LIBS)
+endif

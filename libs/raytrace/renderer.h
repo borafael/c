@@ -16,6 +16,7 @@ typedef struct rt_renderer rt_renderer;
  */
 typedef enum {
     RT_BACKEND_CPU = 0,
+    RT_BACKEND_OPENGL = 1,
 } rt_backend;
 
 /**

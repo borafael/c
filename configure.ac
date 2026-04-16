@@ -22,6 +22,32 @@ AC_CONFIG_HEADERS([config.h])
 AC_DEFINE([RT_HAVE_CPU_BACKEND], [1], [CPU backend is always built])
 AM_CONDITIONAL([BUILD_CPU_BACKEND], [true])
 
+# OpenGL backend — requires GL 4.3+ for compute shaders. Detection is
+# auto by default: present → on, absent → off quietly. Pass
+# --enable-opengl to fail configure if GL can't be found, or
+# --disable-opengl to skip detection entirely.
+AC_ARG_ENABLE([opengl],
+    AS_HELP_STRING([--enable-opengl], [Enable OpenGL compute backend (default: auto)]),
+    [enable_opengl=$enableval],
+    [enable_opengl=auto])
+
+have_opengl=no
+if test "x$enable_opengl" != "xno"; then
+    PKG_CHECK_MODULES([GL], [gl], [have_opengl=yes], [
+        AC_CHECK_LIB([GL], [glCreateShader],
+            [have_opengl=yes; GL_LIBS="-lGL"; GL_CFLAGS=""],
+            [have_opengl=no])
+    ])
+    if test "x$have_opengl" = "xno" && test "x$enable_opengl" = "xyes"; then
+        AC_MSG_ERROR([OpenGL requested but not found])
+    fi
+fi
+
+if test "x$have_opengl" = "xyes"; then
+    AC_DEFINE([RT_HAVE_OPENGL_BACKEND], [1], [OpenGL compute backend is available])
+fi
+AM_CONDITIONAL([BUILD_OPENGL_BACKEND], [test "x$have_opengl" = "xyes"])
+
 # Tell Autoconf which Makefiles to generate
 AC_CONFIG_FILES([
     Makefile

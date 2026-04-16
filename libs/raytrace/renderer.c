@@ -13,11 +13,17 @@
  * rt_renderer_create. */
 rt_renderer *rt_cpu_renderer_create(void);
 #endif
+#ifdef RT_HAVE_OPENGL_BACKEND
+rt_renderer *rt_opengl_renderer_create(void);
+#endif
 
 rt_renderer *rt_renderer_create(rt_backend type) {
     switch (type) {
 #ifdef RT_HAVE_CPU_BACKEND
     case RT_BACKEND_CPU: return rt_cpu_renderer_create();
+#endif
+#ifdef RT_HAVE_OPENGL_BACKEND
+    case RT_BACKEND_OPENGL: return rt_opengl_renderer_create();
 #endif
     }
     return NULL;
@@ -44,6 +50,9 @@ int rt_renderer_available(rt_backend type) {
     switch (type) {
 #ifdef RT_HAVE_CPU_BACKEND
     case RT_BACKEND_CPU: return 1;
+#endif
+#ifdef RT_HAVE_OPENGL_BACKEND
+    case RT_BACKEND_OPENGL: return 1;
 #endif
     }
     return 0;
