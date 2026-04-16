@@ -284,7 +284,7 @@ bf_engine *bf_create(bf_config config) {
         return NULL;
     }
 
-    e->renderer = rt_renderer_create();
+    e->renderer = rt_renderer_create(RT_BACKEND_CPU);
     if (!e->renderer) {
         bf_destroy(e);
         return NULL;

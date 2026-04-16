@@ -290,7 +290,7 @@ int main(void) {
 
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
 
-    rt_renderer *rnd = rt_renderer_create();
+    rt_renderer *rnd = rt_renderer_create(RT_BACKEND_CPU);
     if (!rnd) {
         fprintf(stderr, "Failed to create renderer\n");
         SDL_DestroyRenderer(renderer);

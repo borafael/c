@@ -50,15 +50,16 @@ struct rt_renderer {
 int rt_renderer_available(rt_backend type);
 
 /**
- * Create a new renderer. Returns NULL on allocation or thread-pool
- * creation failure. The returned handle must be freed with
- * rt_renderer_destroy.
+ * Create a new renderer backed by the requested implementation.
+ * Returns NULL if the requested backend is not built into the library
+ * (check with rt_renderer_available first) or if allocation fails.
  *
- * The renderer allocates a thread pool sized to the number of online
- * CPUs. The same pool is reused for every frame — do not create a new
- * renderer per frame.
+ * The returned handle must be freed with rt_renderer_destroy. Reuse
+ * the same handle across frames — do not create a new renderer per
+ * frame (backends may do non-trivial setup like allocating a thread
+ * pool or compiling GPU kernels).
  */
-rt_renderer *rt_renderer_create(void);
+rt_renderer *rt_renderer_create(rt_backend type);
 
 /**
  * Destroy a renderer and release its resources (thread pool, task

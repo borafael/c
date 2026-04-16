@@ -8,8 +8,11 @@
  * rt_renderer_create. */
 rt_renderer *rt_cpu_renderer_create(void);
 
-rt_renderer *rt_renderer_create(void) {
-    return rt_cpu_renderer_create();
+rt_renderer *rt_renderer_create(rt_backend type) {
+    switch (type) {
+    case RT_BACKEND_CPU: return rt_cpu_renderer_create();
+    }
+    return NULL;
 }
 
 void rt_renderer_destroy(rt_renderer *r) {

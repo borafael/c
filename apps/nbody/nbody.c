@@ -202,7 +202,7 @@ void nbody_init(const nbody_config *config) {
         exit(EXIT_FAILURE);
     }
 
-    rt_rnd = rt_renderer_create();
+    rt_rnd = rt_renderer_create(RT_BACKEND_CPU);
     if (!rt_rnd) {
         fprintf(stderr, "Failed to create raytrace renderer\n");
         thread_pool_destroy(pool);
