@@ -6,10 +6,6 @@
 #include "scene.h"
 #include "camera.h"
 
-/**
- * Opaque renderer handle. The concrete type is private to the
- * implementation file (currently libs/raytrace/cpu/renderer.c).
- */
 typedef struct rt_renderer rt_renderer;
 
 /**
@@ -21,6 +17,29 @@ typedef struct rt_renderer rt_renderer;
 typedef enum {
     RT_BACKEND_CPU = 0,
 } rt_backend;
+
+/**
+ * Renderer vtable. Exposed in the public header so the dispatchers in
+ * libs/raytrace/renderer.c can forward through the function pointers
+ * without an extra translation-unit hop. Every field is private — do
+ * not read or write them directly. Always go through the
+ * rt_renderer_* functions below.
+ *
+ * backend_data points to an allocation owned by the backend (e.g.,
+ * cpu_backend_data for the CPU implementation). The backend's
+ * destroy_fn is responsible for freeing both backend_data and the
+ * rt_renderer itself.
+ */
+struct rt_renderer {
+    void        (*destroy_fn)(struct rt_renderer *r);
+    void        (*render_fn)(struct rt_renderer *r,
+                             const rt_scene *scene,
+                             const rt_camera *camera,
+                             const rt_viewport *viewport,
+                             uint32_t *pixels);
+    const char *(*name_fn)(const struct rt_renderer *r);
+    void         *backend_data;
+};
 
 /**
  * Return non-zero if the given backend was compiled into the library

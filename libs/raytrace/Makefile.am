@@ -1,5 +1,5 @@
 noinst_LTLIBRARIES = libraytrace.la
-libraytrace_la_SOURCES = scene.c camera.c \
+libraytrace_la_SOURCES = renderer.c scene.c camera.c \
                          cpu/renderer.c cpu/render_chunk.c \
                          cpu/sphere.c cpu/plane.c cpu/disc.c \
                          cpu/cylinder.c cpu/triangle.c cpu/box.c \

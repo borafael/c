@@ -15,63 +15,42 @@ typedef struct {
     const rt_scene *scene;
 } cpu_render_task;
 
+typedef struct {
+    thread_pool *pool;
+    int num_threads;
+    cpu_render_task *tasks;  /* scratch buffer sized [num_threads] */
+} cpu_backend_data;
+
 static void cpu_render_task_fn(void *arg) {
     cpu_render_task *t = arg;
     rt_render_chunk(t->pixels, t->viewport, t->y_start, t->y_end,
                     t->camera, t->scene);
 }
 
-struct rt_renderer {
-    thread_pool *pool;
-    int num_threads;
-    cpu_render_task *tasks;  /* scratch buffer sized [num_threads] */
-};
-
-rt_renderer *rt_renderer_create(void) {
-    rt_renderer *r = calloc(1, sizeof(*r));
-    if (!r) return NULL;
-
-    int n = (int)sysconf(_SC_NPROCESSORS_ONLN);
-    if (n < 1) n = 4;
-
-    r->num_threads = n;
-    r->pool = thread_pool_create(n);
-    if (!r->pool) {
-        free(r);
-        return NULL;
-    }
-
-    r->tasks = malloc(sizeof(cpu_render_task) * (size_t)n);
-    if (!r->tasks) {
-        thread_pool_destroy(r->pool);
-        free(r);
-        return NULL;
-    }
-
-    return r;
-}
-
-void rt_renderer_destroy(rt_renderer *r) {
-    if (!r) return;
-    thread_pool_destroy(r->pool);
-    free(r->tasks);
+static void cpu_destroy(rt_renderer *r) {
+    cpu_backend_data *d = r->backend_data;
+    thread_pool_destroy(d->pool);
+    free(d->tasks);
+    free(d);
     free(r);
 }
 
-void rt_renderer_render(rt_renderer *r,
-                        const rt_scene *scene,
-                        const rt_camera *camera,
-                        const rt_viewport *viewport,
-                        uint32_t *pixels) {
-    int rows_per = viewport->height / r->num_threads;
+static void cpu_render(rt_renderer *r,
+                       const rt_scene *scene,
+                       const rt_camera *camera,
+                       const rt_viewport *viewport,
+                       uint32_t *pixels) {
+    cpu_backend_data *d = r->backend_data;
+
+    int rows_per = viewport->height / d->num_threads;
     if (rows_per < 1) rows_per = 1;
 
     int n = viewport->height / rows_per;
-    if (n > r->num_threads) n = r->num_threads;
+    if (n > d->num_threads) n = d->num_threads;
     if (n < 1) n = 1;
 
     for (int i = 0; i < n; i++) {
-        r->tasks[i] = (cpu_render_task){
+        d->tasks[i] = (cpu_render_task){
             .pixels   = pixels,
             .viewport = viewport,
             .y_start  = i * rows_per,
@@ -79,19 +58,48 @@ void rt_renderer_render(rt_renderer *r,
             .camera   = camera,
             .scene    = scene,
         };
-        thread_pool_submit(r->pool, cpu_render_task_fn, &r->tasks[i]);
+        thread_pool_submit(d->pool, cpu_render_task_fn, &d->tasks[i]);
     }
-    thread_pool_wait(r->pool);
+    thread_pool_wait(d->pool);
 }
 
-const char *rt_renderer_name(const rt_renderer *r) {
+static const char *cpu_name(const rt_renderer *r) {
     (void)r;
     return "CPU";
 }
 
-int rt_renderer_available(rt_backend type) {
-    switch (type) {
-    case RT_BACKEND_CPU: return 1;
+rt_renderer *rt_cpu_renderer_create(void) {
+    rt_renderer *r = calloc(1, sizeof(*r));
+    if (!r) return NULL;
+
+    cpu_backend_data *d = calloc(1, sizeof(*d));
+    if (!d) {
+        free(r);
+        return NULL;
     }
-    return 0;
+
+    int n = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (n < 1) n = 4;
+
+    d->num_threads = n;
+    d->pool = thread_pool_create(n);
+    if (!d->pool) {
+        free(d);
+        free(r);
+        return NULL;
+    }
+
+    d->tasks = malloc(sizeof(cpu_render_task) * (size_t)n);
+    if (!d->tasks) {
+        thread_pool_destroy(d->pool);
+        free(d);
+        free(r);
+        return NULL;
+    }
+
+    r->destroy_fn   = cpu_destroy;
+    r->render_fn    = cpu_render;
+    r->name_fn      = cpu_name;
+    r->backend_data = d;
+    return r;
 }
