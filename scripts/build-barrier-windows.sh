@@ -28,10 +28,12 @@ echo "Cross-compiling barrier for Windows..."
 mkdir -p "$OUT_DIR"
 
 $CC -O2 -mwindows \
+    -DRT_HAVE_CPU_BACKEND=1 \
     -I"$ROOT/libs/math" \
     -I"$ROOT/libs/raytrace" \
     -I"$ROOT/libs/battleforge" \
     -I"$ROOT/libs/slice" \
+    -I"$ROOT/libs/ini" \
     -I"$ROOT/libs/thread" \
     -I"$SDL2_DIR/include" \
     -L"$SDL2_DIR/lib" \
@@ -39,18 +41,21 @@ $CC -O2 -mwindows \
     "$ROOT/apps/barrier/main.c" \
     "$ROOT/apps/barrier/console.c" \
     "$ROOT/libs/battleforge/battleforge.c" \
-    "$ROOT/libs/raytrace/raytrace.c" \
-    "$ROOT/libs/raytrace/sphere.c" \
-    "$ROOT/libs/raytrace/plane.c" \
-    "$ROOT/libs/raytrace/disc.c" \
-    "$ROOT/libs/raytrace/cylinder.c" \
-    "$ROOT/libs/raytrace/triangle.c" \
-    "$ROOT/libs/raytrace/box.c" \
-    "$ROOT/libs/raytrace/sprite.c" \
-    "$ROOT/libs/raytrace/heightfield.c" \
+    "$ROOT/libs/raytrace/renderer.c" \
     "$ROOT/libs/raytrace/scene.c" \
     "$ROOT/libs/raytrace/camera.c" \
+    "$ROOT/libs/raytrace/cpu/renderer.c" \
+    "$ROOT/libs/raytrace/cpu/render_chunk.c" \
+    "$ROOT/libs/raytrace/cpu/sphere.c" \
+    "$ROOT/libs/raytrace/cpu/plane.c" \
+    "$ROOT/libs/raytrace/cpu/disc.c" \
+    "$ROOT/libs/raytrace/cpu/cylinder.c" \
+    "$ROOT/libs/raytrace/cpu/triangle.c" \
+    "$ROOT/libs/raytrace/cpu/box.c" \
+    "$ROOT/libs/raytrace/cpu/sprite.c" \
+    "$ROOT/libs/raytrace/cpu/heightfield.c" \
     "$ROOT/libs/slice/slice.c" \
+    "$ROOT/libs/ini/ini.c" \
     "$ROOT/libs/thread/thread_pool.c" \
     -lmingw32 -lSDL2main -lSDL2 -lm -lpthread
 
