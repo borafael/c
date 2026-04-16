@@ -1,16 +1,24 @@
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include "renderer.h"
 
 #include <stddef.h>
 
+#ifdef RT_HAVE_CPU_BACKEND
 /* Forward-declare the CPU backend's internal constructor. This is a
  * cross-translation-unit symbol that lives in libs/raytrace/cpu/renderer.c.
  * It is not part of the public API — callers must go through
  * rt_renderer_create. */
 rt_renderer *rt_cpu_renderer_create(void);
+#endif
 
 rt_renderer *rt_renderer_create(rt_backend type) {
     switch (type) {
+#ifdef RT_HAVE_CPU_BACKEND
     case RT_BACKEND_CPU: return rt_cpu_renderer_create();
+#endif
     }
     return NULL;
 }
@@ -34,7 +42,9 @@ const char *rt_renderer_name(const rt_renderer *r) {
 
 int rt_renderer_available(rt_backend type) {
     switch (type) {
+#ifdef RT_HAVE_CPU_BACKEND
     case RT_BACKEND_CPU: return 1;
+#endif
     }
     return 0;
 }
