@@ -98,6 +98,7 @@ static void *rt_texture = NULL;
 static int rt_width = 0;
 static int rt_height = 0;
 static rt_renderer *rt_rnd = NULL;
+static float lighting_time = 0.0f;
 
 static int create_entity(void) {
     if (top >= 0) {
@@ -466,11 +467,7 @@ static rt_sphere entity_to_sphere(int entity_id) {
 static void ensure_render_resources(int w, int h) {
     if (!rt_scene_ptr) {
         rt_scene_ptr = rt_scene_create();
-        rt_scene_set_ambient(rt_scene_ptr, 0.15f);
-        rt_scene_add_light(rt_scene_ptr, (rt_light){
-            .direction = {1.0f, 1.0f, -1.0f},
-            .intensity = 0.85f
-        });
+        rt_scene_set_ambient(rt_scene_ptr, 0.12f);
     }
     if (!pixel_buffer || rt_width != w || rt_height != h) {
         free(pixel_buffer);
@@ -480,6 +477,32 @@ static void ensure_render_resources(int w, int h) {
         rt_width = w;
         rt_height = h;
     }
+}
+
+/* Three-point rig that slowly orbits the scene, so bodies glint
+ * as they coalesce. Re-added every frame because rt_scene_clear
+ * wipes lights. */
+static void setup_lights(void) {
+    float a = lighting_time;
+    float ca = cosf(a), sa = sinf(a);
+
+    /* Key: high front, rotates around Y */
+    rt_scene_add_light(rt_scene_ptr, (rt_light){
+        .direction = { ca, 0.9f, sa },
+        .intensity = 0.75f
+    });
+    /* Fill: low opposite, soft */
+    rt_scene_add_light(rt_scene_ptr, (rt_light){
+        .direction = { -ca, -0.35f, -sa },
+        .intensity = 0.25f
+    });
+    /* Rim: perpendicular to key, subtle edge glow */
+    rt_scene_add_light(rt_scene_ptr, (rt_light){
+        .direction = { -sa, 0.2f, ca },
+        .intensity = 0.35f
+    });
+
+    lighting_time += 0.012f;
 }
 
 static void render_scene(const rt_camera *cam, const rt_viewport *vp) {
@@ -499,6 +522,7 @@ void nbody_render(int screen_width, int screen_height) {
     rt_viewport viewport = { .width = w, .height = h, .fov = 0.9273f };
 
     rt_scene_clear(rt_scene_ptr);
+    setup_lights();
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
             continue;
