@@ -101,6 +101,7 @@ libs/ini/tests/check_ini
 # --- Build stamps ---
 libs/math/tests/.dirstamp
 libs/raytrace/cpu/.dirstamp
+libs/raytrace/opengl/.dirstamp
 
 # --- Cross-compilation ---
 deps/
