@@ -52,6 +52,7 @@ static void print_usage(const char *prog) {
     printf("  -T, --threads N      Number of threads (default: %d)\n", defaults.num_threads);
     printf("  -R, --rot-speed F    Camera rotation speed (default: %.3f)\n", defaults.rotation_speed);
     printf("  -b, --bounds         Enable boundary collision\n");
+    printf("  -G, --gpu            Use OpenGL compute backend (falls back to CPU if unavailable)\n");
     printf("  -h, --help           Show this help message\n");
     printf("\nControls:\n");
     printf("  ESC          Quit\n");
@@ -75,17 +76,19 @@ int main(int argc, char** argv) {
         {"threads",   required_argument, 0, 'T'},
         {"rot-speed", required_argument, 0, 'R'},
         {"bounds",    no_argument,       0, 'b'},
+        {"gpu",       no_argument,       0, 'G'},
         {"help",      no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "n:g:t:r:s:T:R:bh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "n:g:t:r:s:T:R:bGh", long_options, NULL)) != -1) {
         if (apply_option(opt, optarg, &config)) {
             continue;
         }
         switch (opt) {
             case 'b': bounds = 1; break;
+            case 'G': config.use_gpu = 1; break;
             case 'h':
                 print_usage(argv[0]);
                 return 0;
@@ -95,14 +98,14 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (render_init() < 0) {
+        return 1;
+    }
+
     nbody_init(&config);
 
     if (bounds) {
         nbody_set_bounds(1);
-    }
-
-    if (render_init() < 0) {
-        return 1;
     }
 
     nbody_spawn_entities();

@@ -171,6 +171,7 @@ nbody_config nbody_default_config(void) {
     config.softening = 5.0f;
     config.num_threads = 8;
     config.rotation_speed = 0.05f;
+    config.use_gpu = 0;
     return config;
 }
 
@@ -203,7 +204,15 @@ void nbody_init(const nbody_config *config) {
         exit(EXIT_FAILURE);
     }
 
-    rt_rnd = rt_renderer_create(RT_BACKEND_CPU);
+    rt_backend backend = RT_BACKEND_CPU;
+    if (config->use_gpu) {
+        if (rt_renderer_available(RT_BACKEND_OPENGL)) {
+            backend = RT_BACKEND_OPENGL;
+        } else {
+            fprintf(stderr, "OpenGL backend unavailable, falling back to CPU\n");
+        }
+    }
+    rt_rnd = rt_renderer_create(backend);
     if (!rt_rnd) {
         fprintf(stderr, "Failed to create raytrace renderer\n");
         thread_pool_destroy(pool);

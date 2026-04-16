@@ -15,6 +15,7 @@ typedef struct {
     float softening;
     int num_threads;
     float rotation_speed;
+    int use_gpu;
 } nbody_config;
 
 /**

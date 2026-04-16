@@ -37,7 +37,7 @@ Raytrace backends are gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`
 ## Running
 
 ```bash
-./apps/nbody/nbody         # N-Body simulation — ESC quit, R reset
+./apps/nbody/nbody         # N-Body simulation — ESC quit, R reset (-G for GPU backend)
 ./apps/rtdemo/rtdemo       # Raytracer demo — toggle CPU/OpenGL
 ./apps/barrier/barrier     # Game prototype
 ```
