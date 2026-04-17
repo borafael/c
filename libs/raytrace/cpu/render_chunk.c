@@ -59,6 +59,83 @@ static inline void uv_box(vector hp, vector normal, float *u, float *v) {
     else                           { *u = hp.x; *v = hp.y; }
 }
 
+/* Procedural-noise helpers (must match the GLSL versions in
+ * libs/raytrace/opengl/renderer.c for backend parity). */
+
+static inline uint32_t noise_hash(int x, int y, int z) {
+    uint32_t n = ((uint32_t)x * 73856093U)
+               ^ ((uint32_t)y * 19349663U)
+               ^ ((uint32_t)z * 83492791U);
+    n *= 2654435761U;
+    n ^= n >> 13;
+    n *= 2654435761U;
+    return n;
+}
+
+static inline float noise_rand(int x, int y, int z) {
+    return (float)(noise_hash(x, y, z) & 0xFFFFFFU) / 16777216.0f;
+}
+
+static inline float noise_smooth(float t) {
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static inline float noise_lerp(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+static float noise3d(vector p) {
+    int ix = (int)floorf(p.x);
+    int iy = (int)floorf(p.y);
+    int iz = (int)floorf(p.z);
+    float fx = p.x - (float)ix;
+    float fy = p.y - (float)iy;
+    float fz = p.z - (float)iz;
+    float u = noise_smooth(fx);
+    float v = noise_smooth(fy);
+    float w = noise_smooth(fz);
+
+    float n000 = noise_rand(ix,     iy,     iz);
+    float n100 = noise_rand(ix + 1, iy,     iz);
+    float n010 = noise_rand(ix,     iy + 1, iz);
+    float n110 = noise_rand(ix + 1, iy + 1, iz);
+    float n001 = noise_rand(ix,     iy,     iz + 1);
+    float n101 = noise_rand(ix + 1, iy,     iz + 1);
+    float n011 = noise_rand(ix,     iy + 1, iz + 1);
+    float n111 = noise_rand(ix + 1, iy + 1, iz + 1);
+
+    float nx00 = noise_lerp(n000, n100, u);
+    float nx10 = noise_lerp(n010, n110, u);
+    float nx01 = noise_lerp(n001, n101, u);
+    float nx11 = noise_lerp(n011, n111, u);
+    float nxy0 = noise_lerp(nx00, nx10, v);
+    float nxy1 = noise_lerp(nx01, nx11, v);
+    return noise_lerp(nxy0, nxy1, w);
+}
+
+static float turbulence(vector p, int octaves) {
+    float total = 0.0f;
+    float amp = 1.0f;
+    float sum = 0.0f;
+    for (int i = 0; i < octaves; i++) {
+        float f = (float)(1 << i);
+        vector sp = { p.x * f, p.y * f, p.z * f };
+        total += amp * noise3d(sp);
+        sum += amp;
+        amp *= 0.5f;
+    }
+    return total / sum;
+}
+
+static inline rt_color color_lerp(rt_color a, rt_color b, float t) {
+    if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+    rt_color c;
+    c.r = (uint8_t)((float)a.r + ((float)b.r - (float)a.r) * t);
+    c.g = (uint8_t)((float)a.g + ((float)b.g - (float)a.g) * t);
+    c.b = (uint8_t)((float)a.b + ((float)b.b - (float)a.b) * t);
+    return c;
+}
+
 static inline rt_color material_sample(const rt_material *m,
                                        const rt_texture *textures,
                                        vector p, float u, float v) {
@@ -88,6 +165,33 @@ static inline rt_color material_sample(const rt_material *m,
         c.g = (pixel >>  8) & 0xFF;
         c.b =  pixel        & 0xFF;
         return c;
+    }
+    if (m->tex_kind == RT_TEX_GRADIENT) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        float t = p.y / s;
+        return color_lerp(m->albedo, m->albedo2, t);
+    }
+    if (m->tex_kind == RT_TEX_NOISE) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        vector np = { p.x / s, p.y / s, p.z / s };
+        float t = noise3d(np);
+        return color_lerp(m->albedo, m->albedo2, t);
+    }
+    if (m->tex_kind == RT_TEX_WOOD) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        vector tp = { p.x * 0.5f, p.y * 0.5f, p.z * 0.5f };
+        float turb = turbulence(tp, 4) * 0.8f;
+        float r = sqrtf(p.x * p.x + p.z * p.z) / s;
+        float rings = 0.5f + 0.5f * sinf((r + turb) * 6.2831853f);
+        float t = rings * rings; /* sharpen dark/light contrast */
+        return color_lerp(m->albedo, m->albedo2, t);
+    }
+    if (m->tex_kind == RT_TEX_MARBLE) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        float turb = turbulence(p, 5) * 5.0f;
+        float t = 0.5f + 0.5f * sinf(p.x / s + turb);
+        t = t * t * t * t; /* narrow, bright veins */
+        return color_lerp(m->albedo, m->albedo2, t);
     }
     return m->albedo;
 }

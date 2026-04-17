@@ -4,9 +4,13 @@
 #include "rt_color.h"
 
 typedef enum {
-    RT_TEX_NONE = 0,
-    RT_TEX_CHECKER = 1,
-    RT_TEX_IMAGE = 2,
+    RT_TEX_NONE     = 0,
+    RT_TEX_CHECKER  = 1,
+    RT_TEX_IMAGE    = 2,
+    RT_TEX_GRADIENT = 3,   /* albedo→albedo2 along +Y over tex_scale units */
+    RT_TEX_NOISE    = 4,   /* value-noise lerp, tex_scale = world/cell */
+    RT_TEX_WOOD     = 5,   /* turbulent rings in XZ, tex_scale = ring width */
+    RT_TEX_MARBLE   = 6,   /* turbulent veins along X, tex_scale = band width */
 } rt_tex_kind;
 
 typedef struct {

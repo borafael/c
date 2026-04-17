@@ -230,10 +230,30 @@ static void build_scene(rt_scene **scene, rt_camera **camera) {
         .tex_kind  = RT_TEX_CHECKER,
         .tex_scale = 1.0f,
     });
-    int m_orange = rt_scene_add_material(*scene, (rt_material){.albedo = {255, 160,   0}});
-    int m_purple = rt_scene_add_material(*scene, (rt_material){.albedo = {200,  50, 200}});
-    int m_cyan   = rt_scene_add_material(*scene, (rt_material){.albedo = {  0, 200, 200}});
-    int m_coral  = rt_scene_add_material(*scene, (rt_material){.albedo = {255, 120,  60}});
+    int m_orange = rt_scene_add_material(*scene, (rt_material){
+        .albedo    = {255, 180,  60},  /* bottom */
+        .albedo2   = {160,  20, 120},  /* top */
+        .tex_kind  = RT_TEX_GRADIENT,
+        .tex_scale = 1.2f,
+    });
+    int m_purple = rt_scene_add_material(*scene, (rt_material){
+        .albedo    = {200, 160, 100},  /* light wood */
+        .albedo2   = { 70,  35,  15},  /* dark grain */
+        .tex_kind  = RT_TEX_WOOD,
+        .tex_scale = 0.25f,
+    });
+    int m_cyan   = rt_scene_add_material(*scene, (rt_material){
+        .albedo    = {230, 230, 235},  /* stone */
+        .albedo2   = { 40,  60,  90},  /* vein */
+        .tex_kind  = RT_TEX_MARBLE,
+        .tex_scale = 0.5f,
+    });
+    int m_coral  = rt_scene_add_material(*scene, (rt_material){
+        .albedo    = {255, 120,  60},
+        .albedo2   = {120,  30,  10},
+        .tex_kind  = RT_TEX_NOISE,
+        .tex_scale = 0.35f,
+    });
     int m_mirror = rt_scene_add_material(*scene, (rt_material){
         .reflectivity = 1.0f,
     });
