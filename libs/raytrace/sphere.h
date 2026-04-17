@@ -2,12 +2,11 @@
 #define RT_SPHERE_H
 
 #include "vector.h"
-#include "rt_color.h"
 
 typedef struct {
     vector center;
     float radius;
-    rt_color color;
+    int material;
 } rt_sphere;
 
 float rt_intersect_sphere(vector ro, vector rd, const rt_sphere *s);

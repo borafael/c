@@ -2,12 +2,11 @@
 #define RT_PLANE_H
 
 #include "vector.h"
-#include "rt_color.h"
 
 typedef struct {
     vector normal;
     vector point;
-    rt_color color;
+    int material;
 } rt_plane;
 
 float rt_intersect_plane(vector ro, vector rd, const rt_plane *p);

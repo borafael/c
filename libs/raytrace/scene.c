@@ -24,6 +24,8 @@ rt_scene *rt_scene_create(void) {
     s->light_capacity    = RT_DEFAULT_CAPACITY;
     s->sprite_capacity       = RT_DEFAULT_CAPACITY;
     s->heightfield_capacity  = RT_DEFAULT_CAPACITY;
+    s->material_capacity     = RT_DEFAULT_CAPACITY;
+    s->texture_capacity      = RT_DEFAULT_CAPACITY;
     s->ambient               = 0.15f;
 
     s->spheres   = malloc(sizeof(rt_sphere)   * s->sphere_capacity);
@@ -35,10 +37,12 @@ rt_scene *rt_scene_create(void) {
     s->lights    = malloc(sizeof(rt_light)    * s->light_capacity);
     s->sprites      = malloc(sizeof(rt_sprite)       * s->sprite_capacity);
     s->heightfields = malloc(sizeof(rt_heightfield) * s->heightfield_capacity);
+    s->materials    = malloc(sizeof(rt_material)     * s->material_capacity);
+    s->textures     = malloc(sizeof(rt_texture)      * s->texture_capacity);
 
     if (!s->spheres || !s->planes || !s->discs ||
         !s->cylinders || !s->triangles || !s->boxes || !s->lights ||
-        !s->sprites || !s->heightfields) {
+        !s->sprites || !s->heightfields || !s->materials || !s->textures) {
         rt_scene_destroy(s);
         return NULL;
     }
@@ -55,6 +59,8 @@ void rt_scene_clear(rt_scene *scene) {
     scene->sprite_count      = 0;
     scene->heightfield_count = 0;
     scene->light_count       = 0;
+    scene->material_count    = 0;
+    scene->texture_count     = 0;
 }
 
 int rt_scene_add_sphere(rt_scene *scene, rt_sphere sphere) {
@@ -116,6 +122,20 @@ int rt_scene_add_heightfield(rt_scene *scene, const rt_heightfield *hf) {
     return 0;
 }
 
+int rt_scene_add_material(rt_scene *scene, rt_material material) {
+    GROW_IF_NEEDED(scene->materials, scene->material_count, scene->material_capacity, rt_material);
+    int idx = scene->material_count;
+    scene->materials[scene->material_count++] = material;
+    return idx;
+}
+
+int rt_scene_add_texture(rt_scene *scene, rt_texture texture) {
+    GROW_IF_NEEDED(scene->textures, scene->texture_count, scene->texture_capacity, rt_texture);
+    int idx = scene->texture_count;
+    scene->textures[scene->texture_count++] = texture;
+    return idx;
+}
+
 void rt_scene_destroy(rt_scene *scene) {
     if (!scene) return;
     free(scene->spheres);
@@ -127,5 +147,7 @@ void rt_scene_destroy(rt_scene *scene) {
     free(scene->lights);
     free(scene->sprites);
     free(scene->heightfields);
+    free(scene->materials);
+    free(scene->textures);
     free(scene);
 }

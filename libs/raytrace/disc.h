@@ -2,13 +2,12 @@
 #define RT_DISC_H
 
 #include "vector.h"
-#include "rt_color.h"
 
 typedef struct {
     vector center;
     vector normal;
     float radius;
-    rt_color color;
+    int material;
 } rt_disc;
 
 float rt_intersect_disc(vector ro, vector rd, const rt_disc *d);

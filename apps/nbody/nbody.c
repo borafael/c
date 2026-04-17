@@ -7,7 +7,6 @@
 #include "scene.h"
 #include "camera.h"
 #include "sphere.h"
-#include "rt_color.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +37,7 @@ static rt_camera *camera = NULL;
 #define RT_SCALE 4
 static rt_scene *rt_scene_ptr = NULL;
 static uint32_t *pixel_buffer = NULL;
-static void *rt_texture = NULL;
+static void *sdl_texture = NULL;
 static int rt_width = 0;
 static int rt_height = 0;
 static rt_renderer *rt_rnd = NULL;
@@ -203,9 +202,9 @@ void nbody_cleanup(void) {
         free(pixel_buffer);
         pixel_buffer = NULL;
     }
-    if (rt_texture) {
-        render_destroy_texture(rt_texture);
-        rt_texture = NULL;
+    if (sdl_texture) {
+        render_destroy_texture(sdl_texture);
+        sdl_texture = NULL;
     }
 }
 
@@ -216,19 +215,22 @@ void nbody_update(void) {
     }
 }
 
-static rt_sphere body_to_sphere(int id) {
+static rt_sphere body_to_sphere(int id, rt_scene *scene) {
     float mass = physics_world_body_mass(world, id);
     float t = logf(mass) / logf(1000.0f);
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
 
+    rt_material mat = {0};
+    mat.albedo.r = (uint8_t)(50 + t * 205);
+    mat.albedo.g = (uint8_t)(50 * (1 - t * t));
+    mat.albedo.b = (uint8_t)(255 * (1 - t * t));
+
     rt_sphere sp;
     sp.center = physics_world_body_position(world, id);
     sp.radius = 2.0f + logf(mass) * 2.0f;
     if (sp.radius < 1.0f) sp.radius = 1.0f;
-    sp.color.r = (uint8_t)(50 + t * 205);
-    sp.color.g = (uint8_t)(50 * (1 - t * t));
-    sp.color.b = (uint8_t)(255 * (1 - t * t));
+    sp.material = rt_scene_add_material(scene, mat);
 
     return sp;
 }
@@ -241,8 +243,8 @@ static void ensure_render_resources(int w, int h) {
     if (!pixel_buffer || rt_width != w || rt_height != h) {
         free(pixel_buffer);
         pixel_buffer = calloc((size_t)w * h, sizeof(uint32_t));
-        if (rt_texture) render_destroy_texture(rt_texture);
-        rt_texture = render_create_texture(w, h);
+        if (sdl_texture) render_destroy_texture(sdl_texture);
+        sdl_texture = render_create_texture(w, h);
         rt_width = w;
         rt_height = h;
     }
@@ -278,7 +280,7 @@ static void render_scene(const rt_camera *cam, const rt_viewport *vp) {
     rt_renderer_render(rt_rnd, rt_scene_ptr, cam, vp, pixel_buffer);
 
     render_clear();
-    render_texture_update(rt_texture, pixel_buffer, vp->width * (int)sizeof(uint32_t));
+    render_texture_update(sdl_texture, pixel_buffer, vp->width * (int)sizeof(uint32_t));
     render_present();
 }
 
@@ -296,7 +298,7 @@ void nbody_render(int screen_width, int screen_height) {
     int cap = physics_world_capacity(world);
     for (int i = 0; i < cap; i++) {
         if (!physics_world_body_alive(world, i)) continue;
-        rt_scene_add_sphere(rt_scene_ptr, body_to_sphere(i));
+        rt_scene_add_sphere(rt_scene_ptr, body_to_sphere(i, rt_scene_ptr));
     }
 
     render_scene(camera, &viewport);

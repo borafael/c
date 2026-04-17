@@ -9,9 +9,9 @@ libraytrace_la_SOURCES += cpu/renderer.c cpu/render_chunk.c \
                           cpu/sprite.c cpu/heightfield.c
 endif
 
-noinst_HEADERS = viewport.h renderer.h rt_color.h scene.h camera.h \
-                 sphere.h plane.h disc.h cylinder.h triangle.h box.h sprite.h \
-                 heightfield.h cpu/render_chunk.h
+noinst_HEADERS = viewport.h renderer.h rt_color.h material.h texture.h scene.h \
+                 camera.h sphere.h plane.h disc.h cylinder.h triangle.h box.h \
+                 sprite.h heightfield.h cpu/render_chunk.h
 libraytrace_la_CPPFLAGS = -I$(top_srcdir)/libs/math \
                           -I$(top_srcdir)/libs/thread \
                           -I$(top_srcdir)/libs/raytrace

@@ -1,6 +1,8 @@
 #ifndef RT_SCENE_H
 #define RT_SCENE_H
 
+#include "material.h"
+#include "texture.h"
 #include "sphere.h"
 #include "plane.h"
 #include "disc.h"
@@ -46,6 +48,12 @@ typedef struct {
     rt_heightfield *heightfields;
     int heightfield_count;
     int heightfield_capacity;
+    rt_material *materials;
+    int material_count;
+    int material_capacity;
+    rt_texture *textures;
+    int texture_count;
+    int texture_capacity;
 } rt_scene;
 
 rt_scene *rt_scene_create(void);
@@ -60,6 +68,8 @@ int rt_scene_add_triangle(rt_scene *scene, rt_triangle triangle);
 int rt_scene_add_box(rt_scene *scene, rt_box box);
 int rt_scene_add_sprite(rt_scene *scene, rt_sprite sprite);
 int rt_scene_add_heightfield(rt_scene *scene, const rt_heightfield *hf);
+int rt_scene_add_material(rt_scene *scene, rt_material material);
+int rt_scene_add_texture(rt_scene *scene, rt_texture texture);
 void rt_scene_destroy(rt_scene *scene);
 
 #endif /* RT_SCENE_H */

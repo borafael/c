@@ -10,7 +10,6 @@
 #include "triangle.h"
 #include "sprite.h"
 #include "heightfield.h"
-#include "rt_color.h"
 #include <SDL2/SDL.h>
 
 #define GL_GLEXT_PROTOTYPES 1
@@ -187,41 +186,95 @@ static void init_sprite_frames(void) {
     draw_front_left(frame_data[7]);
 }
 
+#define RTDEMO_TEX_SIZE 64
+static uint32_t rtdemo_test_texture_pixels[RTDEMO_TEX_SIZE * RTDEMO_TEX_SIZE];
+
+static void build_test_texture(void) {
+    for (int y = 0; y < RTDEMO_TEX_SIZE; y++) {
+        for (int x = 0; x < RTDEMO_TEX_SIZE; x++) {
+            uint8_t r, g, b;
+            if ((x % 16 == 0) || (y % 16 == 0)) {
+                r = g = b = 20;
+            } else {
+                r = (uint8_t)((x * 4) & 0xFF);
+                g = (uint8_t)((y * 4) & 0xFF);
+                b = (uint8_t)(((x + y) * 2) & 0xFF);
+            }
+            rtdemo_test_texture_pixels[y * RTDEMO_TEX_SIZE + x] =
+                (0xFFu << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+        }
+    }
+}
+
 static void build_scene(rt_scene **scene, rt_camera **camera) {
     *scene = rt_scene_create();
+
+    build_test_texture();
+    int t_grid = rt_scene_add_texture(*scene, (rt_texture){
+        .pixels = rtdemo_test_texture_pixels,
+        .width  = RTDEMO_TEX_SIZE,
+        .height = RTDEMO_TEX_SIZE,
+    });
+
+    int m_red    = rt_scene_add_material(*scene, (rt_material){.albedo = {255,  80,  80}});
+    int m_green  = rt_scene_add_material(*scene, (rt_material){.albedo = { 80, 255,  80}});
+    int m_blue   = rt_scene_add_material(*scene, (rt_material){.albedo = { 80,  80, 255}});
+    int m_yellow = rt_scene_add_material(*scene, (rt_material){
+        .tex_kind  = RT_TEX_IMAGE,
+        .tex_index = t_grid,
+        .tex_scale = 1.0f,
+    });
+    int m_grey   = rt_scene_add_material(*scene, (rt_material){
+        .albedo    = { 90,  90,  90},
+        .albedo2   = {160, 160, 160},
+        .tex_kind  = RT_TEX_CHECKER,
+        .tex_scale = 1.0f,
+    });
+    int m_orange = rt_scene_add_material(*scene, (rt_material){.albedo = {255, 160,   0}});
+    int m_purple = rt_scene_add_material(*scene, (rt_material){.albedo = {200,  50, 200}});
+    int m_cyan   = rt_scene_add_material(*scene, (rt_material){.albedo = {  0, 200, 200}});
+    int m_coral  = rt_scene_add_material(*scene, (rt_material){.albedo = {255, 120,  60}});
+    int m_mirror = rt_scene_add_material(*scene, (rt_material){
+        .reflectivity = 1.0f,
+    });
 
     rt_scene_add_sphere(*scene, (rt_sphere){
         .center = {0.0f, 1.0f, 0.0f},
         .radius = 1.0f,
-        .color = {255, 80, 80}
+        .material = m_red
     });
     rt_scene_add_sphere(*scene, (rt_sphere){
         .center = {-2.5f, 0.6f, -1.0f},
         .radius = 0.6f,
-        .color = {80, 255, 80}
+        .material = m_green
     });
     rt_scene_add_sphere(*scene, (rt_sphere){
         .center = {2.0f, 0.8f, -0.5f},
         .radius = 0.8f,
-        .color = {80, 80, 255}
+        .material = m_blue
     });
     rt_scene_add_sphere(*scene, (rt_sphere){
         .center = {0.5f, 0.4f, 2.0f},
         .radius = 0.4f,
-        .color = {255, 255, 80}
+        .material = m_yellow
+    });
+    rt_scene_add_sphere(*scene, (rt_sphere){
+        .center = {0.0f, 2.5f, -1.0f},
+        .radius = 1.0f,
+        .material = m_mirror
     });
 
     rt_scene_add_plane(*scene, (rt_plane){
         .point = {0.0f, -1.0f, 0.0f},
         .normal = {0.0f, 0.96f, 0.29f},
-        .color = {120, 120, 120}
+        .material = m_grey
     });
 
     rt_scene_add_disc(*scene, (rt_disc){
         .center = {-3.0f, 0.0f, 2.0f},
         .normal = {0.0f, 1.0f, 0.0f},
         .radius = 1.2f,
-        .color = {255, 160, 0}
+        .material = m_orange
     });
 
     rt_scene_add_cylinder(*scene, (rt_cylinder){
@@ -229,20 +282,20 @@ static void build_scene(rt_scene **scene, rt_camera **camera) {
         .axis = {0.0f, 1.0f, 0.0f},
         .radius = 0.5f,
         .half_height = 1.0f,
-        .color = {200, 50, 200}
+        .material = m_purple
     });
 
     rt_scene_add_triangle(*scene, (rt_triangle){
         .v0 = {-1.0f, 0.0f, -3.0f},
         .v1 = { 1.0f, 0.0f, -3.0f},
         .v2 = { 0.0f, 2.0f, -3.0f},
-        .color = {0, 200, 200}
+        .material = m_cyan
     });
 
     rt_scene_add_box(*scene, (rt_box){
         .min = {-4.0f, -0.5f, -1.5f},
         .max = {-3.0f,  0.5f, -0.5f},
-        .color = {255, 120, 60}
+        .material = m_coral
     });
 
     rt_scene_set_ambient(*scene, 0.15f);

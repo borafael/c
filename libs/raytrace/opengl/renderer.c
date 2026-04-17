@@ -45,14 +45,21 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "uniform int   u_heightfield_count;\n"
 "uniform int   u_light_count;\n"
 "\n"
-"struct Sphere   { vec4 center_radius; vec4 color; };\n"
-"struct Plane    { vec4 point; vec4 normal; vec4 color; };\n"
-"struct Disc     { vec4 center_radius; vec4 normal; vec4 color; };\n"
-"struct Cylinder { vec4 center_hh; vec4 axis_radius; vec4 color; };\n"
-"struct Triangle { vec4 v0; vec4 v1; vec4 v2; vec4 color; };\n"
-"struct Box      { vec4 minp; vec4 maxp; vec4 color; };\n"
+"struct Sphere   { vec4 center_radius; ivec4 mat; };\n"
+"struct Plane    { vec4 point; vec4 normal; ivec4 mat; };\n"
+"struct Disc     { vec4 center_radius; vec4 normal; ivec4 mat; };\n"
+"struct Cylinder { vec4 center_hh; vec4 axis_radius; ivec4 mat; };\n"
+"struct Triangle { vec4 v0; vec4 v1; vec4 v2; ivec4 mat; };\n"
+"struct Box      { vec4 minp; vec4 maxp; ivec4 mat; };\n"
 "struct Sprite   { vec4 position_w; vec4 direction_h; ivec4 frame_info; };\n"
 "struct Light    { vec4 direction_intensity; };\n"
+"struct Material {\n"
+"    vec4  albedo;   /* tile A / base color */\n"
+"    vec4  albedo2;  /* tile B (checker) */\n"
+"    ivec4 kind;     /* .x = rt_tex_kind, .y = tex_index */\n"
+"    vec4  scale;    /* .x = tex_scale, .y = reflectivity */\n"
+"};\n"
+"struct Texture { ivec4 size; };  /* .x = real_w, .y = real_h */\n"
 "struct Heightfield {\n"
 "    vec4  origin_world;   /* origin_x, origin_z, world_w, world_d */\n"
 "    vec4  grid;           /* rows, cols, max_h, 0 */\n"
@@ -71,9 +78,13 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "layout(std430, binding = 10) readonly buffer HfHeights   { float hf_heights[];    };\n"
 "layout(std430, binding = 11) readonly buffer HfNormals   { float hf_normals[];    };\n"
 "layout(std430, binding = 12) readonly buffer HfColors    { uint  hf_colors[];     };\n"
+"layout(std430, binding = 13) readonly buffer MatBuf      { Material materials[];  };\n"
+"layout(std430, binding = 14) readonly buffer TexBuf      { Texture  textures[];   };\n"
 "\n"
 "/* Sampler for sprite frames: all frames packed into one texture array */\n"
 "uniform sampler2DArray u_sprite_atlas;\n"
+"/* Sampler for image textures: one layer per material image texture */\n"
+"uniform sampler2DArray u_tex_atlas;\n"
 "\n"
 "/* ---- Ray-primitive intersections ------------------------------------- */\n"
 "\n"
@@ -378,6 +389,215 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    return (best_t < 1e30) ? 1 : 0;\n"
 "}\n"
 "\n"
+"/* ---- UV computation per primitive type ------------------------------ */\n"
+"\n"
+"const float RT_PI = 3.14159265358979323846;\n"
+"\n"
+"void rt_tangent_basis(vec3 n, out vec3 t, out vec3 b) {\n"
+"    vec3 up = (abs(n.y) < 0.999) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);\n"
+"    t = normalize(cross(up, n));\n"
+"    b = cross(n, t);\n"
+"}\n"
+"\n"
+"vec2 uv_sphere(vec3 hp, vec3 center) {\n"
+"    vec3 n = normalize(hp - center);\n"
+"    return vec2(atan(n.z, n.x) / (2.0 * RT_PI) + 0.5,\n"
+"                acos(clamp(n.y, -1.0, 1.0)) / RT_PI);\n"
+"}\n"
+"\n"
+"vec2 uv_planar(vec3 hp, vec3 anchor, vec3 normal) {\n"
+"    vec3 t, b;\n"
+"    rt_tangent_basis(normal, t, b);\n"
+"    vec3 d = hp - anchor;\n"
+"    return vec2(dot(d, t), dot(d, b));\n"
+"}\n"
+"\n"
+"vec2 uv_cyl(vec3 hp, Cylinder c) {\n"
+"    vec3 axis = normalize(c.axis_radius.xyz);\n"
+"    vec3 ohp = hp - c.center_hh.xyz;\n"
+"    float h = dot(ohp, axis);\n"
+"    vec3 radial = ohp - axis * h;\n"
+"    vec3 ta, tb;\n"
+"    rt_tangent_basis(axis, ta, tb);\n"
+"    return vec2(atan(dot(radial, tb), dot(radial, ta)) / (2.0 * RT_PI) + 0.5,\n"
+"                (h + c.center_hh.w) / (2.0 * c.center_hh.w));\n"
+"}\n"
+"\n"
+"vec2 uv_box_face(vec3 hp, vec3 normal) {\n"
+"    float ax = abs(normal.x), ay = abs(normal.y), az = abs(normal.z);\n"
+"    if (ax >= ay && ax >= az)      return vec2(hp.z, hp.y);\n"
+"    else if (ay >= ax && ay >= az) return vec2(hp.x, hp.z);\n"
+"    else                           return vec2(hp.x, hp.y);\n"
+"}\n"
+"\n"
+"/* ---- Material sampling ---------------------------------------------- */\n"
+"\n"
+"vec3 material_sample(int midx, vec3 p, vec2 uv) {\n"
+"    Material m = materials[midx];\n"
+"    if (m.kind.x == 1) {\n"
+"        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;\n"
+"        int ix = int(floor(p.x / s));\n"
+"        int iy = int(floor(p.y / s));\n"
+"        int iz = int(floor(p.z / s));\n"
+"        return ((ix + iy + iz) & 1) != 0 ? m.albedo2.rgb : m.albedo.rgb;\n"
+"    }\n"
+"    if (m.kind.x == 2 && m.kind.y >= 0) {\n"
+"        int tidx = m.kind.y;\n"
+"        Texture tx = textures[tidx];\n"
+"        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;\n"
+"        float uu = uv.x / s; uu = uu - floor(uu);\n"
+"        float vv = uv.y / s; vv = vv - floor(vv);\n"
+"        int sx = tx.size.x, sy = tx.size.y;\n"
+"        int px = clamp(int(uu * float(sx)), 0, sx - 1);\n"
+"        int py = clamp(int(vv * float(sy)), 0, sy - 1);\n"
+"        return texelFetch(u_tex_atlas, ivec3(px, py, tidx), 0).rgb;\n"
+"    }\n"
+"    return m.albedo.rgb;\n"
+"}\n"
+"\n"
+"/* ---- Closest-hit + bounce loop -------------------------------------- */\n"
+"\n"
+"struct HitInfo {\n"
+"    bool  hit;\n"
+"    vec3  point;\n"
+"    vec3  normal;\n"
+"    vec3  albedo;\n"
+"    float reflectivity;\n"
+"};\n"
+"\n"
+"HitInfo closest_hit(vec3 ro, vec3 rd) {\n"
+"    HitInfo h;\n"
+"    h.hit = false;\n"
+"    h.point = vec3(0.0);\n"
+"    h.normal = vec3(0.0);\n"
+"    h.albedo = vec3(0.0);\n"
+"    h.reflectivity = 0.0;\n"
+"    float closest_t = 1e30;\n"
+"\n"
+"    for (int i = 0; i < u_sphere_count; i++) {\n"
+"        float t = isect_sphere(ro, rd, spheres[i]);\n"
+"        if (t > 0.0 && t < closest_t) {\n"
+"            closest_t = t;\n"
+"            vec3 hp = ro + rd * t;\n"
+"            h.point  = hp;\n"
+"            h.normal = normalize(hp - spheres[i].center_radius.xyz);\n"
+"            vec2 uv  = uv_sphere(hp, spheres[i].center_radius.xyz);\n"
+"            int midx = spheres[i].mat.x;\n"
+"            h.albedo = material_sample(midx, hp, uv);\n"
+"            h.reflectivity = materials[midx].scale.y;\n"
+"            h.hit = true;\n"
+"        }\n"
+"    }\n"
+"    for (int i = 0; i < u_plane_count; i++) {\n"
+"        float t = isect_plane(ro, rd, planes[i]);\n"
+"        if (t > 0.0 && t < closest_t) {\n"
+"            closest_t = t;\n"
+"            vec3 hp = ro + rd * t;\n"
+"            h.point  = hp;\n"
+"            h.normal = planes[i].normal.xyz;\n"
+"            vec2 uv  = uv_planar(hp, planes[i].point.xyz, h.normal);\n"
+"            int midx = planes[i].mat.x;\n"
+"            h.albedo = material_sample(midx, hp, uv);\n"
+"            h.reflectivity = materials[midx].scale.y;\n"
+"            h.hit = true;\n"
+"        }\n"
+"    }\n"
+"    for (int i = 0; i < u_disc_count; i++) {\n"
+"        float t = isect_disc(ro, rd, discs[i]);\n"
+"        if (t > 0.0 && t < closest_t) {\n"
+"            closest_t = t;\n"
+"            vec3 hp = ro + rd * t;\n"
+"            h.point  = hp;\n"
+"            h.normal = discs[i].normal.xyz;\n"
+"            vec2 uv  = uv_planar(hp, discs[i].center_radius.xyz, h.normal);\n"
+"            int midx = discs[i].mat.x;\n"
+"            h.albedo = material_sample(midx, hp, uv);\n"
+"            h.reflectivity = materials[midx].scale.y;\n"
+"            h.hit = true;\n"
+"        }\n"
+"    }\n"
+"    for (int i = 0; i < u_cylinder_count; i++) {\n"
+"        vec3 hp;\n"
+"        float t = isect_cylinder(ro, rd, cylinders[i], hp);\n"
+"        if (t > 0.0 && t < closest_t) {\n"
+"            closest_t = t;\n"
+"            h.point  = hp;\n"
+"            h.normal = normal_cylinder(hp, cylinders[i]);\n"
+"            vec2 uv  = uv_cyl(hp, cylinders[i]);\n"
+"            int midx = cylinders[i].mat.x;\n"
+"            h.albedo = material_sample(midx, hp, uv);\n"
+"            h.reflectivity = materials[midx].scale.y;\n"
+"            h.hit = true;\n"
+"        }\n"
+"    }\n"
+"    for (int i = 0; i < u_triangle_count; i++) {\n"
+"        float t = isect_triangle(ro, rd, triangles[i]);\n"
+"        if (t > 0.0 && t < closest_t) {\n"
+"            closest_t = t;\n"
+"            vec3 hp = ro + rd * t;\n"
+"            h.point  = hp;\n"
+"            h.normal = normal_triangle(triangles[i]);\n"
+"            vec2 uv  = uv_planar(hp, triangles[i].v0.xyz, h.normal);\n"
+"            int midx = triangles[i].mat.x;\n"
+"            h.albedo = material_sample(midx, hp, uv);\n"
+"            h.reflectivity = materials[midx].scale.y;\n"
+"            h.hit = true;\n"
+"        }\n"
+"    }\n"
+"    for (int i = 0; i < u_box_count; i++) {\n"
+"        vec3 hp;\n"
+"        float t = isect_box(ro, rd, boxes[i], hp);\n"
+"        if (t > 0.0 && t < closest_t) {\n"
+"            closest_t = t;\n"
+"            h.point  = hp;\n"
+"            h.normal = normal_box(hp, boxes[i]);\n"
+"            vec2 uv  = uv_box_face(hp, h.normal);\n"
+"            int midx = boxes[i].mat.x;\n"
+"            h.albedo = material_sample(midx, hp, uv);\n"
+"            h.reflectivity = materials[midx].scale.y;\n"
+"            h.hit = true;\n"
+"        }\n"
+"    }\n"
+"    for (int i = 0; i < u_sprite_count; i++) {\n"
+"        vec3 hp, sright, sup, snormal;\n"
+"        float t = isect_sprite(ro, rd, sprites[i], hp, sright, sup, snormal);\n"
+"        if (t > 0.0 && t < closest_t) {\n"
+"            int frame = sprite_select_frame(sprites[i]);\n"
+"            vec4 px = sprite_sample(sprites[i], hp, sright, sup, frame);\n"
+"            if (px.a > 0.0) {\n"
+"                closest_t = t;\n"
+"                h.point  = hp;\n"
+"                h.normal = snormal;\n"
+"                h.albedo = px.rgb;\n"
+"                h.reflectivity = 0.0;\n"
+"                h.hit = true;\n"
+"            }\n"
+"        }\n"
+"    }\n"
+"    for (int i = 0; i < u_heightfield_count; i++) {\n"
+"        float t; vec3 hn; int cr, cc;\n"
+"        if (isect_heightfield(heightfields[i], ro, rd, t, hn, cr, cc) == 1) {\n"
+"            if (t > 0.0 && t < closest_t) {\n"
+"                closest_t = t;\n"
+"                h.point  = ro + rd * t;\n"
+"                h.normal = hn;\n"
+"                int cells_per_row = int(heightfields[i].grid.y) - 1;\n"
+"                int ci = heightfields[i].offsets.z + (cr * cells_per_row + cc) * 3;\n"
+"                h.albedo = vec3(\n"
+"                    float(hf_colors[ci])     / 255.0,\n"
+"                    float(hf_colors[ci + 1]) / 255.0,\n"
+"                    float(hf_colors[ci + 2]) / 255.0\n"
+"                );\n"
+"                h.reflectivity = 0.0;\n"
+"                h.hit = true;\n"
+"            }\n"
+"        }\n"
+"    }\n"
+"    return h;\n"
+"}\n"
+"\n"
+"const int RT_MAX_BOUNCES = 4;\n"
+"\n"
 "/* ---- Main ------------------------------------------------------------ */\n"
 "\n"
 "void main() {\n"
@@ -393,125 +613,50 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    vec3 ro = u_cam_origin;\n"
 "    vec3 rd = normalize(u_cam_forward + u_cam_right * sx + u_cam_up * sy);\n"
 "\n"
-"    float closest_t = 1e30;\n"
-"    vec3  normal    = vec3(0.0);\n"
-"    vec3  color     = vec3(0.0);\n"
-"    bool  hit       = false;\n"
+"    vec3 result     = vec3(0.0);\n"
+"    vec3 throughput = vec3(1.0);\n"
 "\n"
-"    for (int i = 0; i < u_sphere_count; i++) {\n"
-"        float t = isect_sphere(ro, rd, spheres[i]);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            vec3 hp = ro + rd * t;\n"
-"            normal = normalize(hp - spheres[i].center_radius.xyz);\n"
-"            color  = spheres[i].color.rgb;\n"
-"            hit = true;\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_plane_count; i++) {\n"
-"        float t = isect_plane(ro, rd, planes[i]);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            normal = planes[i].normal.xyz;\n"
-"            color  = planes[i].color.rgb;\n"
-"            hit = true;\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_disc_count; i++) {\n"
-"        float t = isect_disc(ro, rd, discs[i]);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            normal = discs[i].normal.xyz;\n"
-"            color  = discs[i].color.rgb;\n"
-"            hit = true;\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_cylinder_count; i++) {\n"
-"        vec3 hp;\n"
-"        float t = isect_cylinder(ro, rd, cylinders[i], hp);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            normal = normal_cylinder(hp, cylinders[i]);\n"
-"            color  = cylinders[i].color.rgb;\n"
-"            hit = true;\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_triangle_count; i++) {\n"
-"        float t = isect_triangle(ro, rd, triangles[i]);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            normal = normal_triangle(triangles[i]);\n"
-"            color  = triangles[i].color.rgb;\n"
-"            hit = true;\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_box_count; i++) {\n"
-"        vec3 hp;\n"
-"        float t = isect_box(ro, rd, boxes[i], hp);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            normal = normal_box(hp, boxes[i]);\n"
-"            color  = boxes[i].color.rgb;\n"
-"            hit = true;\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_sprite_count; i++) {\n"
-"        vec3 hp, sright, sup, snormal;\n"
-"        float t = isect_sprite(ro, rd, sprites[i], hp, sright, sup, snormal);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            int frame = sprite_select_frame(sprites[i]);\n"
-"            vec4 px = sprite_sample(sprites[i], hp, sright, sup, frame);\n"
-"            if (px.a > 0.0) {\n"
-"                closest_t = t;\n"
-"                normal    = snormal;\n"
-"                color     = px.rgb;\n"
-"                hit = true;\n"
-"            }\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_heightfield_count; i++) {\n"
-"        float t; vec3 hn; int cr, cc;\n"
-"        if (isect_heightfield(heightfields[i], ro, rd, t, hn, cr, cc) == 1) {\n"
-"            if (t > 0.0 && t < closest_t) {\n"
-"                closest_t = t;\n"
-"                normal = hn;\n"
-"                int cells_per_row = int(heightfields[i].grid.y) - 1;\n"
-"                int ci = heightfields[i].offsets.z + (cr * cells_per_row + cc) * 3;\n"
-"                color = vec3(\n"
-"                    float(hf_colors[ci])     / 255.0,\n"
-"                    float(hf_colors[ci + 1]) / 255.0,\n"
-"                    float(hf_colors[ci + 2]) / 255.0\n"
-"                );\n"
-"                hit = true;\n"
-"            }\n"
-"        }\n"
-"    }\n"
+"    for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {\n"
+"        HitInfo h = closest_hit(ro, rd);\n"
+"        if (!h.hit) break;\n"
 "\n"
-"    vec4 out_color;\n"
-"    if (hit) {\n"
 "        float shade = u_ambient;\n"
 "        for (int i = 0; i < u_light_count; i++) {\n"
-"            float d = dot(normal, lights[i].direction_intensity.xyz);\n"
+"            float d = dot(h.normal, lights[i].direction_intensity.xyz);\n"
 "            if (d > 0.0) shade += d * lights[i].direction_intensity.w;\n"
 "        }\n"
 "        shade = min(shade, 1.0);\n"
-"        out_color = vec4(min(color * shade, vec3(1.0)), 1.0);\n"
-"    } else {\n"
-"        out_color = vec4(0.0, 0.0, 0.0, 1.0);\n"
+"\n"
+"        vec3 direct = h.albedo * shade;\n"
+"        result += throughput * (1.0 - h.reflectivity) * direct;\n"
+"\n"
+"        if (h.reflectivity <= 0.0) break;\n"
+"\n"
+"        throughput *= h.reflectivity;\n"
+"        rd = reflect(rd, h.normal);\n"
+"        ro = h.point + rd * 1e-4;\n"
 "    }\n"
-"    imageStore(outputImage, pixel, out_color);\n"
+"\n"
+"    imageStore(outputImage, pixel, vec4(min(result, vec3(1.0)), 1.0));\n"
 "}\n";
 
 /* -- GPU struct layouts (std430) -------------------------------------- */
 
-typedef struct { float cr[4]; float color[4]; } gpu_sphere;
-typedef struct { float point[4]; float normal[4]; float color[4]; } gpu_plane;
-typedef struct { float cr[4]; float normal[4]; float color[4]; } gpu_disc;
-typedef struct { float center_hh[4]; float axis_r[4]; float color[4]; } gpu_cylinder;
-typedef struct { float v0[4]; float v1[4]; float v2[4]; float color[4]; } gpu_triangle;
-typedef struct { float minp[4]; float maxp[4]; float color[4]; } gpu_box;
+typedef struct { float cr[4]; int32_t mat[4]; } gpu_sphere;
+typedef struct { float point[4]; float normal[4]; int32_t mat[4]; } gpu_plane;
+typedef struct { float cr[4]; float normal[4]; int32_t mat[4]; } gpu_disc;
+typedef struct { float center_hh[4]; float axis_r[4]; int32_t mat[4]; } gpu_cylinder;
+typedef struct { float v0[4]; float v1[4]; float v2[4]; int32_t mat[4]; } gpu_triangle;
+typedef struct { float minp[4]; float maxp[4]; int32_t mat[4]; } gpu_box;
 typedef struct { float position_w[4]; float direction_h[4]; int32_t frame_info[4]; } gpu_sprite;
 typedef struct { float dir_int[4]; } gpu_light;
+typedef struct {
+    float   albedo[4];
+    float   albedo2[4];
+    int32_t kind[4];
+    float   scale[4];
+} gpu_material;
+typedef struct { int32_t size[4]; } gpu_texture;
 typedef struct {
     float   origin_world[4];  /* origin_x, origin_z, world_w, world_d */
     float   grid[4];          /* rows, cols, max_h, 0 */
@@ -526,15 +671,20 @@ typedef struct {
     int tex_w, tex_h;
 
     /* SSBOs */
-    GLuint ssbo[13];
+    GLuint ssbo[15];
     /* bindings:
      * [0] unused  [1] spheres  [2] planes  [3] discs  [4] cylinders
      * [5] triangles [6] boxes  [7] sprites [8] lights [9] heightfields
-     * [10] hf heights [11] hf normals [12] hf colors */
+     * [10] hf heights [11] hf normals [12] hf colors [13] materials
+     * [14] textures (metadata) */
 
     /* Sprite texture atlas: one 2D texture array, all sprite frames */
     GLuint sprite_atlas;
     int atlas_w, atlas_h, atlas_layers;
+
+    /* Image texture atlas: one 2D texture array, one layer per rt_texture */
+    GLuint tex_atlas;
+    int tex_atlas_w, tex_atlas_h, tex_atlas_layers;
 
     /* Cached uniform locations */
     GLint u_cam_origin, u_cam_forward, u_cam_right, u_cam_up;
@@ -542,7 +692,7 @@ typedef struct {
     GLint u_sphere_count, u_plane_count, u_disc_count, u_cylinder_count;
     GLint u_triangle_count, u_box_count, u_sprite_count;
     GLint u_heightfield_count, u_light_count;
-    GLint u_sprite_atlas;
+    GLint u_sprite_atlas, u_tex_atlas;
 } opengl_backend_data;
 
 /* -- GL helpers ------------------------------------------------------- */
@@ -615,6 +765,7 @@ static void cache_uniform_locs(opengl_backend_data *d) {
     d->u_heightfield_count  = glGetUniformLocation(d->program, "u_heightfield_count");
     d->u_light_count        = glGetUniformLocation(d->program, "u_light_count");
     d->u_sprite_atlas       = glGetUniformLocation(d->program, "u_sprite_atlas");
+    d->u_tex_atlas          = glGetUniformLocation(d->program, "u_tex_atlas");
 }
 
 static void ensure_output_tex(opengl_backend_data *d, int w, int h) {
@@ -631,11 +782,11 @@ static void set_vec4(float *out, float x, float y, float z, float w) {
     out[0] = x; out[1] = y; out[2] = z; out[3] = w;
 }
 
-static void set_color_vec4(float *out, rt_color c, float w) {
-    out[0] = (float)c.r / 255.0f;
-    out[1] = (float)c.g / 255.0f;
-    out[2] = (float)c.b / 255.0f;
-    out[3] = w;
+static void set_mat_ivec4(int32_t *out, int mat) {
+    out[0] = (int32_t)mat;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
 }
 
 /* Upload SSBO and bind it. If count==0, uploads a 1-element zero buffer
@@ -665,7 +816,7 @@ static void upload_spheres(opengl_backend_data *d, const rt_scene *s) {
         for (int i = 0; i < n; i++) {
             set_vec4(buf[i].cr, s->spheres[i].center.x, s->spheres[i].center.y,
                      s->spheres[i].center.z, s->spheres[i].radius);
-            set_color_vec4(buf[i].color, s->spheres[i].color, 0.0f);
+            set_mat_ivec4(buf[i].mat, s->spheres[i].material);
         }
     }
     upload_ssbo(d->ssbo[1], 1, buf, sizeof(gpu_sphere), n);
@@ -682,7 +833,7 @@ static void upload_planes(opengl_backend_data *d, const rt_scene *s) {
                      s->planes[i].point.z, 0.0f);
             set_vec4(buf[i].normal, s->planes[i].normal.x, s->planes[i].normal.y,
                      s->planes[i].normal.z, 0.0f);
-            set_color_vec4(buf[i].color, s->planes[i].color, 0.0f);
+            set_mat_ivec4(buf[i].mat, s->planes[i].material);
         }
     }
     upload_ssbo(d->ssbo[2], 2, buf, sizeof(gpu_plane), n);
@@ -699,7 +850,7 @@ static void upload_discs(opengl_backend_data *d, const rt_scene *s) {
                      s->discs[i].center.z, s->discs[i].radius);
             set_vec4(buf[i].normal, s->discs[i].normal.x, s->discs[i].normal.y,
                      s->discs[i].normal.z, 0.0f);
-            set_color_vec4(buf[i].color, s->discs[i].color, 0.0f);
+            set_mat_ivec4(buf[i].mat, s->discs[i].material);
         }
     }
     upload_ssbo(d->ssbo[3], 3, buf, sizeof(gpu_disc), n);
@@ -718,7 +869,7 @@ static void upload_cylinders(opengl_backend_data *d, const rt_scene *s) {
             set_vec4(buf[i].axis_r, s->cylinders[i].axis.x,
                      s->cylinders[i].axis.y, s->cylinders[i].axis.z,
                      s->cylinders[i].radius);
-            set_color_vec4(buf[i].color, s->cylinders[i].color, 0.0f);
+            set_mat_ivec4(buf[i].mat, s->cylinders[i].material);
         }
     }
     upload_ssbo(d->ssbo[4], 4, buf, sizeof(gpu_cylinder), n);
@@ -734,7 +885,7 @@ static void upload_triangles(opengl_backend_data *d, const rt_scene *s) {
             set_vec4(buf[i].v0, s->triangles[i].v0.x, s->triangles[i].v0.y, s->triangles[i].v0.z, 0.0f);
             set_vec4(buf[i].v1, s->triangles[i].v1.x, s->triangles[i].v1.y, s->triangles[i].v1.z, 0.0f);
             set_vec4(buf[i].v2, s->triangles[i].v2.x, s->triangles[i].v2.y, s->triangles[i].v2.z, 0.0f);
-            set_color_vec4(buf[i].color, s->triangles[i].color, 0.0f);
+            set_mat_ivec4(buf[i].mat, s->triangles[i].material);
         }
     }
     upload_ssbo(d->ssbo[5], 5, buf, sizeof(gpu_triangle), n);
@@ -749,7 +900,7 @@ static void upload_boxes(opengl_backend_data *d, const rt_scene *s) {
         for (int i = 0; i < n; i++) {
             set_vec4(buf[i].minp, s->boxes[i].min.x, s->boxes[i].min.y, s->boxes[i].min.z, 0.0f);
             set_vec4(buf[i].maxp, s->boxes[i].max.x, s->boxes[i].max.y, s->boxes[i].max.z, 0.0f);
-            set_color_vec4(buf[i].color, s->boxes[i].color, 0.0f);
+            set_mat_ivec4(buf[i].mat, s->boxes[i].material);
         }
     }
     upload_ssbo(d->ssbo[6], 6, buf, sizeof(gpu_box), n);
@@ -769,6 +920,91 @@ static void upload_lights(opengl_backend_data *d, const rt_scene *s) {
     }
     upload_ssbo(d->ssbo[8], 8, buf, sizeof(gpu_light), n);
     free(buf);
+}
+
+static void upload_materials(opengl_backend_data *d, const rt_scene *s) {
+    int n = s->material_count;
+    gpu_material *buf = NULL;
+    if (n > 0) {
+        buf = malloc(sizeof(gpu_material) * (size_t)n);
+        for (int i = 0; i < n; i++) {
+            const rt_material *m = &s->materials[i];
+            buf[i].albedo[0]  = (float)m->albedo.r  / 255.0f;
+            buf[i].albedo[1]  = (float)m->albedo.g  / 255.0f;
+            buf[i].albedo[2]  = (float)m->albedo.b  / 255.0f;
+            buf[i].albedo[3]  = 0.0f;
+            buf[i].albedo2[0] = (float)m->albedo2.r / 255.0f;
+            buf[i].albedo2[1] = (float)m->albedo2.g / 255.0f;
+            buf[i].albedo2[2] = (float)m->albedo2.b / 255.0f;
+            buf[i].albedo2[3] = 0.0f;
+            buf[i].kind[0] = (int32_t)m->tex_kind;
+            buf[i].kind[1] = (int32_t)m->tex_index;
+            buf[i].kind[2] = 0;
+            buf[i].kind[3] = 0;
+            buf[i].scale[0] = m->tex_scale;
+            buf[i].scale[1] = m->reflectivity;
+            buf[i].scale[2] = 0.0f;
+            buf[i].scale[3] = 0.0f;
+        }
+    }
+    upload_ssbo(d->ssbo[13], 13, buf, sizeof(gpu_material), n);
+    free(buf);
+}
+
+/* Textures: metadata SSBO + 2D texture array atlas (one layer per texture).
+ * Smaller textures are padded within their layer; shader uses ivec size
+ * from SSBO to clamp integer sampling. */
+static void upload_textures(opengl_backend_data *d, const rt_scene *s) {
+    int n = s->texture_count;
+
+    int max_w = 1, max_h = 1;
+    for (int i = 0; i < n; i++) {
+        if (s->textures[i].width  > max_w) max_w = s->textures[i].width;
+        if (s->textures[i].height > max_h) max_h = s->textures[i].height;
+    }
+    int total = (n > 0) ? n : 1;
+
+    gpu_texture *buf = NULL;
+    if (n > 0) {
+        buf = malloc(sizeof(gpu_texture) * (size_t)n);
+        for (int i = 0; i < n; i++) {
+            buf[i].size[0] = s->textures[i].width;
+            buf[i].size[1] = s->textures[i].height;
+            buf[i].size[2] = 0;
+            buf[i].size[3] = 0;
+        }
+    }
+    upload_ssbo(d->ssbo[14], 14, buf, sizeof(gpu_texture), n);
+    free(buf);
+
+    /* All atlas binds happen on unit 1 so we don't clobber the sprite
+     * atlas that upload_sprites just bound to unit 0. */
+    glActiveTexture(GL_TEXTURE1);
+
+    if (!d->tex_atlas || d->tex_atlas_w != max_w || d->tex_atlas_h != max_h
+        || d->tex_atlas_layers != total) {
+        if (d->tex_atlas) glDeleteTextures(1, &d->tex_atlas);
+        glGenTextures(1, &d->tex_atlas);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, d->tex_atlas);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA8, max_w, max_h, total);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        d->tex_atlas_w = max_w;
+        d->tex_atlas_h = max_h;
+        d->tex_atlas_layers = total;
+    } else {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, d->tex_atlas);
+    }
+
+    for (int i = 0; i < n; i++) {
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, i,
+                        s->textures[i].width, s->textures[i].height, 1,
+                        GL_BGRA, GL_UNSIGNED_BYTE, s->textures[i].pixels);
+    }
+
+    glUniform1i(d->u_tex_atlas, 1);
 }
 
 /* Sprites: (re)build a texture array containing all frames, and an SSBO
@@ -918,7 +1154,8 @@ static void opengl_destroy(rt_renderer *r) {
         if (d->program)      glDeleteProgram(d->program);
         if (d->output_tex)   glDeleteTextures(1, &d->output_tex);
         if (d->sprite_atlas) glDeleteTextures(1, &d->sprite_atlas);
-        for (int i = 0; i < 13; i++) {
+        if (d->tex_atlas)    glDeleteTextures(1, &d->tex_atlas);
+        for (int i = 0; i < 15; i++) {
             if (d->ssbo[i]) glDeleteBuffers(1, &d->ssbo[i]);
         }
         free(d);
@@ -949,6 +1186,8 @@ static void opengl_render(rt_renderer *r,
     upload_sprites(d, scene);       /* must run before sprite atlas bind */
     upload_lights(d, scene);
     upload_heightfields(d, scene);
+    upload_materials(d, scene);
+    upload_textures(d, scene);
 
     vector origin, forward, right, up;
     rt_camera_get_basis(camera, &origin, &forward, &right, &up);
@@ -996,7 +1235,7 @@ rt_renderer *rt_opengl_renderer_create(void) {
     if (!d->program) { free(d); free(r); return NULL; }
 
     cache_uniform_locs(d);
-    glGenBuffers(13, d->ssbo);
+    glGenBuffers(15, d->ssbo);
 
     r->destroy_fn   = opengl_destroy;
     r->render_fn    = opengl_render;
