@@ -1,19 +1,12 @@
 #include "nbody.h"
 #include "render.h"
 #include "vector.h"
-#include "thread_pool.h"
+#include "physics.h"
 #include "renderer.h"
 #include "viewport.h"
 #include "scene.h"
 #include "camera.h"
 #include "sphere.h"
-#include "plane.h"
-#include "box.h"
-#include "disc.h"
-#include "cylinder.h"
-#include "triangle.h"
-#include "sprite.h"
-#include "heightfield.h"
 #include "rt_color.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,8 +15,6 @@
 #include <stddef.h>
 #include <time.h>
 
-#define MAX_ENTITIES 10000
-#define MAX_THREADS 64
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
 static inline float clampf(float value, float min, float max) {
@@ -32,58 +23,11 @@ static inline float clampf(float value, float min, float max) {
     return value;
 }
 
-static int num_entities = 500;
-static float gravity = 0.5f;
-static float dt = 0.016f;
-static float world_radius = 800.0f;
-static float softening = 5.0f;
-static int num_threads = 8;
+static physics_world *world = NULL;
+static nbody_config sim_config;
+static float world_radius = 400.0f;
 static float rotation_speed = 0.05f;
 
-typedef enum {
-    NONE     = 0,
-    POSITION = (1 << 0),
-    PHYSICS  = (1 << 1)
-} component_type;
-
-typedef struct {
-    vector coordinates;
-} position_component;
-
-typedef struct {
-    vector velocity;
-    vector acceleration;
-    float mass;
-} physics_component;
-
-static unsigned int entity_masks[MAX_ENTITIES] = {0};
-static position_component position_components[MAX_ENTITIES];
-static physics_component physics_components[MAX_ENTITIES];
-
-typedef struct {
-    int i;
-    int j;
-} merge_pair;
-
-static int free_stack[MAX_ENTITIES];
-static int top = -1;
-
-#define MAX_MERGES (MAX_ENTITIES / 2)
-static merge_pair merge_list[MAX_MERGES];
-static int merge_count = 0;
-
-typedef struct {
-    int start;
-    int end;
-    vector local_accel[MAX_ENTITIES];
-    merge_pair local_merges[MAX_MERGES];
-    int merge_count;
-} force_task_args;
-
-static thread_pool *pool;
-static force_task_args task_args[MAX_THREADS];
-
-static int bounds_enabled = 0;
 static float camera_azimuth = 0.0f;
 static float camera_elevation = 0.3f;
 static float camera_distance = 1500.0f;
@@ -99,22 +43,6 @@ static int rt_width = 0;
 static int rt_height = 0;
 static rt_renderer *rt_rnd = NULL;
 static float lighting_time = 0.0f;
-
-static int create_entity(void) {
-    if (top >= 0) {
-        return free_stack[top--];
-    }
-    return -1;
-}
-
-static void destroy_entity(int id) {
-    entity_masks[id] = NONE;
-    free_stack[++top] = id;
-}
-
-void nbody_set_bounds(int enabled) {
-    bounds_enabled = enabled;
-}
 
 static void update_camera_from_orbital(void) {
     vector pos = {
@@ -172,35 +100,28 @@ nbody_config nbody_default_config(void) {
     config.num_threads = 8;
     config.rotation_speed = 0.05f;
     config.use_gpu = 0;
+    config.bounded = 0;
     return config;
 }
 
 void nbody_init(const nbody_config *config) {
-    num_entities = config->num_entities;
-    if (num_entities > MAX_ENTITIES) {
-        fprintf(stderr, "Warning: num_entities %d exceeds max %d, clamping\n",
-                num_entities, MAX_ENTITIES);
-        num_entities = MAX_ENTITIES;
-    }
-    gravity = config->gravity;
-    dt = config->dt;
+    sim_config = *config;
     world_radius = config->world_radius;
-    softening = config->softening;
-    num_threads = config->num_threads;
-    if (num_threads > MAX_THREADS) {
-        fprintf(stderr, "Warning: num_threads %d exceeds max %d, clamping\n",
-                num_threads, MAX_THREADS);
-        num_threads = MAX_THREADS;
-    }
-    if (num_threads < 1) num_threads = 1;
     rotation_speed = config->rotation_speed;
 
-    for (int i = MAX_ENTITIES - 1; i >= 0; i--) {
-        free_stack[++top] = i;
-    }
-    pool = thread_pool_create(num_threads);
-    if (!pool) {
-        fprintf(stderr, "Failed to create thread pool\n");
+    physics_config pc = physics_default_config();
+    pc.max_bodies       = config->num_entities;
+    pc.num_threads      = config->num_threads;
+    pc.gravity          = config->gravity;
+    pc.dt               = config->dt;
+    pc.softening        = config->softening;
+    pc.merge_on_contact = 1;
+    pc.bounded          = config->bounded;
+    pc.world_radius     = config->world_radius;
+
+    world = physics_world_create(&pc);
+    if (!world) {
+        fprintf(stderr, "Failed to create physics world\n");
         exit(EXIT_FAILURE);
     }
 
@@ -215,8 +136,8 @@ void nbody_init(const nbody_config *config) {
     rt_rnd = rt_renderer_create(backend);
     if (!rt_rnd) {
         fprintf(stderr, "Failed to create raytrace renderer\n");
-        thread_pool_destroy(pool);
-        pool = NULL;
+        physics_world_destroy(world);
+        world = NULL;
         exit(EXIT_FAILURE);
     }
     fprintf(stderr, "Using renderer: %s\n", rt_renderer_name(rt_rnd));
@@ -231,13 +152,9 @@ void nbody_init(const nbody_config *config) {
 
 void nbody_spawn_entities(void) {
     srand(time(NULL));
-    for (int i = 0; i < num_entities; i++) {
-        int id = create_entity();
-        if (id < 0) break;
-
-        entity_masks[id] = POSITION | PHYSICS;
-
-        /* Rejection sampling: random point in sphere */
+    int n = sim_config.num_entities;
+    for (int i = 0; i < n; i++) {
+        /* Rejection sampling: random point in unit ball */
         float x, y, z;
         do {
             x = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
@@ -245,15 +162,13 @@ void nbody_spawn_entities(void) {
             z = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
         } while (x * x + y * y + z * z > 1.0f);
 
-        position_components[id].coordinates = (vector){
+        vector pos = {
             x * world_radius,
             y * world_radius,
-            z * world_radius
+            z * world_radius,
         };
-
-        physics_components[id].velocity = (vector){0, 0, 0};
-        physics_components[id].acceleration = (vector){0, 0, 0};
-        physics_components[id].mass = 1.0f + (float)(rand() % 10);
+        float mass = 1.0f + (float)(rand() % 10);
+        if (physics_world_add_body(world, pos, (vector){0,0,0}, mass) < 0) break;
     }
 }
 
@@ -262,15 +177,8 @@ void nbody_reset(void) {
     camera_elevation = 0.3f;
     camera_distance = 1500.0f;
     time_scale = 1.0f;
-    for (int i = 0; i < MAX_ENTITIES; i++) {
-        entity_masks[i] = NONE;
-    }
-    top = -1;
-    for (int i = MAX_ENTITIES - 1; i >= 0; i--) {
-        free_stack[++top] = i;
-    }
+    physics_world_clear(world);
     nbody_spawn_entities();
-
     update_camera_from_orbital();
 }
 
@@ -279,9 +187,9 @@ void nbody_cleanup(void) {
         rt_renderer_destroy(rt_rnd);
         rt_rnd = NULL;
     }
-    if (pool) {
-        thread_pool_destroy(pool);
-        pool = NULL;
+    if (world) {
+        physics_world_destroy(world);
+        world = NULL;
     }
     if (camera) {
         rt_camera_destroy(camera);
@@ -301,169 +209,21 @@ void nbody_cleanup(void) {
     }
 }
 
-static void compute_forces_chunk(void *arg) {
-    force_task_args *a = (force_task_args *)arg;
-
-    memset(a->local_accel, 0, sizeof(a->local_accel));
-    a->merge_count = 0;
-
-    for (int i = a->start; i < a->end; i++) {
-        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
-            continue;
-
-        for (int j = i + 1; j < MAX_ENTITIES; j++) {
-            if ((entity_masks[j] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
-                continue;
-
-            vector diff = vector_sub(position_components[j].coordinates,
-                                     position_components[i].coordinates);
-            float dist = vector_magnitude(diff);
-
-            if (dist < softening) {
-                int max_local = MAX_MERGES / num_threads;
-                if (a->merge_count < max_local) {
-                    a->local_merges[a->merge_count].i = i;
-                    a->local_merges[a->merge_count].j = j;
-                    a->merge_count++;
-                }
-                continue;
-            }
-
-            float force = gravity * physics_components[i].mass
-                        * physics_components[j].mass / (dist * dist);
-            vector dir = vector_scale(diff, 1.0f / dist);
-            vector force_vec = vector_scale(dir, force);
-
-            a->local_accel[i] = vector_add(a->local_accel[i],
-                vector_scale(force_vec, 1.0f / physics_components[i].mass));
-            a->local_accel[j] = vector_sub(a->local_accel[j],
-                vector_scale(force_vec, 1.0f / physics_components[j].mass));
-        }
-    }
-}
-
-static void reset_accelerations(void) {
-    for (int i = 0; i < MAX_ENTITIES; i++) {
-        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
-            continue;
-        physics_components[i].acceleration = (vector){0, 0, 0};
-    }
-}
-
-static void accumulate_forces(void) {
-    int chunk = MAX_ENTITIES / num_threads;
-    for (int t = 0; t < num_threads; t++) {
-        task_args[t].start = t * chunk;
-        task_args[t].end = (t == num_threads - 1) ? MAX_ENTITIES : (t + 1) * chunk;
-        thread_pool_submit(pool, compute_forces_chunk, &task_args[t]);
-    }
-    thread_pool_wait(pool);
-
-    /* Sum thread-local accelerations */
-    for (int t = 0; t < num_threads; t++) {
-        for (int i = 0; i < MAX_ENTITIES; i++) {
-            physics_components[i].acceleration = vector_add(
-                physics_components[i].acceleration, task_args[t].local_accel[i]);
-        }
-    }
-
-    /* Collect merge candidates from all threads */
-    merge_count = 0;
-    for (int t = 0; t < num_threads; t++) {
-        for (int m = 0; m < task_args[t].merge_count; m++) {
-            if (merge_count < MAX_MERGES) {
-                merge_list[merge_count++] = task_args[t].local_merges[m];
-            }
-        }
-    }
-}
-
-static void apply_merges(void) {
-    for (int m = 0; m < merge_count; m++) {
-        int i = merge_list[m].i;
-        int j = merge_list[m].j;
-
-        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
-            continue;
-        if ((entity_masks[j] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
-            continue;
-
-        float m_i = physics_components[i].mass;
-        float m_j = physics_components[j].mass;
-        float total_mass = m_i + m_j;
-
-        position_components[i].coordinates = vector_scale(
-            vector_add(vector_scale(position_components[i].coordinates, m_i),
-                       vector_scale(position_components[j].coordinates, m_j)),
-            1.0f / total_mass);
-
-        physics_components[i].velocity = vector_scale(
-            vector_add(vector_scale(physics_components[i].velocity, m_i),
-                       vector_scale(physics_components[j].velocity, m_j)),
-            1.0f / total_mass);
-
-        physics_components[i].mass = total_mass;
-
-        destroy_entity(j);
-    }
-}
-
-static void update_physics_component(int entity_id) {
-    physics_components[entity_id].velocity = vector_add(
-        physics_components[entity_id].velocity,
-        vector_scale(physics_components[entity_id].acceleration, dt));
-
-    position_components[entity_id].coordinates = vector_add(
-        position_components[entity_id].coordinates,
-        vector_scale(physics_components[entity_id].velocity, dt));
-}
-
-static void check_collision_with_boundary(int entity_id) {
-    float dist = vector_magnitude(position_components[entity_id].coordinates);
-    if (dist > world_radius) {
-        vector normal = vector_scale(position_components[entity_id].coordinates,
-                                     1.0f / dist);
-        position_components[entity_id].coordinates = vector_scale(normal,
-                                                                  world_radius);
-        float vn = vector_dot(physics_components[entity_id].velocity, normal);
-        if (vn > 0) {
-            physics_components[entity_id].velocity = vector_sub(
-                physics_components[entity_id].velocity,
-                vector_scale(normal, 2.0f * vn));
-            physics_components[entity_id].velocity = vector_scale(
-                physics_components[entity_id].velocity, 0.5f);
-        }
-    }
-}
-
-static void nbody_step(void) {
-    reset_accelerations();
-    accumulate_forces();
-    apply_merges();
-
-    for (int i = 0; i < MAX_ENTITIES; i++) {
-        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
-            continue;
-        update_physics_component(i);
-        if (bounds_enabled) check_collision_with_boundary(i);
-    }
-}
-
 void nbody_update(void) {
     int steps = (int)ceilf(time_scale);
     for (int s = 0; s < steps; s++) {
-        nbody_step();
+        physics_world_step(world);
     }
 }
 
-static rt_sphere entity_to_sphere(int entity_id) {
-    float mass = physics_components[entity_id].mass;
+static rt_sphere body_to_sphere(int id) {
+    float mass = physics_world_body_mass(world, id);
     float t = logf(mass) / logf(1000.0f);
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
 
     rt_sphere sp;
-    sp.center = position_components[entity_id].coordinates;
+    sp.center = physics_world_body_position(world, id);
     sp.radius = 2.0f + logf(mass) * 2.0f;
     if (sp.radius < 1.0f) sp.radius = 1.0f;
     sp.color.r = (uint8_t)(50 + t * 205);
@@ -532,10 +292,11 @@ void nbody_render(int screen_width, int screen_height) {
 
     rt_scene_clear(rt_scene_ptr);
     setup_lights();
-    for (int i = 0; i < MAX_ENTITIES; i++) {
-        if ((entity_masks[i] & (POSITION | PHYSICS)) != (POSITION | PHYSICS))
-            continue;
-        rt_scene_add_sphere(rt_scene_ptr, entity_to_sphere(i));
+
+    int cap = physics_world_capacity(world);
+    for (int i = 0; i < cap; i++) {
+        if (!physics_world_body_alive(world, i)) continue;
+        rt_scene_add_sphere(rt_scene_ptr, body_to_sphere(i));
     }
 
     render_scene(camera, &viewport);

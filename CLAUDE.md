@@ -8,6 +8,8 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 ├── libs/                 # Shared libraries
 │   ├── math/             # Vector math (header-only) + CHECK unit tests
 │   ├── thread/           # Thread pool (pthreads/Win32)
+│   ├── physics/          # Thread-pooled N-body physics (pairwise gravity,
+│   │                     #   merging, optional spherical boundary) + CHECK tests
 │   ├── raytrace/         # Raytracer with pluggable CPU / OpenGL-compute backends
 │   ├── ini/              # INI config parser + CHECK unit tests
 │   ├── slice/            # Sprite-sheet loader (wraps stb_image)

@@ -65,7 +65,6 @@ static void print_usage(const char *prog) {
 
 int main(int argc, char** argv) {
     nbody_config config = nbody_default_config();
-    int bounds = 0;
 
     static struct option long_options[] = {
         {"entities",  required_argument, 0, 'n'},
@@ -87,7 +86,7 @@ int main(int argc, char** argv) {
             continue;
         }
         switch (opt) {
-            case 'b': bounds = 1; break;
+            case 'b': config.bounded = 1; break;
             case 'G': config.use_gpu = 1; break;
             case 'h':
                 print_usage(argv[0]);
@@ -103,11 +102,6 @@ int main(int argc, char** argv) {
     }
 
     nbody_init(&config);
-
-    if (bounds) {
-        nbody_set_bounds(1);
-    }
-
     nbody_spawn_entities();
 
     int screen_width, screen_height;

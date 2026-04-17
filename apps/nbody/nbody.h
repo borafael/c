@@ -16,6 +16,7 @@ typedef struct {
     int num_threads;
     float rotation_speed;
     int use_gpu;
+    int bounded;
 } nbody_config;
 
 /**
@@ -27,12 +28,6 @@ nbody_config nbody_default_config(void);
  * Initialize the simulation state with the given configuration.
  */
 void nbody_init(const nbody_config *config);
-
-/**
- * Enable or disable boundary collision.
- * Disabled by default.
- */
-void nbody_set_bounds(int enabled);
 
 /**
  * Spawn initial entities.

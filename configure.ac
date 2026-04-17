@@ -53,6 +53,7 @@ AC_CONFIG_FILES([
     Makefile
     libs/math/Makefile
     libs/thread/Makefile
+    libs/physics/Makefile
     libs/raytrace/Makefile
     libs/ini/Makefile
     libs/slice/Makefile
