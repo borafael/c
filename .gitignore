@@ -92,6 +92,7 @@ test-driver
 apps/nbody/nbody
 apps/barrier/barrier
 apps/rtdemo/rtdemo
+apps/mirrors/mirrors
 
 # --- Test binaries and results ---
 libs/math/tests/check_vector
