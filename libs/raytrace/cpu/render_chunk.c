@@ -64,9 +64,13 @@ static inline rt_color material_sample(const rt_material *m,
                                        vector p, float u, float v) {
     if (m->tex_kind == RT_TEX_CHECKER) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
-        int ix = (int)floorf(p.x / s);
-        int iy = (int)floorf(p.y / s);
-        int iz = (int)floorf(p.z / s);
+        /* Bias by a tiny epsilon so that tile boundaries (especially hits
+         * on an axis-aligned plane where one coordinate is algebraically
+         * zero) don't flip parity from float rounding noise. */
+        const float eps = 1e-4f;
+        int ix = (int)floorf(p.x / s + eps);
+        int iy = (int)floorf(p.y / s + eps);
+        int iz = (int)floorf(p.z / s + eps);
         return ((ix + iy + iz) & 1) ? m->albedo2 : m->albedo;
     }
     if (m->tex_kind == RT_TEX_IMAGE && m->tex_index >= 0) {

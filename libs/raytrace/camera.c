@@ -5,12 +5,15 @@ static void camera_update_orientation(rt_camera *cam) {
     cam->forward = vector_normalize(cam->forward);
 
     vector world_up = {0.0f, 1.0f, 0.0f};
-    cam->right = vector_normalize(vector_cross(cam->forward, world_up));
+    /* right = world_up × forward so that with forward toward the scene,
+     * right points toward the camera's actual right. The reversed order
+     * would produce a horizontally mirrored image and invert controls. */
+    cam->right = vector_normalize(vector_cross(world_up, cam->forward));
     /* Handle degenerate case when looking straight up/down */
     if (vector_magnitude(cam->right) < 0.001f) {
         cam->right = (vector){1.0f, 0.0f, 0.0f};
     }
-    cam->up = vector_cross(cam->right, cam->forward);
+    cam->up = vector_cross(cam->forward, cam->right);
 }
 
 rt_camera *rt_camera_create(vector position, vector direction) {
