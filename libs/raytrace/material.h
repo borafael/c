@@ -11,6 +11,8 @@ typedef enum {
     RT_TEX_NOISE    = 4,   /* value-noise lerp, tex_scale = world/cell */
     RT_TEX_WOOD     = 5,   /* turbulent rings in XZ, tex_scale = ring width */
     RT_TEX_MARBLE   = 6,   /* turbulent veins along X, tex_scale = band width */
+    RT_TEX_CELLS    = 7,   /* Voronoi F1: smooth cell interiors, tex_scale = cell size */
+    RT_TEX_CRACKS   = 8,   /* Voronoi F2-F1: cracks at cell borders */
 } rt_tex_kind;
 
 typedef struct {

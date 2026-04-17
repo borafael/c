@@ -113,6 +113,29 @@ static float noise3d(vector p) {
     return noise_lerp(nxy0, nxy1, w);
 }
 
+static void voronoi3d(vector p, float *f1_out, float *f2_out) {
+    int bx = (int)floorf(p.x);
+    int by = (int)floorf(p.y);
+    int bz = (int)floorf(p.z);
+    float f1 = 1e20f, f2 = 1e20f;
+    for (int dz = -1; dz <= 1; dz++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int cx = bx + dx, cy = by + dy, cz = bz + dz;
+                float ox = (float)cx + noise_rand(cx,        cy,        cz);
+                float oy = (float)cy + noise_rand(cx + 1013, cy + 1013, cz + 1013);
+                float oz = (float)cz + noise_rand(cx + 2027, cy + 2027, cz + 2027);
+                float rx = ox - p.x, ry = oy - p.y, rz = oz - p.z;
+                float d = sqrtf(rx*rx + ry*ry + rz*rz);
+                if (d < f1)      { f2 = f1; f1 = d; }
+                else if (d < f2) { f2 = d; }
+            }
+        }
+    }
+    *f1_out = f1;
+    *f2_out = f2;
+}
+
 static float turbulence(vector p, int octaves) {
     float total = 0.0f;
     float amp = 1.0f;
@@ -191,6 +214,24 @@ static inline rt_color material_sample(const rt_material *m,
         float turb = turbulence(p, 5) * 5.0f;
         float t = 0.5f + 0.5f * sinf(p.x / s + turb);
         t = t * t * t * t; /* narrow, bright veins */
+        return color_lerp(m->albedo, m->albedo2, t);
+    }
+    if (m->tex_kind == RT_TEX_CELLS) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        vector np = { p.x / s, p.y / s, p.z / s };
+        float f1, f2;
+        voronoi3d(np, &f1, &f2);
+        return color_lerp(m->albedo, m->albedo2, f1);
+    }
+    if (m->tex_kind == RT_TEX_CRACKS) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        vector np = { p.x / s, p.y / s, p.z / s };
+        float f1, f2;
+        voronoi3d(np, &f1, &f2);
+        float edge = f2 - f1;
+        float e = edge / 0.12f;
+        if (e < 0.0f) e = 0.0f; else if (e > 1.0f) e = 1.0f;
+        float t = 1.0f - e * e * (3.0f - 2.0f * e); /* 0 inside, 1 at edge */
         return color_lerp(m->albedo, m->albedo2, t);
     }
     return m->albedo;

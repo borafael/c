@@ -216,8 +216,18 @@ static void build_scene(rt_scene **scene, rt_camera **camera) {
         .height = RTDEMO_TEX_SIZE,
     });
 
-    int m_red    = rt_scene_add_material(*scene, (rt_material){.albedo = {255,  80,  80}});
-    int m_green  = rt_scene_add_material(*scene, (rt_material){.albedo = { 80, 255,  80}});
+    int m_red    = rt_scene_add_material(*scene, (rt_material){
+        .albedo    = {200,  40,  40},  /* deep red stone */
+        .albedo2   = {255, 200, 160},  /* pale highlight */
+        .tex_kind  = RT_TEX_CELLS,
+        .tex_scale = 0.4f,
+    });
+    int m_green  = rt_scene_add_material(*scene, (rt_material){
+        .albedo    = { 80, 180,  80},  /* moss surface */
+        .albedo2   = { 10,  25,  10},  /* crack line */
+        .tex_kind  = RT_TEX_CRACKS,
+        .tex_scale = 0.3f,
+    });
     int m_blue   = rt_scene_add_material(*scene, (rt_material){.albedo = { 80,  80, 255}});
     int m_yellow = rt_scene_add_material(*scene, (rt_material){
         .tex_kind  = RT_TEX_IMAGE,
