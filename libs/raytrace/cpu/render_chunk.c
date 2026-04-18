@@ -84,6 +84,12 @@ static inline float noise_lerp(float a, float b, float t) {
     return a + (b - a) * t;
 }
 
+static inline float noise_smoothstep(float e0, float e1, float x) {
+    float t = (x - e0) / (e1 - e0);
+    if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+    return t * t * (3.0f - 2.0f * t);
+}
+
 static float noise3d(vector p) {
     int ix = (int)floorf(p.x);
     int iy = (int)floorf(p.y);
@@ -232,6 +238,49 @@ static inline rt_color material_sample(const rt_material *m,
         float e = edge / 0.12f;
         if (e < 0.0f) e = 0.0f; else if (e > 1.0f) e = 1.0f;
         float t = 1.0f - e * e * (3.0f - 2.0f * e); /* 0 inside, 1 at edge */
+        return color_lerp(m->albedo, m->albedo2, t);
+    }
+    if (m->tex_kind == RT_TEX_STRIPES) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        int ix = (int)floorf(p.x / s + 1e-4f);
+        float t = (ix & 1) ? 1.0f : 0.0f;
+        return color_lerp(m->albedo, m->albedo2, t);
+    }
+    if (m->tex_kind == RT_TEX_DOTS) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        float ux = p.x / s; float uz = p.z / s;
+        float lx = ux - floorf(ux) - 0.5f;
+        float lz = uz - floorf(uz) - 0.5f;
+        float d = sqrtf(lx * lx + lz * lz);
+        float t = 1.0f - noise_smoothstep(0.26f, 0.30f, d);
+        return color_lerp(m->albedo, m->albedo2, t);
+    }
+    if (m->tex_kind == RT_TEX_BRICKS) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        float bz = p.z / s;
+        int row = (int)floorf(bz);
+        float offset = (row & 1) ? 0.5f : 0.0f;
+        float bx = p.x / (2.0f * s) + offset;
+        float lx = bx - floorf(bx);
+        float lz = bz - floorf(bz);
+        float mortar = 0.04f;
+        int in_mortar = (lx < mortar) || (lx > 1.0f - mortar)
+                     || (lz < mortar) || (lz > 1.0f - mortar);
+        float t = in_mortar ? 1.0f : 0.0f;
+        return color_lerp(m->albedo, m->albedo2, t);
+    }
+    if (m->tex_kind == RT_TEX_CLOUDS) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        vector np = { p.x / s, p.y / s, p.z / s };
+        float t = turbulence(np, 4);
+        t = noise_smoothstep(0.40f, 0.70f, t);
+        return color_lerp(m->albedo, m->albedo2, t);
+    }
+    if (m->tex_kind == RT_TEX_SPOTS) {
+        float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
+        vector np = { p.x / s, p.y / s, p.z / s };
+        float n = noise3d(np);
+        float t = noise_smoothstep(0.55f, 0.60f, n);
         return color_lerp(m->albedo, m->albedo2, t);
     }
     return m->albedo;

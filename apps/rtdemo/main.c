@@ -228,7 +228,12 @@ static void build_scene(rt_scene **scene, rt_camera **camera) {
         .tex_kind  = RT_TEX_CRACKS,
         .tex_scale = 0.3f,
     });
-    int m_blue   = rt_scene_add_material(*scene, (rt_material){.albedo = { 80,  80, 255}});
+    int m_blue   = rt_scene_add_material(*scene, (rt_material){
+        .albedo    = { 40,  90, 180},  /* sky */
+        .albedo2   = {245, 245, 250},  /* cloud */
+        .tex_kind  = RT_TEX_CLOUDS,
+        .tex_scale = 0.6f,
+    });
     int m_yellow = rt_scene_add_material(*scene, (rt_material){
         .tex_kind  = RT_TEX_IMAGE,
         .tex_index = t_grid,

@@ -13,6 +13,11 @@ typedef enum {
     RT_TEX_MARBLE   = 6,   /* turbulent veins along X, tex_scale = band width */
     RT_TEX_CELLS    = 7,   /* Voronoi F1: smooth cell interiors, tex_scale = cell size */
     RT_TEX_CRACKS   = 8,   /* Voronoi F2-F1: cracks at cell borders */
+    RT_TEX_STRIPES  = 9,   /* alternating bands along X, tex_scale = band width */
+    RT_TEX_DOTS     = 10,  /* polka dots in XZ grid, tex_scale = cell size */
+    RT_TEX_BRICKS   = 11,  /* 2:1 staggered bricks in XZ, tex_scale = brick height */
+    RT_TEX_CLOUDS   = 12,  /* soft fBm clouds, tex_scale = world units per octave */
+    RT_TEX_SPOTS    = 13,  /* thresholded noise (leopard), tex_scale = spot scale */
 } rt_tex_kind;
 
 typedef struct {
