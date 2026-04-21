@@ -1,6 +1,6 @@
 # C Experiments
 
-A monorepo playground for C projects. Currently: a raytracer, a game prototype, and an N-Body simulation.
+A monorepo playground for C projects. Currently: a raytracer (with reflections and procedural textures), a hall-of-mirrors demo, a game prototype, and an N-Body simulation.
 
 Built with GNU Autotools and heavy assistance from [Claude Code](https://claude.ai/code).
 
@@ -18,13 +18,16 @@ c/
 ├── libs/                  # Shared libraries
 │   ├── math/              # Vector math (header-only, unit-tested)
 │   ├── thread/            # Thread pool (pthreads/Win32)
-│   ├── raytrace/          # Raytracer with pluggable CPU + OpenGL backends
+│   ├── physics/           # Thread-pooled N-body physics (unit-tested)
+│   ├── raytrace/          # Raytracer with pluggable CPU + OpenGL backends,
+│   │                      #   materials (reflections) and procedural textures
 │   ├── ini/               # INI config parser (unit-tested)
 │   ├── slice/             # Sprite-sheet loader (wraps stb_image)
 │   └── battleforge/       # Game framework built on raytrace + thread + slice
 ├── apps/                  # Applications
 │   ├── nbody/             # N-Body gravitational simulation
 │   ├── rtdemo/            # Raytracer demo with CPU/OpenGL toggle
+│   ├── mirrors/           # Hall-of-mirrors raytrace demo
 │   └── barrier/           # Game prototype using battleforge
 ├── scripts/               # Build + asset tooling
 ├── docs/                  # Guides, ideas, plans
@@ -37,7 +40,8 @@ c/
 
 - **`libs/math`** — Header-only vector math (add, sub, dot, cross, normalize, …). Unit tested with CHECK.
 - **`libs/thread`** — Portable thread pool (pthreads on Unix, Win32 on Windows). Used by the CPU raytrace backend for parallel chunk rendering.
-- **`libs/raytrace`** — Ray/primitive intersection (sphere, plane, disc, cylinder, triangle, box, sprite, heightfield) with a vtable-based renderer. Two backends: CPU (always built, multithreaded) and OpenGL (compute shaders, requires GL 4.3+, auto-detected at configure time).
+- **`libs/physics`** — Thread-pooled N-body physics: pairwise gravity, entity merging, optional spherical boundary. Extracted from `nbody` so it can be reused and tested independently. Unit tested with CHECK.
+- **`libs/raytrace`** — Ray/primitive intersection (sphere, plane, disc, cylinder, triangle, box, sprite, heightfield) with a vtable-based renderer. Materials support albedo, reflectivity (recursive reflections), image textures, and a family of procedural textures (checker, gradient, value noise, wood, marble, Voronoi cells/cracks, stripes, dots, bricks, fBm clouds, leopard spots). Two backends: CPU (always built, multithreaded) and OpenGL (compute shaders, requires GL 4.3+, auto-detected at configure time).
 - **`libs/ini`** — Minimal INI config parser. Unit tested with CHECK.
 - **`libs/slice`** — Sprite-sheet slicer; wraps `stb_image.h` to decode PNGs and expose frames.
 - **`libs/battleforge`** — Game framework tying the above together (scenes, entities, rendering loop).
@@ -98,10 +102,18 @@ Not a physically accurate simulation — tuned for visual entertainment.
 
 ### Raytracer Demo (`apps/rtdemo`)
 
-Exercises the `libs/raytrace` library. Renders a scene of primitives (spheres, planes, boxes, billboarded sprites, heightfields) via SDL2, with runtime switching between the CPU and OpenGL backends (whichever are compiled in).
+Exercises the `libs/raytrace` library. Renders a scene of primitives (spheres, planes, boxes, billboarded sprites, heightfields) via SDL2, with runtime switching between the CPU and OpenGL backends (whichever are compiled in). Showcases the material/texture system and reflections.
 
 ```bash
 ./apps/rtdemo/rtdemo
+```
+
+### Hall of Mirrors (`apps/mirrors`)
+
+Two parallel mirror walls, a reflective checker floor, and a ring of colored orbs orbiting a chrome central sphere. A stress-test of the recursive reflection path — opposing mirrors produce the receding corridor of reflected copies.
+
+```bash
+./apps/mirrors/mirrors
 ```
 
 ### Barrier (`apps/barrier`)

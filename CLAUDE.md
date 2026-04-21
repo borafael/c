@@ -10,13 +10,15 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   ├── thread/           # Thread pool (pthreads/Win32)
 │   ├── physics/          # Thread-pooled N-body physics (pairwise gravity,
 │   │                     #   merging, optional spherical boundary) + CHECK tests
-│   ├── raytrace/         # Raytracer with pluggable CPU / OpenGL-compute backends
+│   ├── raytrace/         # Raytracer with pluggable CPU / OpenGL-compute backends,
+│   │                     #   materials (reflections) and procedural textures
 │   ├── ini/              # INI config parser + CHECK unit tests
 │   ├── slice/            # Sprite-sheet loader (wraps stb_image)
 │   └── battleforge/      # Game framework built on raytrace + thread + slice
 ├── apps/                 # Applications
 │   ├── nbody/            # N-Body gravitational simulation (SDL2)
 │   ├── rtdemo/           # Raytracer demo with CPU/OpenGL backend toggle
+│   ├── mirrors/          # Hall-of-mirrors raytrace demo (reflections stress test)
 │   └── barrier/          # Game prototype using battleforge (ECS + sprites + maps)
 ├── scripts/              # build-barrier-windows.sh (MinGW cross-compile), Blender sprite tools
 └── docs/                 # slice-sprite-guide.md, ideas/, plans/, superpowers/
@@ -41,6 +43,7 @@ Raytrace backends are gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`
 ```bash
 ./apps/nbody/nbody         # N-Body simulation — ESC quit, R reset (-G for GPU backend)
 ./apps/rtdemo/rtdemo       # Raytracer demo — toggle CPU/OpenGL
+./apps/mirrors/mirrors     # Hall-of-mirrors demo — recursive reflections
 ./apps/barrier/barrier     # Game prototype
 ```
 
@@ -54,6 +57,7 @@ Raytrace backends are gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`
 ## Patterns
 
 - **Pluggable backends**: `rt_renderer` vtable (see `libs/raytrace/renderer.h`) dispatches to CPU or OpenGL implementations. `rt_renderer_available()` lets callers check which backends were compiled in.
+- **Materials + textures**: `rt_material` (see `libs/raytrace/material.h`) carries albedo, reflectivity, and a `rt_tex_kind` — either an image texture (`rt_texture`) or one of the procedural kinds: `CHECKER`, `GRADIENT`, `NOISE`, `WOOD`, `MARBLE`, `CELLS`, `CRACKS`, `STRIPES`, `DOTS`, `BRICKS`, `CLOUDS`, `SPOTS`. Reflections are recursive up to a renderer-defined bounce budget.
 - **ECS-ish entity model**: Used in `barrier/` for entities with position/animation/behavior.
 - **Thread pool**: CPU raytrace backend parallelizes chunk rendering via `libs/thread/thread_pool`.
 - **Modular Autotools**: Each library has its own `Makefile.am`; root `Makefile.am` enforces build order (libs before apps).
