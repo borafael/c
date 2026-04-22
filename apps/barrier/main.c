@@ -358,12 +358,16 @@ int main(int argc, char *argv[]) {
             float rt_x = cosf(cam_yaw);
             float rt_z = sinf(cam_yaw);
 
+            /* rt_camera derives right = up × forward (camera.c), so with
+             * forward = -Z, cam.right = world -X. Strafe and yaw are
+             * defined against that convention: D/A and RIGHT/LEFT must
+             * push/rotate in the direction of the actual cam.right. */
             if (keys[SDL_SCANCODE_W]) { move_x += fw_x; move_y += fw_y; move_z += fw_z; }
             if (keys[SDL_SCANCODE_S]) { move_x -= fw_x; move_y -= fw_y; move_z -= fw_z; }
-            if (keys[SDL_SCANCODE_A]) { move_x -= rt_x; move_z -= rt_z; }
-            if (keys[SDL_SCANCODE_D]) { move_x += rt_x; move_z += rt_z; }
-            if (keys[SDL_SCANCODE_LEFT])  cam_yaw -= ROT_SPEED * dt;
-            if (keys[SDL_SCANCODE_RIGHT]) cam_yaw += ROT_SPEED * dt;
+            if (keys[SDL_SCANCODE_A]) { move_x += rt_x; move_z += rt_z; }
+            if (keys[SDL_SCANCODE_D]) { move_x -= rt_x; move_z -= rt_z; }
+            if (keys[SDL_SCANCODE_LEFT])  cam_yaw += ROT_SPEED * dt;
+            if (keys[SDL_SCANCODE_RIGHT]) cam_yaw -= ROT_SPEED * dt;
             if (keys[SDL_SCANCODE_UP])    cam_pitch += ROT_SPEED * dt;
             if (keys[SDL_SCANCODE_DOWN])  cam_pitch -= ROT_SPEED * dt;
             if (cam_pitch >  1.4f) cam_pitch =  1.4f;
