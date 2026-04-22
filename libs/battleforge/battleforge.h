@@ -6,6 +6,7 @@
 #include "viewport.h"
 #include "scene.h"
 #include "camera.h"
+#include "material.h"
 #include "sphere.h"
 #include "plane.h"
 #include "box.h"
@@ -17,6 +18,23 @@
 
 /* Forward declaration — full definition in slice.h */
 typedef struct slice_sheet slice_sheet;
+
+/* --- Visual descriptor ---
+ * Tagged union describing how an entity is drawn. New primitive kinds
+ * (box, cylinder, disc, ...) slot in by extending the enum and union. */
+typedef enum {
+    BF_VIS_NONE   = 0,
+    BF_VIS_SPRITE = 1,
+    BF_VIS_SPHERE = 2,
+} bf_visual_kind;
+
+typedef struct {
+    bf_visual_kind kind;
+    union {
+        struct { int sheet_id; } sprite;
+        struct { float radius; rt_material material; } sphere;
+    };
+} bf_visual_desc;
 
 /* --- Configuration --- */
 
@@ -53,7 +71,14 @@ typedef enum {
 } bf_component;
 
 typedef struct { vector position; vector direction; } bf_position;
-typedef struct { int sprite_id; int anim_index; int anim_frame; float frame_timer; float anim_fps; } bf_visual;
+typedef struct {
+    bf_visual_desc desc;
+    /* Per-instance animation state — only read when desc.kind == BF_VIS_SPRITE. */
+    int anim_index;
+    int anim_frame;
+    float frame_timer;
+    float anim_fps;
+} bf_visual;
 typedef enum { BF_LOCO_LINEAR, BF_LOCO_PARABOLIC, BF_LOCO_INSTANT } bf_loco_type;
 typedef struct { vector origin; vector target; float speed; float progress; } bf_trajectory_linear;
 typedef struct { vector origin; vector target; float speed; float progress; float arc_height; } bf_trajectory_parabolic;
@@ -64,7 +89,12 @@ typedef struct { int selected; } bf_selection;
 
 #define BF_UNIT_NAME_SIZE 32
 #define MAX_UNIT_DEFS 256
-typedef struct { char name[BF_UNIT_NAME_SIZE]; int sprite_id; float base_speed; int has_selection; } bf_unit_def;
+typedef struct {
+    char name[BF_UNIT_NAME_SIZE];
+    bf_visual_desc visual;
+    float base_speed;
+    int has_selection;
+} bf_unit_def;
 
 /* --- Map Registry --- */
 

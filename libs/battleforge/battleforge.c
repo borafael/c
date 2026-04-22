@@ -449,8 +449,8 @@ static void cmd_entity_create(bf_engine *e, const bf_cmd *cmd) {
     uint32_t mask = BF_COMP_POSITION;
 
     /* Visual component */
-    if (def->sprite_id >= 0) {
-        e->visuals[id].sprite_id = def->sprite_id;
+    if (def->visual.kind != BF_VIS_NONE) {
+        e->visuals[id].desc = def->visual;
         e->visuals[id].anim_index = -1;
         e->visuals[id].anim_frame = 0;
         e->visuals[id].frame_timer = 0.0f;
@@ -555,9 +555,10 @@ static void cmd_entity_animate(bf_engine *e, const bf_cmd *cmd) {
     int id = cmd->entity_animate.id;
     if (id < 0 || id >= MAX_ENTITIES) return;
     if (!(e->component_masks[id] & BF_COMP_VISUAL)) return;
-    int sprite_id = e->visuals[id].sprite_id;
-    if (sprite_id < 0 || sprite_id >= e->sprite_count) return;
-    slice_sheet *sheet = e->sprites[sprite_id].sheet;
+    if (e->visuals[id].desc.kind != BF_VIS_SPRITE) return;
+    int sheet_id = e->visuals[id].desc.sprite.sheet_id;
+    if (sheet_id < 0 || sheet_id >= e->sprite_count) return;
+    slice_sheet *sheet = e->sprites[sheet_id].sheet;
     if (!sheet) return;
     int ai = cmd->entity_animate.anim_index;
     if (ai < 0 || ai >= sheet->anim_count) return;
@@ -721,10 +722,12 @@ static void system_animation(bf_engine *e, float dt) {
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if (!(e->component_masks[i] & BF_COMP_VISUAL)) continue;
         bf_visual *vis = &e->visuals[i];
+        if (vis->desc.kind != BF_VIS_SPRITE) continue;
         if (vis->anim_index < 0) continue;
-        if (vis->sprite_id < 0 || vis->sprite_id >= e->sprite_count) continue;
+        int sheet_id = vis->desc.sprite.sheet_id;
+        if (sheet_id < 0 || sheet_id >= e->sprite_count) continue;
 
-        slice_sheet *sheet = e->sprites[vis->sprite_id].sheet;
+        slice_sheet *sheet = e->sprites[sheet_id].sheet;
         if (!sheet || vis->anim_index >= sheet->anim_count) continue;
         slice_anim *anim = &sheet->anims[vis->anim_index];
         if (anim->column_count <= 1) continue;
@@ -762,9 +765,10 @@ void bf_tick(bf_engine *e, float dt) {
 static slice_sheet *build_sprite_frames(bf_engine *e, int entity_id,
                                         rt_frame *out_frames) {
     bf_visual *vis = &e->visuals[entity_id];
-    if (vis->sprite_id < 0 || vis->sprite_id >= e->sprite_count)
-        return NULL;
-    slice_sheet *sheet = e->sprites[vis->sprite_id].sheet;
+    if (vis->desc.kind != BF_VIS_SPRITE) return NULL;
+    int sheet_id = vis->desc.sprite.sheet_id;
+    if (sheet_id < 0 || sheet_id >= e->sprite_count) return NULL;
+    slice_sheet *sheet = e->sprites[sheet_id].sheet;
     if (!sheet) return NULL;
 
     int col = 0;
@@ -819,41 +823,62 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
         }
     }
 
-    /* Entities as sprites — frame arrays must outlive the render call,
-       so allocate them outside the loop rather than per-iteration. */
-    /* Count active entities for allocation */
-    int active_count = 0;
+    /* Count sprite-kind entities so we can back-allocate frame arrays with
+       lifetime covering the render call. Non-sprite visuals need no such
+       scratch storage. */
+    int sprite_entity_count = 0;
     for (int i = 0; i < MAX_ENTITIES; i++) {
-        if ((e->component_masks[i] & (BF_COMP_POSITION | BF_COMP_VISUAL)) ==
+        if ((e->component_masks[i] & (BF_COMP_POSITION | BF_COMP_VISUAL)) !=
             (BF_COMP_POSITION | BF_COMP_VISUAL))
-            active_count++;
+            continue;
+        if (e->visuals[i].desc.kind == BF_VIS_SPRITE) sprite_entity_count++;
     }
     rt_frame (*all_frames)[MAX_ANGLES] = malloc(
-        (active_count > 0 ? active_count : 1) * sizeof(*all_frames));
+        (sprite_entity_count > 0 ? sprite_entity_count : 1) * sizeof(*all_frames));
     if (!all_frames) return;
+
     int frame_idx = 0;
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((e->component_masks[i] & (BF_COMP_POSITION | BF_COMP_VISUAL)) !=
             (BF_COMP_POSITION | BF_COMP_VISUAL))
             continue;
 
-        slice_sheet *sheet = build_sprite_frames(e, i, all_frames[frame_idx]);
-        if (!sheet) continue;
+        bf_visual *vis = &e->visuals[i];
+        vector pos = e->positions[i].position;
 
-        int sprite_id = e->visuals[i].sprite_id;
-        float spr_h = e->sprites[sprite_id].height;
-        vector spr_pos = e->positions[i].position;
-        spr_pos.y += spr_h * 0.5f;  /* sprite center above ground */
-
-        rt_scene_add_sprite(e->scene, (rt_sprite){
-            .position = spr_pos,
-            .direction = e->positions[i].direction,
-            .width = e->sprites[sprite_id].width,
-            .height = spr_h,
-            .frame_count = sheet->angles,
-            .frames = all_frames[frame_idx]
-        });
-        frame_idx++;
+        switch (vis->desc.kind) {
+        case BF_VIS_SPRITE: {
+            slice_sheet *sheet = build_sprite_frames(e, i, all_frames[frame_idx]);
+            if (!sheet) break;
+            int sheet_id = vis->desc.sprite.sheet_id;
+            float spr_h = e->sprites[sheet_id].height;
+            vector spr_pos = pos;
+            spr_pos.y += spr_h * 0.5f;
+            rt_scene_add_sprite(e->scene, (rt_sprite){
+                .position = spr_pos,
+                .direction = e->positions[i].direction,
+                .width = e->sprites[sheet_id].width,
+                .height = spr_h,
+                .frame_count = sheet->angles,
+                .frames = all_frames[frame_idx]
+            });
+            frame_idx++;
+            break;
+        }
+        case BF_VIS_SPHERE: {
+            int mat_id = rt_scene_add_material(e->scene, vis->desc.sphere.material);
+            vector center = pos;
+            center.y += vis->desc.sphere.radius;   /* rest on terrain */
+            rt_scene_add_sphere(e->scene, (rt_sphere){
+                .center = center,
+                .radius = vis->desc.sphere.radius,
+                .material = mat_id,
+            });
+            break;
+        }
+        case BF_VIS_NONE:
+            break;
+        }
     }
 
     rt_renderer_render(e->renderer, e->scene, e->rt_cam, &e->viewport, pixel_buf);
@@ -895,22 +920,44 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if ((e->component_masks[i] & pick_mask) != pick_mask) continue;
 
-        rt_frame frames[32];
-        slice_sheet *sheet = build_sprite_frames(e, i, frames);
-        if (!sheet) continue;
+        bf_visual *vis = &e->visuals[i];
+        float t = -1.0f;
+        vector hp = {0};
 
-        int sprite_id = e->visuals[i].sprite_id;
-        rt_sprite spr = {
-            .position = e->positions[i].position,
-            .direction = e->positions[i].direction,
-            .width = e->sprites[sprite_id].width,
-            .height = e->sprites[sprite_id].height,
-            .frame_count = sheet->angles,
-            .frames = frames
-        };
+        switch (vis->desc.kind) {
+        case BF_VIS_SPRITE: {
+            rt_frame frames[MAX_ANGLES];
+            slice_sheet *sheet = build_sprite_frames(e, i, frames);
+            if (!sheet) break;
+            int sheet_id = vis->desc.sprite.sheet_id;
+            rt_sprite spr = {
+                .position = e->positions[i].position,
+                .direction = e->positions[i].direction,
+                .width = e->sprites[sheet_id].width,
+                .height = e->sprites[sheet_id].height,
+                .frame_count = sheet->angles,
+                .frames = frames
+            };
+            t = rt_pick_sprite(origin, ray_dir, &spr, origin, &hp);
+            break;
+        }
+        case BF_VIS_SPHERE: {
+            vector center = e->positions[i].position;
+            center.y += vis->desc.sphere.radius;
+            rt_sphere s = {
+                .center = center,
+                .radius = vis->desc.sphere.radius,
+                .material = 0,  /* unused for intersection */
+            };
+            t = rt_intersect_sphere(origin, ray_dir, &s);
+            if (t > 0.0f)
+                hp = vector_add(origin, vector_scale(ray_dir, t));
+            break;
+        }
+        case BF_VIS_NONE:
+            break;
+        }
 
-        vector hp;
-        float t = rt_pick_sprite(origin, ray_dir, &spr, origin, &hp);
         if (t > 0.0f && t < closest_t) {
             closest_t = t;
             closest_id = i;

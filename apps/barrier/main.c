@@ -1,6 +1,5 @@
 #include "battleforge.h"
 #include "console.h"
-#include "slice.h"
 #include "ini.h"
 #include "stb_image.h"    /* declarations only — implementation lives in slice.c */
 #include <SDL2/SDL.h>
@@ -15,217 +14,6 @@
 #define FOV (M_PI / 3.0f)
 #define MOVE_SPEED 8.0f
 #define ROT_SPEED  2.0f
-
-/* --- Reuse smiley face sprite from rtdemo --- */
-
-#define S 16
-#define PX(r,g,b) (0xFF000000u | ((r)<<16) | ((g)<<8) | (b))
-#define TP 0x00000000u
-
-static uint32_t frame_data[16][S * S];
-
-static void set(uint32_t *buf, int x, int y, uint32_t c) {
-    if (x >= 0 && x < S && y >= 0 && y < S)
-        buf[y * S + x] = c;
-}
-
-static void fill_circle(uint32_t *buf, int cx, int cy, int r, uint32_t c) {
-    for (int y = cy - r; y <= cy + r; y++)
-        for (int x = cx - r; x <= cx + r; x++)
-            if ((x-cx)*(x-cx) + (y-cy)*(y-cy) <= r*r)
-                set(buf, x, y, c);
-}
-
-static void clear_frame(uint32_t *buf) {
-    for (int i = 0; i < S * S; i++) buf[i] = TP;
-}
-
-static void draw_head(uint32_t *buf, uint32_t skin_c, uint32_t hair_c) {
-    fill_circle(buf, 7, 7, 6, skin_c);
-    for (int x = 2; x <= 12; x++)
-        for (int y = 1; y <= 3; y++)
-            if ((x-7)*(x-7) + (y-7)*(y-7) <= 36)
-                set(buf, x, y, hair_c);
-}
-
-static void init_sprite_frames(void) {
-    uint32_t skin  = PX(255, 200, 150);
-    uint32_t hair  = PX(100,  60,  20);
-    uint32_t eye_w = PX(255, 255, 255);
-    uint32_t eye_p = PX( 30,  30,  30);
-    uint32_t mouth = PX(200,  60,  60);
-
-    /* 16 frames at 22.5° increments, clockwise from front.
-       Even frames (0,2,4,...) are the original 8 cardinal/diagonal angles.
-       Odd frames (1,3,5,...) are new intermediates. */
-
-    /* Frame 0: Front (0°) */
-    clear_frame(frame_data[0]);
-    draw_head(frame_data[0], skin, hair);
-    fill_circle(frame_data[0], 5, 6, 1, eye_w);
-    set(frame_data[0], 5, 6, eye_p);
-    fill_circle(frame_data[0], 9, 6, 1, eye_w);
-    set(frame_data[0], 9, 6, eye_p);
-    set(frame_data[0], 5, 10, mouth);
-    set(frame_data[0], 6, 11, mouth);
-    set(frame_data[0], 7, 11, mouth);
-    set(frame_data[0], 8, 11, mouth);
-    set(frame_data[0], 9, 10, mouth);
-
-    /* Frame 1: Front-to-front-right (22.5°) */
-    clear_frame(frame_data[1]);
-    draw_head(frame_data[1], skin, hair);
-    fill_circle(frame_data[1], 6, 6, 1, eye_w);
-    set(frame_data[1], 6, 6, eye_p);
-    fill_circle(frame_data[1], 10, 6, 1, eye_w);
-    set(frame_data[1], 10, 6, eye_p);
-    set(frame_data[1], 6, 10, mouth);
-    set(frame_data[1], 7, 11, mouth);
-    set(frame_data[1], 8, 11, mouth);
-    set(frame_data[1], 9, 10, mouth);
-
-    /* Frame 2: Front-right (45°) */
-    clear_frame(frame_data[2]);
-    draw_head(frame_data[2], skin, hair);
-    fill_circle(frame_data[2], 6, 6, 1, eye_w);
-    set(frame_data[2], 7, 6, eye_p);
-    fill_circle(frame_data[2], 10, 6, 1, eye_w);
-    set(frame_data[2], 11, 6, eye_p);
-    set(frame_data[2], 7, 10, mouth);
-    set(frame_data[2], 8, 11, mouth);
-    set(frame_data[2], 9, 11, mouth);
-    set(frame_data[2], 10, 10, mouth);
-
-    /* Frame 3: Front-right-to-right (67.5°) */
-    clear_frame(frame_data[3]);
-    draw_head(frame_data[3], skin, hair);
-    fill_circle(frame_data[3], 8, 6, 1, eye_w);
-    set(frame_data[3], 9, 6, eye_p);
-    fill_circle(frame_data[3], 11, 6, 1, eye_w);
-    set(frame_data[3], 12, 6, eye_p);
-    set(frame_data[3], 8, 10, mouth);
-    set(frame_data[3], 9, 11, mouth);
-    set(frame_data[3], 10, 10, mouth);
-
-    /* Frame 4: Right (90°) */
-    clear_frame(frame_data[4]);
-    draw_head(frame_data[4], skin, hair);
-    fill_circle(frame_data[4], 9, 6, 1, eye_w);
-    set(frame_data[4], 10, 6, eye_p);
-    set(frame_data[4], 12, 7, skin);
-    set(frame_data[4], 13, 8, skin);
-    set(frame_data[4], 9, 10, mouth);
-    set(frame_data[4], 10, 11, mouth);
-    set(frame_data[4], 11, 10, mouth);
-
-    /* Frame 5: Right-to-back-right (112.5°) */
-    clear_frame(frame_data[5]);
-    draw_head(frame_data[5], skin, hair);
-    fill_circle(frame_data[5], 10, 6, 1, eye_w);
-    set(frame_data[5], 11, 6, eye_p);
-    set(frame_data[5], 12, 7, skin);
-    set(frame_data[5], 13, 8, skin);
-    set(frame_data[5], 10, 10, mouth);
-    set(frame_data[5], 11, 10, mouth);
-
-    /* Frame 6: Back-right (135°) */
-    clear_frame(frame_data[6]);
-    draw_head(frame_data[6], skin, hair);
-    set(frame_data[6], 2, 7, skin);
-    set(frame_data[6], 1, 7, skin);
-    set(frame_data[6], 1, 8, skin);
-
-    /* Frame 7: Back-right-to-back (157.5°) */
-    clear_frame(frame_data[7]);
-    draw_head(frame_data[7], skin, hair);
-    for (int x = 4; x <= 11; x++)
-        for (int y = 2; y <= 5; y++)
-            if ((x-7)*(x-7) + (y-7)*(y-7) <= 36)
-                set(frame_data[7], x, y, hair);
-    set(frame_data[7], 2, 7, skin);
-    set(frame_data[7], 1, 8, skin);
-
-    /* Frame 8: Back (180°) */
-    clear_frame(frame_data[8]);
-    draw_head(frame_data[8], skin, hair);
-    for (int x = 3; x <= 11; x++)
-        for (int y = 2; y <= 6; y++)
-            if ((x-7)*(x-7) + (y-7)*(y-7) <= 36)
-                set(frame_data[8], x, y, hair);
-
-    /* Frame 9: Back-to-back-left (202.5°) */
-    clear_frame(frame_data[9]);
-    draw_head(frame_data[9], skin, hair);
-    for (int x = 3; x <= 10; x++)
-        for (int y = 2; y <= 5; y++)
-            if ((x-7)*(x-7) + (y-7)*(y-7) <= 36)
-                set(frame_data[9], x, y, hair);
-    set(frame_data[9], 12, 7, skin);
-    set(frame_data[9], 13, 8, skin);
-
-    /* Frame 10: Back-left (225°) */
-    clear_frame(frame_data[10]);
-    draw_head(frame_data[10], skin, hair);
-    set(frame_data[10], 12, 7, skin);
-    set(frame_data[10], 13, 7, skin);
-    set(frame_data[10], 13, 8, skin);
-
-    /* Frame 11: Back-left-to-left (247.5°) */
-    clear_frame(frame_data[11]);
-    draw_head(frame_data[11], skin, hair);
-    fill_circle(frame_data[11], 4, 6, 1, eye_w);
-    set(frame_data[11], 3, 6, eye_p);
-    set(frame_data[11], 2, 7, skin);
-    set(frame_data[11], 1, 8, skin);
-    set(frame_data[11], 4, 10, mouth);
-    set(frame_data[11], 5, 10, mouth);
-
-    /* Frame 12: Left (270°) */
-    clear_frame(frame_data[12]);
-    draw_head(frame_data[12], skin, hair);
-    fill_circle(frame_data[12], 5, 6, 1, eye_w);
-    set(frame_data[12], 4, 6, eye_p);
-    set(frame_data[12], 2, 7, skin);
-    set(frame_data[12], 1, 8, skin);
-    set(frame_data[12], 3, 10, mouth);
-    set(frame_data[12], 4, 11, mouth);
-    set(frame_data[12], 5, 10, mouth);
-
-    /* Frame 13: Left-to-front-left (292.5°) */
-    clear_frame(frame_data[13]);
-    draw_head(frame_data[13], skin, hair);
-    fill_circle(frame_data[13], 4, 6, 1, eye_w);
-    set(frame_data[13], 3, 6, eye_p);
-    fill_circle(frame_data[13], 7, 6, 1, eye_w);
-    set(frame_data[13], 6, 6, eye_p);
-    set(frame_data[13], 4, 10, mouth);
-    set(frame_data[13], 5, 11, mouth);
-    set(frame_data[13], 6, 10, mouth);
-
-    /* Frame 14: Front-left (315°) */
-    clear_frame(frame_data[14]);
-    draw_head(frame_data[14], skin, hair);
-    fill_circle(frame_data[14], 4, 6, 1, eye_w);
-    set(frame_data[14], 3, 6, eye_p);
-    fill_circle(frame_data[14], 8, 6, 1, eye_w);
-    set(frame_data[14], 7, 6, eye_p);
-    set(frame_data[14], 4, 10, mouth);
-    set(frame_data[14], 5, 11, mouth);
-    set(frame_data[14], 6, 11, mouth);
-    set(frame_data[14], 7, 10, mouth);
-
-    /* Frame 15: Front-left-to-front (337.5°) */
-    clear_frame(frame_data[15]);
-    draw_head(frame_data[15], skin, hair);
-    fill_circle(frame_data[15], 5, 6, 1, eye_w);
-    set(frame_data[15], 4, 6, eye_p);
-    fill_circle(frame_data[15], 9, 6, 1, eye_w);
-    set(frame_data[15], 8, 6, eye_p);
-    set(frame_data[15], 5, 10, mouth);
-    set(frame_data[15], 6, 11, mouth);
-    set(frame_data[15], 7, 11, mouth);
-    set(frame_data[15], 8, 10, mouth);
-}
 
 /* --- Map loading --- */
 
@@ -407,48 +195,17 @@ int main(int argc, char *argv[]) {
     /* Load default map via the command system */
     load_map_from_ini("battlefield", engine, NULL);
 
-    /* Build a programmatic slice_sheet from procedural frame data.
-       Static storage: engine borrows these pointers for its lifetime. */
-    init_sprite_frames();
-
-    static uint32_t *pixel_ptrs[16];
-    for (int i = 0; i < 16; i++)
-        pixel_ptrs[i] = frame_data[i];
-
-    static int idle_col = 0;
-    static slice_anim smiley_anim = {
-        .name = "idle",
-        .columns = NULL,
-        .column_count = 1,
-        .loop = 1
+    /* --- Placeholder unit visual — tweak freely while iterating on look.
+     *     Swap reflectivity, tex_kind (see libs/raytrace/material.h for
+     *     the full set: CHECKER, MARBLE, CELLS, STRIPES, DOTS, BRICKS,
+     *     CLOUDS, SPOTS, etc.), radius, colors — every unit type picks
+     *     up the change on the next build. --- */
+    rt_material unit_material = {
+        .albedo       = {200, 200, 210},
+        .reflectivity = 1.0f,
     };
-    smiley_anim.columns = &idle_col;
+    float unit_radius = 1.0f;
 
-    static slice_sheet smiley_sheet;
-    smiley_sheet = (slice_sheet){
-        .pixels = pixel_ptrs,
-        .angles = 16,
-        .total_columns = 1,
-        .frame_width = S,
-        .frame_height = S,
-        .fps = 1.0f,
-        .anims = &smiley_anim,
-        .anim_count = 1
-    };
-
-    int spr_id = bf_register_sprite(engine, &smiley_sheet, 2.0f, 2.0f);
-
-    /* Register smiley as unit def 0 */
-    {
-        bf_unit_def smiley_def = { .sprite_id = spr_id, .base_speed = 3.0f, .has_selection = 1 };
-        snprintf(smiley_def.name, BF_UNIT_NAME_SIZE, "smiley");
-        bf_command(engine, (bf_cmd){
-            .type = BF_CMD_REGISTER_UNIT,
-            .register_unit = { .def = smiley_def }
-        });
-    }
-
-    /* Load unit sprite sheets */
     static const char *unit_names[] = {
         "rifleman", "heavy", "scout", "sniper", "medic",
         "mech", "drone", "flamethrower", "engineer", "commander",
@@ -458,33 +215,25 @@ int main(int argc, char *argv[]) {
     #define NUM_UNIT_TYPES 20
     #define ARMY_SIZE 10
 
-    slice_sheet *unit_sheets[NUM_UNIT_TYPES] = {0};
-    int unit_def_ids[NUM_UNIT_TYPES];  /* unit def index (1..20) */
-    int loaded_count = 0;
+    int unit_def_ids[NUM_UNIT_TYPES];  /* unit def index (0..19) */
 
     for (int i = 0; i < NUM_UNIT_TYPES; i++) {
-        char path[256];
-        snprintf(path, sizeof(path), "apps/barrier/assets/%s.png", unit_names[i]);
-        unit_sheets[i] = slice_load(path);
-        int sprite_id;
-        if (unit_sheets[i]) {
-            sprite_id = bf_register_sprite(engine, unit_sheets[i], 2.0f, 2.0f);
-            fprintf(stderr, "Loaded %s sprite (id=%d)\n", unit_names[i], sprite_id);
-            loaded_count++;
-        } else {
-            sprite_id = spr_id;  /* fallback to smiley */
-            fprintf(stderr, "Warning: could not load %s.png, using fallback\n", unit_names[i]);
-        }
-        /* Register unit def (index i+1, since smiley is 0) */
-        bf_unit_def udef = { .sprite_id = sprite_id, .base_speed = 3.0f, .has_selection = 1 };
+        bf_unit_def udef = {
+            .base_speed = 3.0f,
+            .has_selection = 1,
+            .visual = {
+                .kind = BF_VIS_SPHERE,
+                .sphere = { .radius = unit_radius, .material = unit_material }
+            }
+        };
         snprintf(udef.name, BF_UNIT_NAME_SIZE, "%s", unit_names[i]);
         bf_command(engine, (bf_cmd){
             .type = BF_CMD_REGISTER_UNIT,
             .register_unit = { .def = udef }
         });
-        unit_def_ids[i] = i + 1;  /* unit def index */
+        unit_def_ids[i] = i;
     }
-    fprintf(stderr, "Loaded %d/%d unit sprites\n", loaded_count, NUM_UNIT_TYPES);
+    fprintf(stderr, "Registered %d unit types\n", NUM_UNIT_TYPES);
 
     /* Process registration commands before creating entities */
     bf_tick(engine, 0.0f);
@@ -676,8 +425,6 @@ int main(int argc, char *argv[]) {
 
     console_destroy(&console);
     bf_destroy(engine);
-    for (int i = 0; i < NUM_UNIT_TYPES; i++)
-        if (unit_sheets[i]) slice_free(unit_sheets[i]);
     free(pixels);
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
