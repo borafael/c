@@ -155,30 +155,8 @@ void bf_map_generate_test_terrain(bf_map *map) {
         }
     }
 
-    for (int r = 0; r < rows - 1; r++) {
-        for (int c = 0; c < cols - 1; c++) {
-            float avg = (map->heights[r * cols + c]
-                       + map->heights[r * cols + c + 1]
-                       + map->heights[(r + 1) * cols + c]
-                       + map->heights[(r + 1) * cols + c + 1]) * 0.25f;
-            float t = avg / map->max_height;
-            int ci = (r * (cols - 1) + c) * 3;
-            if (t < 0.3f) {
-                map->colors[ci]     = 40;
-                map->colors[ci + 1] = 120;
-                map->colors[ci + 2] = 40;
-            } else if (t < 0.7f) {
-                map->colors[ci]     = 80;
-                map->colors[ci + 1] = 160;
-                map->colors[ci + 2] = 60;
-            } else {
-                map->colors[ci]     = 140;
-                map->colors[ci + 1] = 110;
-                map->colors[ci + 2] = 70;
-            }
-        }
-    }
-
+    /* Vertex normals first — the color pass reads the Y component to
+       detect slopes and blend in rock. */
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
             vector sum = {0, 0, 0};
@@ -219,6 +197,70 @@ void bf_map_generate_test_terrain(bf_map *map) {
             map->normals[idx]     = n.x;
             map->normals[idx + 1] = n.y;
             map->normals[idx + 2] = n.z;
+        }
+    }
+
+    bf_map_colorize(map);
+}
+
+void bf_map_colorize(bf_map *map) {
+    if (!map->heights || !map->normals || !map->colors) return;
+
+    int rows = map->grid_rows;
+    int cols = map->grid_cols;
+
+    /* Per-cell color: 3-way height blend (marsh → grass → tundra) with
+       rock painted over steep slopes, plus a little per-cell noise so
+       the grid doesn't read as flat patches. */
+    const float c_low [3] = { 50, 110,  45};   /* dark lowland green */
+    const float c_mid [3] = { 85, 155,  65};   /* mid grass */
+    const float c_high[3] = {165, 160,  95};   /* dry tundra / straw */
+    const float c_rock[3] = {115,  95,  75};   /* brown rock */
+    for (int r = 0; r < rows - 1; r++) {
+        for (int c = 0; c < cols - 1; c++) {
+            float avg = (map->heights[r * cols + c]
+                       + map->heights[r * cols + c + 1]
+                       + map->heights[(r + 1) * cols + c]
+                       + map->heights[(r + 1) * cols + c + 1]) * 0.25f;
+            float t = avg / map->max_height;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+
+            /* 3-way blend: mid-dominant around t=0.5, tailing to low/high. */
+            float w_mid  = 1.0f - fabsf(t - 0.5f) * 2.0f;  /* triangle, 0 at ends, 1 at 0.5 */
+            if (w_mid < 0.0f) w_mid = 0.0f;
+            float w_low  = (t < 0.5f) ? (1.0f - w_mid) : 0.0f;
+            float w_high = (t > 0.5f) ? (1.0f - w_mid) : 0.0f;
+
+            float base[3];
+            for (int k = 0; k < 3; k++)
+                base[k] = c_low[k]*w_low + c_mid[k]*w_mid + c_high[k]*w_high;
+
+            /* Slope: average Y-component of the four corner normals. */
+            float ny = (map->normals[(r    )*cols*3 + (c    )*3 + 1]
+                      + map->normals[(r    )*cols*3 + (c + 1)*3 + 1]
+                      + map->normals[(r + 1)*cols*3 + (c    )*3 + 1]
+                      + map->normals[(r + 1)*cols*3 + (c + 1)*3 + 1]) * 0.25f;
+            float steep = 1.0f - ny;            /* 0 flat, ~1 cliff */
+            float s = (steep - 0.22f) / 0.30f;  /* onset ~18°, saturates ~55° */
+            if (s < 0.0f) s = 0.0f;
+            if (s > 1.0f) s = 1.0f;
+            s = s * s * (3.0f - 2.0f * s);      /* smoothstep */
+
+            float final[3];
+            for (int k = 0; k < 3; k++)
+                final[k] = base[k] * (1.0f - s) + c_rock[k] * s;
+
+            /* Per-cell jitter — luminance-only (same offset on r/g/b) so
+               it reads as shading variation, not a dithered palette. */
+            float jitter = noise_hash(c, r) * 14.0f;
+            int ci = (r * (cols - 1) + c) * 3;
+            for (int k = 0; k < 3; k++) {
+                float v = final[k] + jitter;
+                if (v <   0.0f) v =   0.0f;
+                if (v > 255.0f) v = 255.0f;
+                map->colors[ci + k] = (uint8_t)v;
+            }
         }
     }
 }

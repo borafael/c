@@ -79,32 +79,13 @@ static int load_map_from_ini(const char *name, bf_engine *engine, void *user_dat
         /* Fall back to procedural terrain */
         bf_map_generate_test_terrain(&map);
     } else {
-        /* Generate colors and normals from heightmap */
+        /* Generate normals from finite differences, then hand off to
+           bf_map_colorize for the slope-aware palette. */
         int rows = map.grid_rows;
         int cols = map.grid_cols;
-        map.colors = calloc((rows - 1) * (cols - 1) * 3, sizeof(uint8_t));
+        map.colors  = calloc((rows - 1) * (cols - 1) * 3, sizeof(uint8_t));
         map.normals = calloc(rows * cols * 3, sizeof(float));
 
-        /* Color by height */
-        for (int r = 0; r < rows - 1; r++) {
-            for (int c = 0; c < cols - 1; c++) {
-                float avg = (map.heights[r * cols + c]
-                           + map.heights[r * cols + c + 1]
-                           + map.heights[(r + 1) * cols + c]
-                           + map.heights[(r + 1) * cols + c + 1]) * 0.25f;
-                float t = avg / map.max_height;
-                int ci = (r * (cols - 1) + c) * 3;
-                if (t < 0.3f) {
-                    map.colors[ci] = 40; map.colors[ci+1] = 120; map.colors[ci+2] = 40;
-                } else if (t < 0.7f) {
-                    map.colors[ci] = 80; map.colors[ci+1] = 160; map.colors[ci+2] = 60;
-                } else {
-                    map.colors[ci] = 140; map.colors[ci+1] = 110; map.colors[ci+2] = 70;
-                }
-            }
-        }
-
-        /* Vertex normals from finite differences */
         float cell_w = map.width / (float)(cols - 1);
         float cell_d = map.depth / (float)(rows - 1);
         for (int r = 0; r < rows; r++) {
@@ -124,6 +105,8 @@ static int load_map_from_ini(const char *name, bf_engine *engine, void *user_dat
                 map.normals[ni + 2] = n.z;
             }
         }
+
+        bf_map_colorize(&map);
     }
 
     /* Allocate map on heap — engine takes ownership */

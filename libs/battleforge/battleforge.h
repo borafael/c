@@ -176,6 +176,11 @@ int         bf_register_sprite(bf_engine *e, slice_sheet *sheet,
                                float world_width, float world_height);
 void        bf_set_map(bf_engine *e, bf_map map);
 void        bf_map_generate_test_terrain(bf_map *map);
+/* Fills map->colors using heights+normals via a slope-aware palette
+   (marsh/grass/tundra blended by height, with rock overlaid on cliffs
+   and subtle per-cell noise). Requires heights, normals, grid_rows,
+   grid_cols, and colors to already be allocated/computed. */
+void        bf_map_colorize(bf_map *map);
 float       bf_map_height_at(const bf_map *map, float x, float z);
 
 int         bf_command(bf_engine *e, bf_cmd cmd);
