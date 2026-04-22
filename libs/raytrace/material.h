@@ -27,6 +27,9 @@ typedef struct {
     float tex_scale;       /* checker: world units per tile; image: UV repeat */
     int tex_index;         /* image: index into scene->textures */
     float reflectivity;    /* 0 = matte, 1 = perfect mirror */
+    int unlit;             /* 1 = skip shading (ambient + directional), use
+                              the raw albedo. Handy for skies / backdrops
+                              / anything that shouldn't pick up scene light. */
 } rt_material;
 
 #endif /* RT_MATERIAL_H */

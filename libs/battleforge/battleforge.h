@@ -58,6 +58,16 @@ typedef struct {
     float ambient;
     vector light_dir;
     float light_intensity;
+    rt_material terrain_material;  /* modulates per-cell colors at render time.
+                                      tex_kind=NONE (zero-initialized) keeps
+                                      the legacy raw-color / zero-reflectivity
+                                      behavior. */
+    rt_material sky_material;      /* material for the optional sky sphere —
+                                      GRADIENT is the natural choice (horizon→
+                                      zenith along +Y). */
+    float sky_radius;              /* 0 = no sky sphere; positive = giant
+                                      camera-centered sphere of this radius
+                                      gets added to the scene each frame. */
 } bf_map;
 
 /* --- ECS Components --- */

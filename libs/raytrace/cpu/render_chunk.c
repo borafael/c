@@ -295,6 +295,7 @@ typedef struct {
     vector normal;
     rt_color albedo;
     float reflectivity;
+    int unlit;
 } hit_info;
 
 static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
@@ -314,6 +315,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             const rt_material *m = &scene->materials[scene->spheres[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
+            h.unlit = m->unlit;
             h.hit = 1;
         }
     }
@@ -330,6 +332,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             const rt_material *m = &scene->materials[scene->planes[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
+            h.unlit = m->unlit;
             h.hit = 1;
         }
     }
@@ -346,6 +349,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             const rt_material *m = &scene->materials[scene->discs[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
+            h.unlit = m->unlit;
             h.hit = 1;
         }
     }
@@ -362,6 +366,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             const rt_material *m = &scene->materials[scene->cylinders[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
+            h.unlit = m->unlit;
             h.hit = 1;
         }
     }
@@ -378,6 +383,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             const rt_material *m = &scene->materials[scene->triangles[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
+            h.unlit = m->unlit;
             h.hit = 1;
         }
     }
@@ -394,6 +400,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             const rt_material *m = &scene->materials[scene->boxes[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
+            h.unlit = m->unlit;
             h.hit = 1;
         }
     }
@@ -418,6 +425,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             h.albedo.g = (pixel >>  8) & 0xFF;
             h.albedo.b =  pixel        & 0xFF;
             h.reflectivity = 0.0f;
+            h.unlit = 0;
             h.hit = 1;
         }
     }
@@ -434,10 +442,25 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
                 h.normal = hn;
                 int cells_per_row = hf->cols - 1;
                 int ci = (cell_r * cells_per_row + cell_c) * 3;
-                h.albedo.r = hf->colors[ci];
-                h.albedo.g = hf->colors[ci + 1];
-                h.albedo.b = hf->colors[ci + 2];
-                h.reflectivity = 0.0f;
+                rt_color cell = { hf->colors[ci], hf->colors[ci+1], hf->colors[ci+2] };
+                if (hf->material >= 0 && hf->material < scene->material_count) {
+                    /* Heightfield-specific shading: the material samples at
+                       the hit point and modulates the per-cell biome color,
+                       so procedural textures add sub-cell detail without
+                       erasing the slope-aware palette baked into colors[]. */
+                    const rt_material *m = &scene->materials[hf->material];
+                    rt_color tex = material_sample(m, scene->textures,
+                                                   h.point, h.point.x, h.point.z);
+                    h.albedo.r = (uint8_t)(((int)cell.r * (int)tex.r) / 255);
+                    h.albedo.g = (uint8_t)(((int)cell.g * (int)tex.g) / 255);
+                    h.albedo.b = (uint8_t)(((int)cell.b * (int)tex.b) / 255);
+                    h.reflectivity = m->reflectivity;
+                    h.unlit = m->unlit;
+                } else {
+                    h.albedo = cell;
+                    h.reflectivity = 0.0f;
+                    h.unlit = 0;
+                }
                 h.hit = 1;
             }
         }
@@ -477,12 +500,17 @@ void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
                 hit_info h = closest_hit(ro, rd, scene, camera->origin);
                 if (!h.hit) break;
 
-                float shade = scene->ambient;
-                for (int i = 0; i < scene->light_count; i++) {
-                    float d = vector_dot(h.normal, scene->lights[i].direction);
-                    if (d > 0.0f) shade += d * scene->lights[i].intensity;
+                float shade;
+                if (h.unlit) {
+                    shade = 1.0f;
+                } else {
+                    shade = scene->ambient;
+                    for (int i = 0; i < scene->light_count; i++) {
+                        float d = vector_dot(h.normal, scene->lights[i].direction);
+                        if (d > 0.0f) shade += d * scene->lights[i].intensity;
+                    }
+                    if (shade > 1.0f) shade = 1.0f;
                 }
-                if (shade > 1.0f) shade = 1.0f;
 
                 float dw = 1.0f - h.reflectivity;
                 result_r += thr_r * dw * (float)h.albedo.r * shade;

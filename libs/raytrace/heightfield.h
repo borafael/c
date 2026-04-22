@@ -13,6 +13,10 @@ typedef struct {
     float world_depth;        /* Z extent in world units */
     float origin_x, origin_z; /* world position of grid corner (0,0) */
     float max_height;         /* for AABB early-out */
+    int material;             /* scene material index, or -1 for raw cell
+                                 colors + zero reflectivity (legacy). When
+                                 set, the material samples at the hit point
+                                 and its RGB multiplies the cell color. */
 } rt_heightfield;
 
 int rt_intersect_heightfield(const rt_heightfield *hf, vector origin, vector dir,

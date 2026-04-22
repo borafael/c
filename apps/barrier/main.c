@@ -15,6 +15,14 @@
 #define MOVE_SPEED 8.0f
 #define ROT_SPEED  2.0f
 
+/* Placeholder terrain + sky materials — set in main() next to
+ * unit_material so all iteration surfaces sit together. Zero-init
+ * defaults (tex_kind=NONE, reflectivity=0, sky_radius=0) keep the
+ * legacy flat-terrain / black-sky behavior. */
+static rt_material g_terrain_material;
+static rt_material g_sky_material;
+static float       g_sky_radius;
+
 /* --- Map loading --- */
 
 static int load_map_from_ini(const char *name, bf_engine *engine, void *user_data) {
@@ -109,6 +117,10 @@ static int load_map_from_ini(const char *name, bf_engine *engine, void *user_dat
         bf_map_colorize(&map);
     }
 
+    map.terrain_material = g_terrain_material;
+    map.sky_material     = g_sky_material;
+    map.sky_radius       = g_sky_radius;
+
     /* Allocate map on heap — engine takes ownership */
     bf_map *heap_map = malloc(sizeof(bf_map));
     if (!heap_map) {
@@ -175,19 +187,40 @@ int main(int argc, char *argv[]) {
         .num_threads = 0
     });
 
-    /* Load default map via the command system */
-    load_map_from_ini("battlefield", engine, NULL);
-
-    /* --- Placeholder unit visual — tweak freely while iterating on look.
+    /* --- Placeholder visuals — tweak freely while iterating on look.
      *     Swap reflectivity, tex_kind (see libs/raytrace/material.h for
      *     the full set: CHECKER, MARBLE, CELLS, STRIPES, DOTS, BRICKS,
-     *     CLOUDS, SPOTS, etc.), radius, colors — every unit type picks
-     *     up the change on the next build. --- */
+     *     CLOUDS, SPOTS, etc.), colors — everything picks up the change
+     *     on the next build. Must be set before load_map_from_ini so
+     *     g_terrain_material flows into bf_map. --- */
     rt_material unit_material = {
         .albedo       = {200, 200, 210},
         .reflectivity = 1.0f,
     };
     float unit_radius = 1.0f;
+
+    g_terrain_material = (rt_material){
+        .albedo       = {235, 225, 200},   /* warm sand */
+        .albedo2      = { 70, 100,  60},   /* dark moss */
+        .tex_kind     = RT_TEX_SPOTS,      /* leopard blotches */
+        .tex_scale    = 4.5f,
+        .reflectivity = 0.0f,
+    };
+
+    /* Sky sphere — a giant sphere surrounding the camera with a vertical
+     * gradient. Set sky_radius = 0 to disable (black background). */
+    g_sky_material = (rt_material){
+        .albedo       = {235, 200, 170},   /* warm horizon */
+        .albedo2      = { 90, 130, 210},   /* blue zenith */
+        .tex_kind     = RT_TEX_GRADIENT,
+        .tex_scale    = 500.0f,            /* gradient spans y=0..500 */
+        .reflectivity = 0.0f,
+        .unlit        = 1,                 /* sky ignores scene lighting */
+    };
+    g_sky_radius = 1000.0f;
+
+    /* Load default map via the command system (after materials are set). */
+    load_map_from_ini("battlefield", engine, NULL);
 
     static const char *unit_names[] = {
         "rifleman", "heavy", "scout", "sniper", "medic",

@@ -847,8 +847,30 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
             .intensity = e->map.light_intensity
         });
 
-        /* Heightfield terrain */
+        /* Sky sphere — when sky_radius > 0, wrap the whole scene in a
+           huge sphere centered on the camera. rt_intersect_sphere already
+           handles ray origins inside a sphere (returns the far exit), so
+           rays that would otherwise miss now hit the sky and reflected
+           rays from mirror units pick it up automatically. GRADIENT uses
+           world-Y at the hit point, giving a fixed horizon→zenith band
+           regardless of where the camera flies. */
+        if (e->map.sky_radius > 0.0f) {
+            int sky_mat = rt_scene_add_material(e->scene, e->map.sky_material);
+            rt_scene_add_sphere(e->scene, (rt_sphere){
+                .center = e->camera.position,
+                .radius = e->map.sky_radius,
+                .material = sky_mat,
+            });
+        }
+
+        /* Heightfield terrain — if the map carries a non-trivial material
+           (reflectivity or a procedural texture), register it on the scene
+           so the heightfield shader can modulate the per-cell colors. */
         if (e->map.heights) {
+            int terrain_mat = -1;
+            const rt_material *tm = &e->map.terrain_material;
+            if (tm->tex_kind != RT_TEX_NONE || tm->reflectivity > 0.0f)
+                terrain_mat = rt_scene_add_material(e->scene, *tm);
             rt_heightfield hf = {
                 .heights = e->map.heights,
                 .colors = e->map.colors,
@@ -859,7 +881,8 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
                 .world_depth = e->map.depth,
                 .origin_x = 0.0f,
                 .origin_z = 0.0f,
-                .max_height = e->map.max_height
+                .max_height = e->map.max_height,
+                .material = terrain_mat,
             };
             rt_scene_add_heightfield(e->scene, &hf);
         }
@@ -1014,7 +1037,8 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
         return result;
     }
 
-    /* Test heightfield terrain */
+    /* Test heightfield terrain — intersection only, no shading, so the
+       material field is irrelevant here. */
     if (e->map_set && e->map.heights) {
         rt_heightfield hf = {
             .heights = e->map.heights,
@@ -1026,7 +1050,8 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
             .world_depth = e->map.depth,
             .origin_x = 0.0f,
             .origin_z = 0.0f,
-            .max_height = e->map.max_height
+            .max_height = e->map.max_height,
+            .material = -1
         };
         float t;
         vector hn;
