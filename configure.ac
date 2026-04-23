@@ -61,6 +61,7 @@ AC_CONFIG_FILES([
     apps/nbody/Makefile
     apps/rtdemo/Makefile
     apps/mirrors/Makefile
+    apps/orb/Makefile
     apps/barrier/Makefile
 ])
 AC_OUTPUT
