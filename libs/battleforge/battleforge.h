@@ -15,6 +15,7 @@
 #include "triangle.h"
 #include "sprite.h"
 #include "heightfield.h"
+#include "renderer.h"   /* rt_backend */
 
 /* Forward declaration — full definition in slice.h */
 typedef struct slice_sheet slice_sheet;
@@ -43,6 +44,11 @@ typedef struct {
     int render_height;
     float fov;
     int num_threads;
+    /* Preferred raytrace backend. Zero-initialized callers get
+       RT_BACKEND_CPU (=0), matching the historical default. If the
+       requested backend isn't compiled in, bf_create falls back to
+       CPU. */
+    rt_backend backend;
 } bf_config;
 
 /* --- Map --- */
@@ -181,6 +187,12 @@ typedef struct bf_engine bf_engine;
 
 bf_engine  *bf_create(bf_config config);
 void        bf_destroy(bf_engine *e);
+
+/* Swap the active raytrace backend. Returns 0 on success, -1 if the
+   requested backend isn't available or allocation fails (the engine
+   keeps its previous renderer in that case). */
+int         bf_set_backend(bf_engine *e, rt_backend backend);
+rt_backend  bf_get_backend(const bf_engine *e);
 
 int         bf_register_sprite(bf_engine *e, slice_sheet *sheet,
                                float world_width, float world_height);

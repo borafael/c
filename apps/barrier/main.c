@@ -1,8 +1,12 @@
 #include "battleforge.h"
 #include "console.h"
 #include "ini.h"
+#include "renderer.h"
 #include "stb_image.h"    /* declarations only — implementation lives in slice.c */
 #include <SDL2/SDL.h>
+#define GL_GLEXT_PROTOTYPES 1
+#include <GL/gl.h>
+#include <GL/glext.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -156,26 +160,75 @@ static int load_map_from_ini(const char *name, bf_engine *engine, void *user_dat
 
 /* --- Main --- */
 
+/* Blit a uint32 BGRA buffer to the default framebuffer using an
+ * intermediate texture. Mirrors the display path in apps/rtdemo and
+ * apps/nbody so the same window works for CPU or OpenGL-backend
+ * raytrace output. */
+static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
+                           int w, int h) {
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h,
+                    GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, w, h, 0, h, w, 0,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+}
+
 int main(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
+    rt_backend preferred = RT_BACKEND_CPU;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-G") == 0 || strcmp(argv[i], "--gpu") == 0) {
+            preferred = RT_BACKEND_OPENGL;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("Usage: %s [options]\n", argv[0]);
+            printf("  -G, --gpu    Start with OpenGL raytrace backend (falls back to CPU)\n");
+            printf("  -h, --help   Show this help\n");
+            printf("\nPress TAB in-game to toggle the backend.\n");
+            return 0;
+        }
+    }
+
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
         return 1;
     }
 
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
     SDL_Window *window = SDL_CreateWindow("Barrier",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        WINDOW_W, WINDOW_H, 0);
+        WINDOW_W, WINDOW_H, SDL_WINDOW_OPENGL);
     if (!window) {
         fprintf(stderr, "Window creation failed: %s\n", SDL_GetError());
+        SDL_Quit();
         return 1;
     }
 
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    SDL_Texture *texture = SDL_CreateTexture(renderer,
-        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-        WINDOW_W, WINDOW_H);
+    SDL_GLContext gl_ctx = SDL_GL_CreateContext(window);
+    if (!gl_ctx) {
+        fprintf(stderr, "GL context creation failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_GL_SetSwapInterval(0);
+
+    GLuint display_tex, display_fbo;
+    glGenTextures(1, &display_tex);
+    glBindTexture(GL_TEXTURE_2D, display_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, WINDOW_W, WINDOW_H, 0,
+                 GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &display_fbo);
 
     uint32_t *pixels = calloc(WINDOW_W * WINDOW_H, sizeof(uint32_t));
 
@@ -184,8 +237,15 @@ int main(int argc, char *argv[]) {
         .render_width = WINDOW_W,
         .render_height = WINDOW_H,
         .fov = FOV,
-        .num_threads = 0
+        .num_threads = 0,
+        .backend = preferred
     });
+    if (preferred == RT_BACKEND_OPENGL &&
+        bf_get_backend(engine) != RT_BACKEND_OPENGL) {
+        fprintf(stderr, "OpenGL backend unavailable, using CPU\n");
+    }
+    fprintf(stderr, "Raytrace backend: %s (press TAB to toggle)\n",
+            bf_get_backend(engine) == RT_BACKEND_OPENGL ? "OpenGL" : "CPU");
 
     /* --- Placeholder visuals — tweak freely while iterating on look.
      *     Swap reflectivity, tex_kind (see libs/raytrace/material.h for
@@ -342,6 +402,19 @@ int main(int argc, char *argv[]) {
             if (!console_is_open(&console) &&
                 e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
                 running = 0;
+            if (!console_is_open(&console) &&
+                e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_TAB) {
+                rt_backend cur = bf_get_backend(engine);
+                rt_backend next = (cur == RT_BACKEND_CPU)
+                                  ? RT_BACKEND_OPENGL : RT_BACKEND_CPU;
+                if (bf_set_backend(engine, next) == 0) {
+                    fprintf(stderr, "Raytrace backend: %s\n",
+                            next == RT_BACKEND_OPENGL ? "OpenGL" : "CPU");
+                } else {
+                    fprintf(stderr, "Backend %s unavailable\n",
+                            next == RT_BACKEND_OPENGL ? "OpenGL" : "CPU");
+                }
+            }
             if (e.type == SDL_MOUSEBUTTONDOWN &&
                 !(console_visible_height(&console) > 0 && e.button.y < console_visible_height(&console))) {
                 bf_pick_result pick = bf_pick(engine, e.button.x, e.button.y);
@@ -426,18 +499,19 @@ int main(int argc, char *argv[]) {
         bf_render(engine, pixels);
         console_render(&console, pixels, WINDOW_W, WINDOW_H, engine);
 
-        SDL_UpdateTexture(texture, NULL, pixels, WINDOW_W * sizeof(uint32_t));
-        SDL_RenderCopy(renderer, texture, NULL, NULL);
-        SDL_RenderPresent(renderer);
+        display_pixels(display_tex, display_fbo, pixels, WINDOW_W, WINDOW_H);
+        SDL_GL_SwapWindow(window);
 
         fps_frames++;
         Uint32 now = SDL_GetTicks();
         if (now - fps_last >= 1000) {
+            const char *bname =
+                bf_get_backend(engine) == RT_BACKEND_OPENGL ? "OpenGL" : "CPU";
             snprintf(title_buf, sizeof(title_buf),
-                     "Barrier - %d FPS (%dx%d)", fps_frames,
+                     "Barrier - %s %d FPS (%dx%d)", bname, fps_frames,
                      WINDOW_W, WINDOW_H);
             SDL_SetWindowTitle(window, title_buf);
-            fprintf(stderr, "%d FPS\n", fps_frames);
+            fprintf(stderr, "[%s] %d FPS\n", bname, fps_frames);
             fps_frames = 0;
             fps_last = now;
         }
@@ -446,8 +520,9 @@ int main(int argc, char *argv[]) {
     console_destroy(&console);
     bf_destroy(engine);
     free(pixels);
-    SDL_DestroyTexture(texture);
-    SDL_DestroyRenderer(renderer);
+    glDeleteFramebuffers(1, &display_fbo);
+    glDeleteTextures(1, &display_tex);
+    SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);
     SDL_Quit();
     return 0;

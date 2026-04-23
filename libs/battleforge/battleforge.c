@@ -70,6 +70,7 @@ struct bf_engine {
     rt_camera *rt_cam;
     rt_viewport viewport;
     rt_renderer *renderer;
+    rt_backend   backend;
 };
 
 /* Simple hash-based gradient noise for natural-looking terrain */
@@ -326,13 +327,35 @@ bf_engine *bf_create(bf_config config) {
         return NULL;
     }
 
-    e->renderer = rt_renderer_create(RT_BACKEND_CPU);
+    /* Honour the requested backend, falling back to CPU if it's not
+       compiled in. CPU is always built, so this always yields a
+       renderer (barring allocation failure). */
+    rt_backend want = config.backend;
+    if (!rt_renderer_available(want)) want = RT_BACKEND_CPU;
+    e->renderer = rt_renderer_create(want);
     if (!e->renderer) {
         bf_destroy(e);
         return NULL;
     }
+    e->backend = want;
 
     return e;
+}
+
+int bf_set_backend(bf_engine *e, rt_backend backend) {
+    if (!e) return -1;
+    if (e->backend == backend && e->renderer) return 0;
+    if (!rt_renderer_available(backend)) return -1;
+    rt_renderer *next = rt_renderer_create(backend);
+    if (!next) return -1;
+    if (e->renderer) rt_renderer_destroy(e->renderer);
+    e->renderer = next;
+    e->backend = backend;
+    return 0;
+}
+
+rt_backend bf_get_backend(const bf_engine *e) {
+    return e->backend;
 }
 
 void bf_destroy(bf_engine *e) {
