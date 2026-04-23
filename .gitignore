@@ -93,6 +93,7 @@ apps/nbody/nbody
 apps/barrier/barrier
 apps/rtdemo/rtdemo
 apps/mirrors/mirrors
+apps/orb/orb
 
 # --- Test binaries and results ---
 libs/math/tests/check_vector
