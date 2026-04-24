@@ -290,19 +290,43 @@ static int load_scene_from_ini(const char *ini_path,
                 fprintf(stderr, "warning: [%s] missing file; skipping\n", sect);
                 continue;
             }
+            const char *mtl_file = ini_get(ini, sect, "mtl");
             int mat = mat_map_lookup(&materials, ini_get(ini, sect, "material"));
-            if (mat < 0) {
-                fprintf(stderr, "warning: [%s] material not found; skipping\n", sect);
+            if (mat < 0 && !mtl_file) {
+                fprintf(stderr, "warning: [%s] needs 'material' or 'mtl'; skipping\n", sect);
                 continue;
             }
 
-            char full_path[1024];
-            snprintf(full_path, sizeof(full_path), "%s%s", base_dir, file);
+            char obj_full[1024];
+            snprintf(obj_full, sizeof(obj_full), "%s%s", base_dir, file);
 
-            scene_mesh m;
-            if (!scene_load_obj(full_path, mat, &m)) {
+            /* Optional MTL — when present, its materials get added to the
+             * scene and resolve usemtl groups in the OBJ. `material` in the
+             * INI still acts as the fallback for unknown / missing groups. */
+            scene_mtl_entry *mtl_entries = NULL;
+            int mtl_count = 0;
+            if (mtl_file) {
+                char mtl_full[1024];
+                snprintf(mtl_full, sizeof(mtl_full), "%s%s", base_dir, mtl_file);
+                mtl_count = scene_load_mtl(mtl_full, &mtl_entries);
+                if (mtl_count < 0) {
+                    fprintf(stderr, "warning: [%s] failed to load mtl '%s'\n",
+                            sect, mtl_full);
+                    mtl_count = 0;
+                    mtl_entries = NULL;
+                }
+            }
+
+            int first_mesh = 0;
+            int default_mat = (mat >= 0) ? mat : 0;  /* safe index into scene->materials */
+            int added = scene_add_meshes_from_obj(s, obj_full,
+                                                  mtl_entries, mtl_count,
+                                                  default_mat, &first_mesh);
+            free(mtl_entries);
+
+            if (added <= 0) {
                 fprintf(stderr, "warning: [%s] failed to load '%s'; skipping\n",
-                        sect, full_path);
+                        sect, obj_full);
                 continue;
             }
 
@@ -318,13 +342,10 @@ static int load_scene_from_ini(const char *ini_path,
                     }
                 }
             }
-            apply_transform_to_mesh(&m, offset, rot, scl);
-            scene_mesh_compute_bounds(&m);
-
-            if (scene_add_mesh(s, m) < 0) {
-                free(m.vertices);
-                free(m.indices);
-                fprintf(stderr, "warning: [%s] out of memory; skipping\n", sect);
+            for (int k = 0; k < added; k++) {
+                scene_mesh *sm = &s->meshes[first_mesh + k];
+                apply_transform_to_mesh(sm, offset, rot, scl);
+                scene_mesh_compute_bounds(sm);
             }
         }
     }

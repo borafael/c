@@ -261,3 +261,282 @@ int scene_add_mesh_from_obj(scene *s, const char *path, int material_index) {
     }
     return idx;
 }
+
+/* ================================ MTL loader =============================== */
+
+static float clamp01(float x) {
+    if (x < 0.0f) return 0.0f;
+    if (x > 1.0f) return 1.0f;
+    return x;
+}
+
+static uint8_t to_byte(float x) { return (uint8_t)(clamp01(x) * 255.0f + 0.5f); }
+
+int scene_load_mtl(const char *path, scene_mtl_entry **out_entries) {
+    if (!path || !out_entries) return -1;
+    *out_entries = NULL;
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    scene_mtl_entry *entries = NULL;
+    int count = 0, cap = 0;
+    scene_mtl_entry *cur = NULL;
+    char line[1024];
+
+    while (fgets(line, sizeof(line), f)) {
+        char *hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '\n' || *p == '\r') continue;
+
+        if (strncmp(p, "newmtl", 6) == 0 && (p[6] == ' ' || p[6] == '\t')) {
+            if (count == cap) {
+                cap = cap ? cap * 2 : 16;
+                scene_mtl_entry *nd = realloc(entries, sizeof(*entries) * cap);
+                if (!nd) { free(entries); fclose(f); return -1; }
+                entries = nd;
+            }
+            memset(&entries[count], 0, sizeof(entries[count]));
+            entries[count].material = scene_material_default();
+            char name[64] = {0};
+            sscanf(p + 7, " %63s", name);
+            strncpy(entries[count].name, name, sizeof(entries[count].name) - 1);
+            cur = &entries[count++];
+        } else if (cur && p[0] == 'K' && p[1] == 'd' && (p[2] == ' ' || p[2] == '\t')) {
+            float r = 0, g = 0, b = 0;
+            if (sscanf(p + 3, "%f %f %f", &r, &g, &b) == 3) {
+                cur->material.albedo.r = to_byte(r);
+                cur->material.albedo.g = to_byte(g);
+                cur->material.albedo.b = to_byte(b);
+            }
+        }
+        /* Ka, Ks, Ns, d, Tr, illum, map_Kd, ... ignored for now. */
+    }
+
+    fclose(f);
+    *out_entries = entries;
+    return count;
+}
+
+/* ================================ multi-mesh OBJ =========================== */
+
+typedef struct {
+    char       name[64];
+    vertex_arr verts;
+    index_arr  indices;
+} obj_group;
+
+typedef struct {
+    obj_group *data;
+    int        count;
+    int        capacity;
+} group_arr;
+
+static obj_group *group_find_or_create(group_arr *gs, const char *name) {
+    for (int i = 0; i < gs->count; i++) {
+        if (strcmp(gs->data[i].name, name) == 0) return &gs->data[i];
+    }
+    if (gs->count == gs->capacity) {
+        int cap = gs->capacity ? gs->capacity * 2 : 4;
+        obj_group *nd = realloc(gs->data, sizeof(obj_group) * cap);
+        if (!nd) return NULL;
+        gs->data = nd;
+        gs->capacity = cap;
+    }
+    obj_group *g = &gs->data[gs->count++];
+    memset(g, 0, sizeof(*g));
+    strncpy(g->name, name, sizeof(g->name) - 1);
+    return g;
+}
+
+static void groups_free(group_arr *gs) {
+    for (int i = 0; i < gs->count; i++) {
+        free(gs->data[i].verts.data);
+        free(gs->data[i].indices.data);
+    }
+    free(gs->data);
+}
+
+/* Face-normal fill-in for any vertex whose stored normal is ~zero. */
+static void fill_face_normals(scene_vertex *verts, int vertex_count,
+                              const uint32_t *indices, int index_count) {
+    int tri_count = index_count / 3;
+    for (int t = 0; t < tri_count; t++) {
+        uint32_t i0 = indices[t * 3 + 0];
+        uint32_t i1 = indices[t * 3 + 1];
+        uint32_t i2 = indices[t * 3 + 2];
+        if ((int)i0 >= vertex_count || (int)i1 >= vertex_count || (int)i2 >= vertex_count) continue;
+        vector p0 = verts[i0].position;
+        vector p1 = verts[i1].position;
+        vector p2 = verts[i2].position;
+        vector fn = vector_normalize(vector_cross(vector_sub(p1, p0), vector_sub(p2, p0)));
+        uint32_t tri_idx[3] = { i0, i1, i2 };
+        for (int k = 0; k < 3; k++) {
+            scene_vertex *sv = &verts[tri_idx[k]];
+            float mag2 = sv->normal.x * sv->normal.x
+                       + sv->normal.y * sv->normal.y
+                       + sv->normal.z * sv->normal.z;
+            if (mag2 < 1e-12f) sv->normal = fn;
+        }
+    }
+}
+
+int scene_add_meshes_from_obj(scene *s, const char *obj_path,
+                              const scene_mtl_entry *mtl_entries, int mtl_count,
+                              int default_material_index,
+                              int *first_mesh_index_out) {
+    if (!s || !obj_path) return -1;
+
+    FILE *f = fopen(obj_path, "r");
+    if (!f) return -1;
+
+    vec3_arr  positions = {0};
+    vec3_arr  normals   = {0};
+    vec2_arr  uvs       = {0};
+    group_arr groups    = {0};
+
+    /* Default group (for faces before the first usemtl). */
+    obj_group *current = group_find_or_create(&groups, "");
+    int ok = (current != NULL);
+
+    char line[1024];
+    while (ok && fgets(line, sizeof(line), f)) {
+        char *hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '\n' || *p == '\r') continue;
+
+        if (p[0] == 'v' && (p[1] == ' ' || p[1] == '\t')) {
+            vector v;
+            if (sscanf(p + 1, "%f %f %f", &v.x, &v.y, &v.z) == 3) {
+                if (!vec3_push(&positions, v)) { ok = 0; break; }
+            }
+        } else if (p[0] == 'v' && p[1] == 'n' && (p[2] == ' ' || p[2] == '\t')) {
+            vector n;
+            if (sscanf(p + 2, "%f %f %f", &n.x, &n.y, &n.z) == 3) {
+                if (!vec3_push(&normals, n)) { ok = 0; break; }
+            }
+        } else if (p[0] == 'v' && p[1] == 't' && (p[2] == ' ' || p[2] == '\t')) {
+            float u = 0, vv = 0;
+            sscanf(p + 2, "%f %f", &u, &vv);
+            if (!vec2_push(&uvs, u, vv)) { ok = 0; break; }
+        } else if (strncmp(p, "usemtl", 6) == 0 && (p[6] == ' ' || p[6] == '\t')) {
+            char name[64] = {0};
+            sscanf(p + 7, " %63s", name);
+            current = group_find_or_create(&groups, name);
+            if (!current) { ok = 0; break; }
+        } else if (p[0] == 'f' && (p[1] == ' ' || p[1] == '\t')) {
+            int face_base = current->verts.count;
+            int face_n = 0;
+            char *tok = strtok(p + 1, " \t\r\n");
+            while (tok) {
+                int vi = 0, ti = 0, ni = 0;
+                if (parse_face_vertex(tok, &vi, &ti, &ni)) {
+                    int pi_idx = resolve_index(vi, positions.count);
+                    int ti_idx = (ti == 0) ? -1 : resolve_index(ti, uvs.count);
+                    int ni_idx = (ni == 0) ? -1 : resolve_index(ni, normals.count);
+
+                    scene_vertex sv = {0};
+                    if (pi_idx >= 0 && pi_idx < positions.count) sv.position = positions.data[pi_idx];
+                    if (ni_idx >= 0 && ni_idx < normals.count)   sv.normal   = normals.data[ni_idx];
+                    if (ti_idx >= 0 && ti_idx < uvs.count) {
+                        sv.u = uvs.data[ti_idx * 2 + 0];
+                        sv.v = uvs.data[ti_idx * 2 + 1];
+                    }
+                    if (!vertex_push(&current->verts, sv)) { ok = 0; break; }
+                    face_n++;
+                }
+                tok = strtok(NULL, " \t\r\n");
+            }
+            if (!ok) break;
+            if (face_n < 3) continue;
+            for (int k = 1; k < face_n - 1; k++) {
+                if (!index_push(&current->indices, (uint32_t)(face_base + 0)) ||
+                    !index_push(&current->indices, (uint32_t)(face_base + k)) ||
+                    !index_push(&current->indices, (uint32_t)(face_base + k + 1))) {
+                    ok = 0;
+                    break;
+                }
+            }
+        }
+        /* g, o, s, mtllib, ... ignored (mech supplies the mtl path separately). */
+    }
+
+    fclose(f);
+
+    if (!ok) {
+        free(positions.data); free(normals.data); free(uvs.data);
+        groups_free(&groups);
+        return -1;
+    }
+
+    /* Lazy-cache: for each mtl_entry, remember the scene material index
+     * once it's added. Keeps repeated usemtl from duplicating. */
+    int *mtl_scene_idx = NULL;
+    if (mtl_count > 0 && mtl_entries) {
+        mtl_scene_idx = malloc(sizeof(int) * (size_t)mtl_count);
+        if (mtl_scene_idx) {
+            for (int i = 0; i < mtl_count; i++) mtl_scene_idx[i] = -1;
+        }
+    }
+
+    int first_mesh = s->mesh_count;
+    int added = 0;
+
+    for (int gi = 0; gi < groups.count; gi++) {
+        obj_group *g = &groups.data[gi];
+        if (g->indices.count < 3 || g->verts.count < 3) {
+            free(g->verts.data);
+            free(g->indices.data);
+            g->verts.data = NULL;
+            g->indices.data = NULL;
+            continue;
+        }
+
+        int mat_idx = default_material_index;
+        if (g->name[0] != '\0' && mtl_entries && mtl_scene_idx) {
+            for (int i = 0; i < mtl_count; i++) {
+                if (strcmp(mtl_entries[i].name, g->name) == 0) {
+                    if (mtl_scene_idx[i] < 0) {
+                        mtl_scene_idx[i] = scene_add_material(s, mtl_entries[i].material);
+                    }
+                    if (mtl_scene_idx[i] >= 0) mat_idx = mtl_scene_idx[i];
+                    break;
+                }
+            }
+        }
+
+        fill_face_normals(g->verts.data, g->verts.count,
+                          g->indices.data, g->indices.count);
+
+        scene_mesh m = {
+            .vertices       = g->verts.data,
+            .vertex_count   = g->verts.count,
+            .indices        = g->indices.data,
+            .index_count    = g->indices.count,
+            .material_index = mat_idx,
+        };
+        scene_mesh_compute_bounds(&m);
+
+        if (scene_add_mesh(s, m) < 0) {
+            free(m.vertices);
+            free(m.indices);
+            /* Stop early on OOM; already-added meshes stay in the scene. */
+            break;
+        }
+        added++;
+        /* Ownership transferred — null out so groups_free doesn't double-free. */
+        g->verts.data = NULL;
+        g->indices.data = NULL;
+    }
+
+    free(positions.data); free(normals.data); free(uvs.data);
+    groups_free(&groups);
+    free(mtl_scene_idx);
+
+    if (first_mesh_index_out) *first_mesh_index_out = first_mesh;
+    return added;
+}
