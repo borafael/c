@@ -15,6 +15,11 @@ int render_init(void);
 void render_get_size(int* width, int* height);
 
 /**
+ * Toggle between fullscreen-desktop and windowed mode.
+ */
+void render_toggle_fullscreen(void);
+
+/**
  * Clear the screen to black.
  */
 void render_clear(void);

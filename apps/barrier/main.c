@@ -165,16 +165,18 @@ static int load_map_from_ini(const char *name, bf_engine *engine, void *user_dat
  * apps/nbody so the same window works for CPU or OpenGL-backend
  * raytrace output. */
 static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
-                           int w, int h) {
+                           int render_w, int render_h,
+                           int window_w, int window_h) {
     glBindTexture(GL_TEXTURE_2D, tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h,
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, render_w, render_h,
                     GL_BGRA, GL_UNSIGNED_BYTE, pixels);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                            GL_TEXTURE_2D, tex, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBlitFramebuffer(0, 0, w, h, 0, h, w, 0,
+    glBlitFramebuffer(0, 0, render_w, render_h,
+                      0, window_h, window_w, 0,
                       GL_COLOR_BUFFER_BIT, GL_NEAREST);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 }
@@ -203,9 +205,12 @@ int main(int argc, char *argv[]) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
+    int window_w = WINDOW_W;
+    int window_h = WINDOW_H;
+    int fullscreen = 0;
     SDL_Window *window = SDL_CreateWindow("Barrier",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        WINDOW_W, WINDOW_H, SDL_WINDOW_OPENGL);
+        window_w, window_h, SDL_WINDOW_OPENGL);
     if (!window) {
         fprintf(stderr, "Window creation failed: %s\n", SDL_GetError());
         SDL_Quit();
@@ -415,9 +420,18 @@ int main(int argc, char *argv[]) {
                             next == RT_BACKEND_OPENGL ? "OpenGL" : "CPU");
                 }
             }
+            if (!console_is_open(&console) &&
+                e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_F11) {
+                fullscreen = !fullscreen;
+                SDL_SetWindowFullscreen(window,
+                    fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                SDL_GetWindowSize(window, &window_w, &window_h);
+            }
             if (e.type == SDL_MOUSEBUTTONDOWN &&
                 !(console_visible_height(&console) > 0 && e.button.y < console_visible_height(&console))) {
-                bf_pick_result pick = bf_pick(engine, e.button.x, e.button.y);
+                int pick_x = e.button.x * WINDOW_W / window_w;
+                int pick_y = e.button.y * WINDOW_H / window_h;
+                bf_pick_result pick = bf_pick(engine, pick_x, pick_y);
                 if (e.button.button == SDL_BUTTON_LEFT) {
                     if (pick.type == BF_PICK_ENTITY) {
                         selected_id = pick.entity_id;
@@ -499,7 +513,8 @@ int main(int argc, char *argv[]) {
         bf_render(engine, pixels);
         console_render(&console, pixels, WINDOW_W, WINDOW_H, engine);
 
-        display_pixels(display_tex, display_fbo, pixels, WINDOW_W, WINDOW_H);
+        display_pixels(display_tex, display_fbo, pixels,
+                       WINDOW_W, WINDOW_H, window_w, window_h);
         SDL_GL_SwapWindow(window);
 
         fps_frames++;

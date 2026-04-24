@@ -57,6 +57,7 @@ static void print_usage(const char *prog) {
     printf("\nControls:\n");
     printf("  ESC          Quit\n");
     printf("  R            Reset simulation\n");
+    printf("  F11          Toggle fullscreen\n");
     printf("  +/-          Camera distance [10 .. 20000]\n");
     printf("  F/S          Speed up/down [0.1x .. 50x]\n");
     printf("  Left/Right   Rotate azimuth\n");
@@ -113,6 +114,10 @@ int main(int argc, char** argv) {
         input_poll(&events);
 
         if (events.quit) running = 0;
+        if (events.toggle_fullscreen) {
+            render_toggle_fullscreen();
+            render_get_size(&screen_width, &screen_height);
+        }
         nbody_handle_input(&events);
 
         nbody_update();

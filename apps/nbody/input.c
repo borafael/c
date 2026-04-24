@@ -20,6 +20,7 @@ static const key_binding bindings[] = {
     { SDLK_DOWN,   offsetof(input_events, pan_down) },
     { SDLK_LEFT,   offsetof(input_events, pan_left) },
     { SDLK_RIGHT,  offsetof(input_events, pan_right) },
+    { SDLK_F11,    offsetof(input_events, toggle_fullscreen) },
 };
 
 void input_poll(input_events* events) {
@@ -33,6 +34,7 @@ void input_poll(input_events* events) {
     events->pan_down = 0;
     events->pan_left = 0;
     events->pan_right = 0;
+    events->toggle_fullscreen = 0;
 
     SDL_Event e;
     while (SDL_PollEvent(&e)) {

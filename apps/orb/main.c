@@ -17,8 +17,8 @@
 #include <string.h>
 #include <math.h>
 
-#define WINDOW_W 960
-#define WINDOW_H 600
+#define INIT_WINDOW_W 960
+#define INIT_WINDOW_H 600
 #define FOV (M_PI / 2.8f)
 #define RENDER_SCALE_MIN 1
 #define RENDER_SCALE_MAX 4
@@ -134,7 +134,7 @@ int main(int argc, char *argv[]) {
             printf("Usage: %s [options]\n", argv[0]);
             printf("  -G, --gpu    Start with OpenGL raytrace backend (falls back to CPU)\n");
             printf("  -h, --help   Show this help\n");
-            printf("\nTAB toggles backend, SPACE toggles auto-orbit, WASD/arrows fly.\n");
+            printf("\nTAB toggles backend, SPACE toggles auto-orbit, WASD/arrows fly, F11 fullscreen.\n");
             return 0;
         }
     }
@@ -149,9 +149,12 @@ int main(int argc, char *argv[]) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
+    int window_w = INIT_WINDOW_W;
+    int window_h = INIT_WINDOW_H;
+    int fullscreen = 0;
     SDL_Window *window = SDL_CreateWindow("Orb",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        WINDOW_W, WINDOW_H, SDL_WINDOW_OPENGL);
+        window_w, window_h, SDL_WINDOW_OPENGL);
     if (!window) {
         fprintf(stderr, "Window creation failed: %s\n", SDL_GetError());
         SDL_Quit();
@@ -188,8 +191,8 @@ int main(int argc, char *argv[]) {
     build_scene(&scene, &camera);
 
     int render_scale = 1;
-    int render_w = WINDOW_W / render_scale;
-    int render_h = WINDOW_H / render_scale;
+    int render_w = window_w / render_scale;
+    int render_h = window_h / render_scale;
     uint32_t *pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
     rt_viewport viewport = { render_w, render_h, FOV };
 
@@ -237,6 +240,13 @@ int main(int argc, char *argv[]) {
                     auto_orbit = !auto_orbit;
                     fprintf(stderr, "Auto-orbit: %s\n", auto_orbit ? "on" : "off");
                 }
+                if (e.key.keysym.sym == SDLK_F11) {
+                    fullscreen = !fullscreen;
+                    SDL_SetWindowFullscreen(window,
+                        fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                    SDL_GetWindowSize(window, &window_w, &window_h);
+                    goto recreate_buffers;
+                }
                 if (e.key.keysym.sym == SDLK_MINUS ||
                     e.key.keysym.sym == SDLK_KP_MINUS) {
                     if (render_scale < RENDER_SCALE_MAX) {
@@ -253,8 +263,8 @@ int main(int argc, char *argv[]) {
                 }
                 continue;
                 recreate_buffers:
-                    render_w = WINDOW_W / render_scale;
-                    render_h = WINDOW_H / render_scale;
+                    render_w = window_w / render_scale;
+                    render_h = window_h / render_scale;
                     free(pixels);
                     pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
                     viewport = (rt_viewport){ render_w, render_h, FOV };
@@ -322,7 +332,7 @@ int main(int argc, char *argv[]) {
         render_ms_accum += SDL_GetTicks() - r_start;
 
         display_pixels(display_tex, display_fbo, pixels,
-                       render_w, render_h, WINDOW_W, WINDOW_H);
+                       render_w, render_h, window_w, window_h);
         SDL_GL_SwapWindow(window);
 
         fps_frames++;

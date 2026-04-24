@@ -15,6 +15,7 @@ typedef struct {
     int pan_down;   /* Down arrow pressed (now: rotate elevation down) */
     int pan_left;   /* Left arrow pressed (now: rotate azimuth left) */
     int pan_right;  /* Right arrow pressed (now: rotate azimuth right) */
+    int toggle_fullscreen; /* F11 pressed */
 } input_events;
 
 /**

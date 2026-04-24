@@ -55,6 +55,23 @@ void render_get_size(int* width, int* height) {
     *height = screen_height;
 }
 
+void render_toggle_fullscreen(void) {
+    if (!window) return;
+    Uint32 flags = SDL_GetWindowFlags(window);
+    int is_fullscreen = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+    if (is_fullscreen) {
+        SDL_SetWindowFullscreen(window, 0);
+        /* The window was created with 0x0 for fullscreen-desktop; give it
+         * a sane windowed size on first toggle-out. */
+        SDL_SetWindowSize(window, 1280, 720);
+        SDL_SetWindowPosition(window,
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    } else {
+        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    }
+    SDL_GetWindowSize(window, &screen_width, &screen_height);
+}
+
 void render_clear(void) {
     glViewport(0, 0, screen_width, screen_height);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
