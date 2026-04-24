@@ -187,8 +187,17 @@ typedef struct {
 
 /* ============================== Nodes ====================================
  *
- * Forward-looking — transform + optional mesh reference. Flat list (no
- * hierarchy) for v0. A mesh_index of -1 denotes a transform-only node.
+ * A node is a transform in space, optionally carrying a mesh. Nodes form
+ * a tree via parent_index — a node's world transform is the product of
+ * its local transform and all ancestor transforms. This is the hook for
+ * skeletal-style rigid animation: upper arm is parented to shoulder,
+ * forearm to upper arm, etc. The animator rewrites local transforms each
+ * frame; renderers resolve world transforms when intersecting meshes.
+ *
+ * A mesh_index of -1 denotes a transform-only "joint" node.
+ * A parent_index of -1 denotes a root (no parent). Parents must appear
+ * before their children in scene->nodes so a single forward pass can
+ * resolve world transforms.
  */
 typedef struct {
     vector position;
@@ -199,8 +208,9 @@ typedef struct {
 scene_transform scene_transform_identity(void);
 
 typedef struct {
-    scene_transform transform;
+    scene_transform transform;    /* local, relative to parent */
     int             mesh_index;   /* into scene->meshes, or -1 */
+    int             parent_index; /* into scene->nodes, or -1 for root */
 } scene_node;
 
 /* ============================== Camera ===================================
