@@ -25,8 +25,8 @@ typedef struct {
     const rt_viewport *viewport;
     int y_start;
     int y_end;
-    const rt_camera *camera;
-    const rt_scene *scene;
+    const scene_camera *camera;
+    const scene *scene;
 } cpu_render_task;
 
 typedef struct {
@@ -50,8 +50,8 @@ static void cpu_destroy(rt_renderer *r) {
 }
 
 static void cpu_render(rt_renderer *r,
-                       const rt_scene *scene,
-                       const rt_camera *camera,
+                       const scene *scene,
+                       const scene_camera *camera,
                        const rt_viewport *viewport,
                        uint32_t *pixels) {
     cpu_backend_data *d = r->backend_data;

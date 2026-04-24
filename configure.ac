@@ -54,6 +54,7 @@ AC_CONFIG_FILES([
     libs/math/Makefile
     libs/thread/Makefile
     libs/physics/Makefile
+    libs/scene/Makefile
     libs/raytrace/Makefile
     libs/ini/Makefile
     libs/slice/Makefile

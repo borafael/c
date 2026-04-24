@@ -1,7 +1,7 @@
 #include "triangle.h"
 #include <math.h>
 
-float rt_intersect_triangle(vector ro, vector rd, const rt_triangle *tri) {
+float rt_intersect_triangle(vector ro, vector rd, const scene_triangle *tri) {
     vector e1 = vector_sub(tri->v1, tri->v0);
     vector e2 = vector_sub(tri->v2, tri->v0);
     vector pvec = vector_cross(rd, e2);
@@ -22,7 +22,7 @@ float rt_intersect_triangle(vector ro, vector rd, const rt_triangle *tri) {
     return t;
 }
 
-vector rt_normal_triangle(const rt_triangle *tri) {
+vector rt_normal_triangle(const scene_triangle *tri) {
     vector e1 = vector_sub(tri->v1, tri->v0);
     vector e2 = vector_sub(tri->v2, tri->v0);
     return vector_normalize(vector_cross(e1, e2));

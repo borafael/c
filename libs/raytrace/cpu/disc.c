@@ -1,7 +1,7 @@
 #include "disc.h"
 #include <math.h>
 
-float rt_intersect_disc(vector ro, vector rd, const rt_disc *d) {
+float rt_intersect_disc(vector ro, vector rd, const scene_disc *d) {
     float denom = vector_dot(rd, d->normal);
     if (fabsf(denom) < 1e-6f) return -1.0f;
     float t = vector_dot(vector_sub(d->center, ro), d->normal) / denom;
@@ -12,6 +12,6 @@ float rt_intersect_disc(vector ro, vector rd, const rt_disc *d) {
     return t;
 }
 
-vector rt_normal_disc(const rt_disc *d) {
+vector rt_normal_disc(const scene_disc *d) {
     return d->normal;
 }

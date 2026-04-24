@@ -2,7 +2,7 @@
 #include <math.h>
 #include <float.h>
 
-static int hf_aabb_test(const rt_heightfield *hf, vector ro, vector rd,
+static int hf_aabb_test(const scene_heightfield *hf, vector ro, vector rd,
                          float *t_enter, float *t_exit) {
     float xmin = hf->origin_x;
     float xmax = hf->origin_x + hf->world_width;
@@ -70,7 +70,7 @@ static float hf_intersect_tri(vector ro, vector rd,
     return t;
 }
 
-static vector hf_vertex_pos(const rt_heightfield *hf, int r, int c) {
+static vector hf_vertex_pos(const scene_heightfield *hf, int r, int c) {
     float cell_w = hf->world_width / (float)(hf->cols - 1);
     float cell_d = hf->world_depth / (float)(hf->rows - 1);
     return (vector){
@@ -80,12 +80,12 @@ static vector hf_vertex_pos(const rt_heightfield *hf, int r, int c) {
     };
 }
 
-static vector hf_vertex_normal(const rt_heightfield *hf, int r, int c) {
+static vector hf_vertex_normal(const scene_heightfield *hf, int r, int c) {
     int idx = (r * hf->cols + c) * 3;
     return (vector){ hf->normals[idx], hf->normals[idx + 1], hf->normals[idx + 2] };
 }
 
-int rt_intersect_heightfield(const rt_heightfield *hf, vector origin, vector dir,
+int rt_intersect_heightfield(const scene_heightfield *hf, vector origin, vector dir,
                               float *out_t, vector *out_normal,
                               int *out_cell_r, int *out_cell_c) {
     float t_enter, t_exit;

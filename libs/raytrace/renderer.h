@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include "viewport.h"
 #include "scene.h"
-#include "camera.h"
 
 typedef struct rt_renderer rt_renderer;
 
@@ -34,8 +33,8 @@ typedef enum {
 struct rt_renderer {
     void        (*destroy_fn)(struct rt_renderer *r);
     void        (*render_fn)(struct rt_renderer *r,
-                             const rt_scene *scene,
-                             const rt_camera *camera,
+                             const scene *scene,
+                             const scene_camera *camera,
                              const rt_viewport *viewport,
                              uint32_t *pixels);
     const char *(*name_fn)(const struct rt_renderer *r);
@@ -78,8 +77,8 @@ void rt_renderer_destroy(rt_renderer *r);
  * keep references after the call returns.
  */
 void rt_renderer_render(rt_renderer *r,
-                        const rt_scene *scene,
-                        const rt_camera *camera,
+                        const scene *scene,
+                        const scene_camera *camera,
                         const rt_viewport *viewport,
                         uint32_t *pixels);
 

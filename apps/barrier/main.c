@@ -23,8 +23,8 @@
  * unit_material so all iteration surfaces sit together. Zero-init
  * defaults (tex_kind=NONE, reflectivity=0, sky_radius=0) keep the
  * legacy flat-terrain / black-sky behavior. */
-static rt_material g_terrain_material;
-static rt_material g_sky_material;
+static scene_material g_terrain_material;
+static scene_material g_sky_material;
 static float       g_sky_radius;
 
 /* --- Map loading --- */
@@ -253,26 +253,26 @@ int main(int argc, char *argv[]) {
      *     CLOUDS, SPOTS, etc.), colors — everything picks up the change
      *     on the next build. Must be set before load_map_from_ini so
      *     g_terrain_material flows into bf_map. --- */
-    rt_material unit_material = {
+    scene_material unit_material = {
         .albedo       = {200, 200, 210},
         .reflectivity = 1.0f,
     };
     float unit_radius = 1.0f;
 
-    g_terrain_material = (rt_material){
+    g_terrain_material = (scene_material){
         .albedo       = {235, 225, 200},   /* warm sand */
         .albedo2      = { 70, 100,  60},   /* dark moss */
-        .tex_kind     = RT_TEX_SPOTS,      /* leopard blotches */
+        .tex_kind     = SCENE_TEX_SPOTS,      /* leopard blotches */
         .tex_scale    = 4.5f,
         .reflectivity = 0.0f,
     };
 
     /* Sky sphere — a giant sphere surrounding the camera with a vertical
      * gradient. Set sky_radius = 0 to disable (black background). */
-    g_sky_material = (rt_material){
+    g_sky_material = (scene_material){
         .albedo       = {235, 200, 170},   /* warm horizon */
         .albedo2      = { 90, 130, 210},   /* blue zenith */
-        .tex_kind     = RT_TEX_GRADIENT,
+        .tex_kind     = SCENE_TEX_GRADIENT,
         .tex_scale    = 500.0f,            /* gradient spans y=0..500 */
         .reflectivity = 0.0f,
         .unlit        = 1,                 /* sky ignores scene lighting */
@@ -464,7 +464,7 @@ int main(int argc, char *argv[]) {
             float rt_x = cosf(cam_yaw);
             float rt_z = sinf(cam_yaw);
 
-            /* rt_camera derives right = up × forward (camera.c), so with
+            /* scene_camera derives right = up × forward (camera.c), so with
              * forward = -Z, cam.right = world -X. Strafe and yaw are
              * defined against that convention: D/A and RIGHT/LEFT must
              * push/rotate in the direction of the actual cam.right. */

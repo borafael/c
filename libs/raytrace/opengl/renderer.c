@@ -56,7 +56,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "struct Material {\n"
 "    vec4  albedo;   /* tile A / base color */\n"
 "    vec4  albedo2;  /* tile B (checker) */\n"
-"    ivec4 kind;     /* .x = rt_tex_kind, .y = tex_index */\n"
+"    ivec4 kind;     /* .x = scene_tex_kind, .y = tex_index */\n"
 "    vec4  scale;    /* .x = tex_scale, .y = reflectivity */\n"
 "};\n"
 "struct Texture { ivec4 size; };  /* .x = real_w, .y = real_h */\n"
@@ -856,7 +856,7 @@ typedef struct {
     GLuint sprite_atlas;
     int atlas_w, atlas_h, atlas_layers;
 
-    /* Image texture atlas: one 2D texture array, one layer per rt_texture */
+    /* Image texture atlas: one 2D texture array, one layer per scene_texture */
     GLuint tex_atlas;
     int tex_atlas_w, tex_atlas_h, tex_atlas_layers;
 
@@ -982,7 +982,7 @@ static void upload_ssbo(GLuint buf, int binding, const void *data,
 
 /* -- Scene upload ----------------------------------------------------- */
 
-static void upload_spheres(opengl_backend_data *d, const rt_scene *s) {
+static void upload_spheres(opengl_backend_data *d, const scene *s) {
     int n = s->sphere_count;
     gpu_sphere *buf = NULL;
     if (n > 0) {
@@ -997,7 +997,7 @@ static void upload_spheres(opengl_backend_data *d, const rt_scene *s) {
     free(buf);
 }
 
-static void upload_planes(opengl_backend_data *d, const rt_scene *s) {
+static void upload_planes(opengl_backend_data *d, const scene *s) {
     int n = s->plane_count;
     gpu_plane *buf = NULL;
     if (n > 0) {
@@ -1014,7 +1014,7 @@ static void upload_planes(opengl_backend_data *d, const rt_scene *s) {
     free(buf);
 }
 
-static void upload_discs(opengl_backend_data *d, const rt_scene *s) {
+static void upload_discs(opengl_backend_data *d, const scene *s) {
     int n = s->disc_count;
     gpu_disc *buf = NULL;
     if (n > 0) {
@@ -1031,7 +1031,7 @@ static void upload_discs(opengl_backend_data *d, const rt_scene *s) {
     free(buf);
 }
 
-static void upload_cylinders(opengl_backend_data *d, const rt_scene *s) {
+static void upload_cylinders(opengl_backend_data *d, const scene *s) {
     int n = s->cylinder_count;
     gpu_cylinder *buf = NULL;
     if (n > 0) {
@@ -1050,7 +1050,7 @@ static void upload_cylinders(opengl_backend_data *d, const rt_scene *s) {
     free(buf);
 }
 
-static void upload_triangles(opengl_backend_data *d, const rt_scene *s) {
+static void upload_triangles(opengl_backend_data *d, const scene *s) {
     int n = s->triangle_count;
     gpu_triangle *buf = NULL;
     if (n > 0) {
@@ -1066,7 +1066,7 @@ static void upload_triangles(opengl_backend_data *d, const rt_scene *s) {
     free(buf);
 }
 
-static void upload_boxes(opengl_backend_data *d, const rt_scene *s) {
+static void upload_boxes(opengl_backend_data *d, const scene *s) {
     int n = s->box_count;
     gpu_box *buf = NULL;
     if (n > 0) {
@@ -1081,7 +1081,7 @@ static void upload_boxes(opengl_backend_data *d, const rt_scene *s) {
     free(buf);
 }
 
-static void upload_lights(opengl_backend_data *d, const rt_scene *s) {
+static void upload_lights(opengl_backend_data *d, const scene *s) {
     int n = s->light_count;
     gpu_light *buf = NULL;
     if (n > 0) {
@@ -1096,13 +1096,13 @@ static void upload_lights(opengl_backend_data *d, const rt_scene *s) {
     free(buf);
 }
 
-static void upload_materials(opengl_backend_data *d, const rt_scene *s) {
+static void upload_materials(opengl_backend_data *d, const scene *s) {
     int n = s->material_count;
     gpu_material *buf = NULL;
     if (n > 0) {
         buf = malloc(sizeof(gpu_material) * (size_t)n);
         for (int i = 0; i < n; i++) {
-            const rt_material *m = &s->materials[i];
+            const scene_material *m = &s->materials[i];
             buf[i].albedo[0]  = (float)m->albedo.r  / 255.0f;
             buf[i].albedo[1]  = (float)m->albedo.g  / 255.0f;
             buf[i].albedo[2]  = (float)m->albedo.b  / 255.0f;
@@ -1128,7 +1128,7 @@ static void upload_materials(opengl_backend_data *d, const rt_scene *s) {
 /* Textures: metadata SSBO + 2D texture array atlas (one layer per texture).
  * Smaller textures are padded within their layer; shader uses ivec size
  * from SSBO to clamp integer sampling. */
-static void upload_textures(opengl_backend_data *d, const rt_scene *s) {
+static void upload_textures(opengl_backend_data *d, const scene *s) {
     int n = s->texture_count;
 
     int max_w = 1, max_h = 1;
@@ -1185,14 +1185,14 @@ static void upload_textures(opengl_backend_data *d, const rt_scene *s) {
  * describing which frames belong to each sprite. All frames are stored
  * at a common size (the max width/height across all frames); smaller
  * frames are padded with transparent. */
-static void upload_sprites(opengl_backend_data *d, const rt_scene *s) {
+static void upload_sprites(opengl_backend_data *d, const scene *s) {
     int n = s->sprite_count;
 
     /* Build SSBO + atlas */
     int max_w = 1, max_h = 1, total_frames = 0;
     for (int i = 0; i < n; i++) {
         for (int f = 0; f < s->sprites[i].frame_count; f++) {
-            const rt_frame *fr = &s->sprites[i].frames[f];
+            const scene_frame *fr = &s->sprites[i].frames[f];
             if (fr->width  > max_w) max_w = fr->width;
             if (fr->height > max_h) max_h = fr->height;
         }
@@ -1245,7 +1245,7 @@ static void upload_sprites(opengl_backend_data *d, const rt_scene *s) {
     int layer = 0;
     for (int i = 0; i < n; i++) {
         for (int f = 0; f < s->sprites[i].frame_count; f++) {
-            const rt_frame *fr = &s->sprites[i].frames[f];
+            const scene_frame *fr = &s->sprites[i].frames[f];
             glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer,
                             fr->width, fr->height, 1,
                             GL_BGRA, GL_UNSIGNED_BYTE, fr->pixels);
@@ -1260,7 +1260,7 @@ static void upload_sprites(opengl_backend_data *d, const rt_scene *s) {
 
 /* Heightfields: pack metadata + concatenated heights/normals/colors
  * into four SSBOs. */
-static void upload_heightfields(opengl_backend_data *d, const rt_scene *s) {
+static void upload_heightfields(opengl_backend_data *d, const scene *s) {
     int n = s->heightfield_count;
 
     int total_verts = 0;   /* sum of rows*cols */
@@ -1286,7 +1286,7 @@ static void upload_heightfields(opengl_backend_data *d, const rt_scene *s) {
         }
         int h_off = 0, n_off = 0, c_off = 0;
         for (int i = 0; i < n; i++) {
-            const rt_heightfield *hf = &s->heightfields[i];
+            const scene_heightfield *hf = &s->heightfields[i];
             int verts = hf->rows * hf->cols;
             int cells = (hf->rows - 1) * (hf->cols - 1);
 
@@ -1338,8 +1338,8 @@ static void opengl_destroy(rt_renderer *r) {
 }
 
 static void opengl_render(rt_renderer *r,
-                          const rt_scene *scene,
-                          const rt_camera *camera,
+                          const scene *scene,
+                          const scene_camera *camera,
                           const rt_viewport *viewport,
                           uint32_t *pixels) {
     opengl_backend_data *d = r->backend_data;
@@ -1364,7 +1364,7 @@ static void opengl_render(rt_renderer *r,
     upload_textures(d, scene);
 
     vector origin, forward, right, up;
-    rt_camera_get_basis(camera, &origin, &forward, &right, &up);
+    scene_camera_get_basis(camera, &origin, &forward, &right, &up);
 
     glUniform3f(d->u_cam_origin,  origin.x,  origin.y,  origin.z);
     glUniform3f(d->u_cam_forward, forward.x, forward.y, forward.z);

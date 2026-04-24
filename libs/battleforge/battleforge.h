@@ -5,8 +5,6 @@
 #include "vector.h"
 #include "viewport.h"
 #include "scene.h"
-#include "camera.h"
-#include "material.h"
 #include "sphere.h"
 #include "plane.h"
 #include "box.h"
@@ -33,7 +31,7 @@ typedef struct {
     bf_visual_kind kind;
     union {
         struct { int sheet_id; } sprite;
-        struct { float radius; rt_material material; } sphere;
+        struct { float radius; scene_material material; } sphere;
     };
 } bf_visual_desc;
 
@@ -64,11 +62,11 @@ typedef struct {
     float ambient;
     vector light_dir;
     float light_intensity;
-    rt_material terrain_material;  /* modulates per-cell colors at render time.
+    scene_material terrain_material;  /* modulates per-cell colors at render time.
                                       tex_kind=NONE (zero-initialized) keeps
                                       the legacy raw-color / zero-reflectivity
                                       behavior. */
-    rt_material sky_material;      /* material for the optional sky sphere —
+    scene_material sky_material;      /* material for the optional sky sphere —
                                       GRADIENT is the natural choice (horizon→
                                       zenith along +Y). */
     float sky_radius;              /* 0 = no sky sphere; positive = giant

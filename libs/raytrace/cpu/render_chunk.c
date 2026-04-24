@@ -7,8 +7,6 @@
 #include "box.h"
 #include "sprite.h"
 #include "heightfield.h"
-#include "material.h"
-#include "texture.h"
 #include <math.h>
 #include <float.h>
 
@@ -38,7 +36,7 @@ static inline void uv_planar(vector hp, vector anchor, vector normal,
     *v = vector_dot(d, b);
 }
 
-static inline void uv_cylinder(vector hp, const rt_cylinder *cyl,
+static inline void uv_cylinder(vector hp, const scene_cylinder *cyl,
                                float *u, float *v) {
     vector axis = vector_normalize(cyl->axis);
     vector ohp = vector_sub(hp, cyl->center);
@@ -156,19 +154,19 @@ static float turbulence(vector p, int octaves) {
     return total / sum;
 }
 
-static inline rt_color color_lerp(rt_color a, rt_color b, float t) {
+static inline scene_color color_lerp(scene_color a, scene_color b, float t) {
     if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
-    rt_color c;
+    scene_color c;
     c.r = (uint8_t)((float)a.r + ((float)b.r - (float)a.r) * t);
     c.g = (uint8_t)((float)a.g + ((float)b.g - (float)a.g) * t);
     c.b = (uint8_t)((float)a.b + ((float)b.b - (float)a.b) * t);
     return c;
 }
 
-static inline rt_color material_sample(const rt_material *m,
-                                       const rt_texture *textures,
+static inline scene_color material_sample(const scene_material *m,
+                                       const scene_texture *textures,
                                        vector p, float u, float v) {
-    if (m->tex_kind == RT_TEX_CHECKER) {
+    if (m->tex_kind == SCENE_TEX_CHECKER) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         /* Bias by a tiny epsilon so that tile boundaries (especially hits
          * on an axis-aligned plane where one coordinate is algebraically
@@ -179,8 +177,8 @@ static inline rt_color material_sample(const rt_material *m,
         int iz = (int)floorf(p.z / s + eps);
         return ((ix + iy + iz) & 1) ? m->albedo2 : m->albedo;
     }
-    if (m->tex_kind == RT_TEX_IMAGE && m->tex_index >= 0) {
-        const rt_texture *t = &textures[m->tex_index];
+    if (m->tex_kind == SCENE_TEX_IMAGE && m->tex_index >= 0) {
+        const scene_texture *t = &textures[m->tex_index];
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         float uu = u / s; uu -= floorf(uu);
         float vv = v / s; vv -= floorf(vv);
@@ -189,24 +187,24 @@ static inline rt_color material_sample(const rt_material *m,
         if (ix < 0) ix = 0; else if (ix >= t->width)  ix = t->width  - 1;
         if (iy < 0) iy = 0; else if (iy >= t->height) iy = t->height - 1;
         uint32_t pixel = t->pixels[iy * t->width + ix];
-        rt_color c;
+        scene_color c;
         c.r = (pixel >> 16) & 0xFF;
         c.g = (pixel >>  8) & 0xFF;
         c.b =  pixel        & 0xFF;
         return c;
     }
-    if (m->tex_kind == RT_TEX_GRADIENT) {
+    if (m->tex_kind == SCENE_TEX_GRADIENT) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         float t = p.y / s;
         return color_lerp(m->albedo, m->albedo2, t);
     }
-    if (m->tex_kind == RT_TEX_NOISE) {
+    if (m->tex_kind == SCENE_TEX_NOISE) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         vector np = { p.x / s, p.y / s, p.z / s };
         float t = noise3d(np);
         return color_lerp(m->albedo, m->albedo2, t);
     }
-    if (m->tex_kind == RT_TEX_WOOD) {
+    if (m->tex_kind == SCENE_TEX_WOOD) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         vector tp = { p.x * 0.5f, p.y * 0.5f, p.z * 0.5f };
         float turb = turbulence(tp, 4) * 0.8f;
@@ -215,21 +213,21 @@ static inline rt_color material_sample(const rt_material *m,
         float t = rings * rings; /* sharpen dark/light contrast */
         return color_lerp(m->albedo, m->albedo2, t);
     }
-    if (m->tex_kind == RT_TEX_MARBLE) {
+    if (m->tex_kind == SCENE_TEX_MARBLE) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         float turb = turbulence(p, 5) * 5.0f;
         float t = 0.5f + 0.5f * sinf(p.x / s + turb);
         t = t * t * t * t; /* narrow, bright veins */
         return color_lerp(m->albedo, m->albedo2, t);
     }
-    if (m->tex_kind == RT_TEX_CELLS) {
+    if (m->tex_kind == SCENE_TEX_CELLS) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         vector np = { p.x / s, p.y / s, p.z / s };
         float f1, f2;
         voronoi3d(np, &f1, &f2);
         return color_lerp(m->albedo, m->albedo2, f1);
     }
-    if (m->tex_kind == RT_TEX_CRACKS) {
+    if (m->tex_kind == SCENE_TEX_CRACKS) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         vector np = { p.x / s, p.y / s, p.z / s };
         float f1, f2;
@@ -240,13 +238,13 @@ static inline rt_color material_sample(const rt_material *m,
         float t = 1.0f - e * e * (3.0f - 2.0f * e); /* 0 inside, 1 at edge */
         return color_lerp(m->albedo, m->albedo2, t);
     }
-    if (m->tex_kind == RT_TEX_STRIPES) {
+    if (m->tex_kind == SCENE_TEX_STRIPES) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         int ix = (int)floorf(p.x / s + 1e-4f);
         float t = (ix & 1) ? 1.0f : 0.0f;
         return color_lerp(m->albedo, m->albedo2, t);
     }
-    if (m->tex_kind == RT_TEX_DOTS) {
+    if (m->tex_kind == SCENE_TEX_DOTS) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         float ux = p.x / s; float uz = p.z / s;
         float lx = ux - floorf(ux) - 0.5f;
@@ -255,7 +253,7 @@ static inline rt_color material_sample(const rt_material *m,
         float t = 1.0f - noise_smoothstep(0.26f, 0.30f, d);
         return color_lerp(m->albedo, m->albedo2, t);
     }
-    if (m->tex_kind == RT_TEX_BRICKS) {
+    if (m->tex_kind == SCENE_TEX_BRICKS) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         float bz = p.z / s;
         int row = (int)floorf(bz);
@@ -269,14 +267,14 @@ static inline rt_color material_sample(const rt_material *m,
         float t = in_mortar ? 1.0f : 0.0f;
         return color_lerp(m->albedo, m->albedo2, t);
     }
-    if (m->tex_kind == RT_TEX_CLOUDS) {
+    if (m->tex_kind == SCENE_TEX_CLOUDS) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         vector np = { p.x / s, p.y / s, p.z / s };
         float t = turbulence(np, 4);
         t = noise_smoothstep(0.40f, 0.70f, t);
         return color_lerp(m->albedo, m->albedo2, t);
     }
-    if (m->tex_kind == RT_TEX_SPOTS) {
+    if (m->tex_kind == SCENE_TEX_SPOTS) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         vector np = { p.x / s, p.y / s, p.z / s };
         float n = noise3d(np);
@@ -293,12 +291,12 @@ typedef struct {
     int hit;
     vector point;
     vector normal;
-    rt_color albedo;
+    scene_color albedo;
     float reflectivity;
     int unlit;
 } hit_info;
 
-static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
+static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                             vector camera_origin) {
     hit_info h = {0};
     float closest_t = FLT_MAX;
@@ -312,7 +310,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             h.normal = rt_normal_sphere(hp, &scene->spheres[i]);
             float u, v;
             uv_sphere(hp, scene->spheres[i].center, &u, &v);
-            const rt_material *m = &scene->materials[scene->spheres[i].material];
+            const scene_material *m = &scene->materials[scene->spheres[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
@@ -329,7 +327,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             h.normal = rt_normal_plane(&scene->planes[i]);
             float u, v;
             uv_planar(hp, scene->planes[i].point, h.normal, &u, &v);
-            const rt_material *m = &scene->materials[scene->planes[i].material];
+            const scene_material *m = &scene->materials[scene->planes[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
@@ -346,7 +344,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             h.normal = rt_normal_disc(&scene->discs[i]);
             float u, v;
             uv_planar(hp, scene->discs[i].center, h.normal, &u, &v);
-            const rt_material *m = &scene->materials[scene->discs[i].material];
+            const scene_material *m = &scene->materials[scene->discs[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
@@ -363,7 +361,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             h.normal = rt_normal_cylinder(hp, &scene->cylinders[i]);
             float u, v;
             uv_cylinder(hp, &scene->cylinders[i], &u, &v);
-            const rt_material *m = &scene->materials[scene->cylinders[i].material];
+            const scene_material *m = &scene->materials[scene->cylinders[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
@@ -380,7 +378,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             h.normal = rt_normal_triangle(&scene->triangles[i]);
             float u, v;
             uv_planar(hp, scene->triangles[i].v0, h.normal, &u, &v);
-            const rt_material *m = &scene->materials[scene->triangles[i].material];
+            const scene_material *m = &scene->materials[scene->triangles[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
@@ -397,7 +395,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
             h.normal = rt_normal_box(hp, &scene->boxes[i]);
             float u, v;
             uv_box(hp, h.normal, &u, &v);
-            const rt_material *m = &scene->materials[scene->boxes[i].material];
+            const scene_material *m = &scene->materials[scene->boxes[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
@@ -411,7 +409,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
                                        camera_origin, &spr_right, &spr_up, &spr_normal);
         if (t > 0.0f && t < closest_t) {
             int frame_idx = rt_sprite_select_frame(&scene->sprites[i], camera_origin);
-            const rt_frame *frame = &scene->sprites[i].frames[frame_idx];
+            const scene_frame *frame = &scene->sprites[i].frames[frame_idx];
             vector hp = vector_add(ro, vector_scale(rd, t));
             uint32_t pixel = rt_sprite_sample(&scene->sprites[i], frame,
                                                hp, spr_right, spr_up);
@@ -431,7 +429,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
     }
 
     for (int i = 0; i < scene->heightfield_count; i++) {
-        const rt_heightfield *hf = &scene->heightfields[i];
+        const scene_heightfield *hf = &scene->heightfields[i];
         float t;
         vector hn;
         int cell_r, cell_c;
@@ -442,14 +440,14 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
                 h.normal = hn;
                 int cells_per_row = hf->cols - 1;
                 int ci = (cell_r * cells_per_row + cell_c) * 3;
-                rt_color cell = { hf->colors[ci], hf->colors[ci+1], hf->colors[ci+2] };
+                scene_color cell = { hf->colors[ci], hf->colors[ci+1], hf->colors[ci+2] };
                 if (hf->material >= 0 && hf->material < scene->material_count) {
                     /* Heightfield-specific shading: the material samples at
                        the hit point and modulates the per-cell biome color,
                        so procedural textures add sub-cell detail without
                        erasing the slope-aware palette baked into colors[]. */
-                    const rt_material *m = &scene->materials[hf->material];
-                    rt_color tex = material_sample(m, scene->textures,
+                    const scene_material *m = &scene->materials[hf->material];
+                    scene_color tex = material_sample(m, scene->textures,
                                                    h.point, h.point.x, h.point.z);
                     h.albedo.r = (uint8_t)(((int)cell.r * (int)tex.r) / 255);
                     h.albedo.g = (uint8_t)(((int)cell.g * (int)tex.g) / 255);
@@ -471,7 +469,7 @@ static hit_info closest_hit(vector ro, vector rd, const rt_scene *scene,
 
 void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
                      int y_start, int y_end,
-                     const rt_camera *camera, const rt_scene *scene) {
+                     const scene_camera *camera, const scene *scene) {
     int width = viewport->width;
     int height = viewport->height;
     float fov_factor = (float)height / (2.0f * tanf(viewport->fov / 2.0f));

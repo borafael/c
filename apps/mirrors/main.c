@@ -6,7 +6,6 @@
 #include "renderer.h"
 #include "viewport.h"
 #include "scene.h"
-#include "camera.h"
 #include "sphere.h"
 #include "plane.h"
 #include "box.h"
@@ -38,7 +37,7 @@
 static int orb_material_ids[ORB_COUNT];
 static int orb_sphere_ids[ORB_COUNT];
 
-static rt_color hsv_to_rgb(float h, float s, float v) {
+static scene_color hsv_to_rgb(float h, float s, float v) {
     float r = 0.0f, g = 0.0f, b = 0.0f;
     int i = (int)floorf(h * 6.0f);
     float f = h * 6.0f - (float)i;
@@ -53,66 +52,66 @@ static rt_color hsv_to_rgb(float h, float s, float v) {
         case 4: r = t; g = p; b = v; break;
         case 5: r = v; g = p; b = q; break;
     }
-    rt_color c;
+    scene_color c;
     c.r = (uint8_t)(r * 255.0f);
     c.g = (uint8_t)(g * 255.0f);
     c.b = (uint8_t)(b * 255.0f);
     return c;
 }
 
-static void build_scene(rt_scene **scene_out, rt_camera **camera_out) {
-    rt_scene *scene = rt_scene_create();
+static void build_scene(scene **scene_out, scene_camera **camera_out) {
+    scene *scene = scene_create();
 
-    int m_mirror = rt_scene_add_material(scene, (rt_material){
+    int m_mirror = scene_add_material(scene, (scene_material){
         .albedo = {10, 10, 14},
         .reflectivity = 1.0f,
     });
-    int m_floor = rt_scene_add_material(scene, (rt_material){
+    int m_floor = scene_add_material(scene, (scene_material){
         .albedo       = {20, 20, 28},
         .albedo2      = {60, 60, 80},
-        .tex_kind     = RT_TEX_CHECKER,
+        .tex_kind     = SCENE_TEX_CHECKER,
         .tex_scale    = 1.0f,
         .reflectivity = 0.55f,
     });
-    int m_ceiling = rt_scene_add_material(scene, (rt_material){
+    int m_ceiling = scene_add_material(scene, (scene_material){
         .albedo = {30, 30, 40},
     });
-    int m_endwall = rt_scene_add_material(scene, (rt_material){
+    int m_endwall = scene_add_material(scene, (scene_material){
         .albedo = {45, 20, 60},
     });
 
     /* Floor */
-    rt_scene_add_plane(scene, (rt_plane){
+    scene_add_plane(scene, (scene_plane){
         .point    = {0.0f, FLOOR_Y, 0.0f},
         .normal   = {0.0f, 1.0f, 0.0f},
         .material = m_floor,
     });
     /* Ceiling */
-    rt_scene_add_plane(scene, (rt_plane){
+    scene_add_plane(scene, (scene_plane){
         .point    = {0.0f, WALL_HEIGHT, 0.0f},
         .normal   = {0.0f, -1.0f, 0.0f},
         .material = m_ceiling,
     });
 
     /* Left mirror wall (facing +X) */
-    rt_scene_add_box(scene, (rt_box){
+    scene_add_box(scene, (scene_box){
         .min = {-HALL_HALF_W - WALL_THICK, FLOOR_Y,       -HALL_HALF_LEN},
         .max = {-HALL_HALF_W,               WALL_HEIGHT,   HALL_HALF_LEN},
         .material = m_mirror,
     });
     /* Right mirror wall (facing -X) */
-    rt_scene_add_box(scene, (rt_box){
+    scene_add_box(scene, (scene_box){
         .min = { HALL_HALF_W,               FLOOR_Y,       -HALL_HALF_LEN},
         .max = { HALL_HALF_W + WALL_THICK,  WALL_HEIGHT,   HALL_HALF_LEN},
         .material = m_mirror,
     });
     /* End caps (non-mirror, so you can see into the hall) */
-    rt_scene_add_box(scene, (rt_box){
+    scene_add_box(scene, (scene_box){
         .min = {-HALL_HALF_W - WALL_THICK, FLOOR_Y,      -HALL_HALF_LEN - WALL_THICK},
         .max = { HALL_HALF_W + WALL_THICK, WALL_HEIGHT, -HALL_HALF_LEN},
         .material = m_endwall,
     });
-    rt_scene_add_box(scene, (rt_box){
+    scene_add_box(scene, (scene_box){
         .min = {-HALL_HALF_W - WALL_THICK, FLOOR_Y,      HALL_HALF_LEN},
         .max = { HALL_HALF_W + WALL_THICK, WALL_HEIGHT, HALL_HALF_LEN + WALL_THICK},
         .material = m_endwall,
@@ -121,11 +120,11 @@ static void build_scene(rt_scene **scene_out, rt_camera **camera_out) {
     /* Ring of colored orbs — stored indices let us animate positions per frame. */
     for (int i = 0; i < ORB_COUNT; i++) {
         float hue = (float)i / (float)ORB_COUNT;
-        rt_color c = hsv_to_rgb(hue, 0.85f, 1.0f);
-        orb_material_ids[i] = rt_scene_add_material(scene, (rt_material){
+        scene_color c = hsv_to_rgb(hue, 0.85f, 1.0f);
+        orb_material_ids[i] = scene_add_material(scene, (scene_material){
             .albedo = c,
         });
-        orb_sphere_ids[i] = rt_scene_add_sphere(scene, (rt_sphere){
+        orb_sphere_ids[i] = scene_add_sphere(scene, (scene_sphere){
             .center   = {0.0f, 1.6f, 0.0f},
             .radius   = 0.55f,
             .material = orb_material_ids[i],
@@ -134,34 +133,34 @@ static void build_scene(rt_scene **scene_out, rt_camera **camera_out) {
 
     /* A single chrome sphere at the center — its reflection drives the eye
      * inward and multiplies via the side mirrors. */
-    int m_chrome = rt_scene_add_material(scene, (rt_material){
+    int m_chrome = scene_add_material(scene, (scene_material){
         .albedo       = {200, 200, 210},
         .reflectivity = 0.9f,
     });
-    rt_scene_add_sphere(scene, (rt_sphere){
+    scene_add_sphere(scene, (scene_sphere){
         .center   = {0.0f, 1.6f, 0.0f},
         .radius   = 0.9f,
         .material = m_chrome,
     });
 
-    rt_scene_set_ambient(scene, 0.18f);
-    rt_scene_add_light(scene, (rt_light){
+    scene_set_ambient(scene, 0.18f);
+    scene_add_light(scene, (scene_light){
         .direction = {0.3f, 1.0f, 0.2f},
         .intensity = 0.7f,
     });
-    rt_scene_add_light(scene, (rt_light){
+    scene_add_light(scene, (scene_light){
         .direction = {-0.5f, 0.4f, -0.8f},
         .intensity = 0.35f,
     });
 
     *scene_out = scene;
-    *camera_out = rt_camera_create(
+    *camera_out = scene_camera_create(
         (vector){0.0f, 2.2f, 6.0f},
         (vector){0.0f, -0.1f, -1.0f}
     );
 }
 
-static void animate_orbs(rt_scene *scene, float t) {
+static void animate_orbs(scene *scene, float t) {
     for (int i = 0; i < ORB_COUNT; i++) {
         float phase = (float)i / (float)ORB_COUNT * (float)(2.0 * M_PI);
         float angle = t * 0.6f + phase;
@@ -241,8 +240,8 @@ int main(void) {
     fprintf(stderr, "Active: %s (TAB to toggle, SPACE auto-orbit, WASD/arrows manual)\n",
             rt_renderer_name(active));
 
-    rt_scene *scene;
-    rt_camera *camera;
+    scene *scene;
+    scene_camera *camera;
     build_scene(&scene, &camera);
 
     int render_scale = 1;
@@ -362,7 +361,7 @@ int main(void) {
         animate_orbs(scene, t);
 
         vector cam_dir = cam_dir_from_yaw_pitch(cam_yaw, cam_pitch);
-        rt_camera_place(camera, cam_pos, cam_dir);
+        scene_camera_place(camera, cam_pos, cam_dir);
 
         Uint32 r_start = SDL_GetTicks();
         rt_renderer_render(active, scene, camera, &viewport, pixels);
@@ -394,8 +393,8 @@ int main(void) {
     if (cpu_rnd) rt_renderer_destroy(cpu_rnd);
     if (gpu_rnd) rt_renderer_destroy(gpu_rnd);
     free(pixels);
-    rt_camera_destroy(camera);
-    rt_scene_destroy(scene);
+    scene_camera_destroy(camera);
+    scene_destroy(scene);
     SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);
     SDL_Quit();

@@ -1,7 +1,7 @@
 #include "cylinder.h"
 #include <math.h>
 
-float rt_intersect_cylinder(vector ro, vector rd, const rt_cylinder *cyl) {
+float rt_intersect_cylinder(vector ro, vector rd, const scene_cylinder *cyl) {
     vector oc = vector_sub(ro, cyl->center);
     float rd_dot_a = vector_dot(rd, cyl->axis);
     float oc_dot_a = vector_dot(oc, cyl->axis);
@@ -29,7 +29,7 @@ float rt_intersect_cylinder(vector ro, vector rd, const rt_cylinder *cyl) {
     return -1.0f;
 }
 
-vector rt_normal_cylinder(vector hp, const rt_cylinder *cyl) {
+vector rt_normal_cylinder(vector hp, const scene_cylinder *cyl) {
     vector diff = vector_sub(hp, cyl->center);
     float proj = vector_dot(diff, cyl->axis);
     vector on_axis = vector_add(cyl->center, vector_scale(cyl->axis, proj));

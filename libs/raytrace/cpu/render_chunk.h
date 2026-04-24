@@ -3,7 +3,6 @@
 
 #include <stdint.h>
 #include "viewport.h"
-#include "camera.h"
 #include "scene.h"
 
 /**
@@ -16,6 +15,6 @@
  */
 void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
                      int y_start, int y_end,
-                     const rt_camera *camera, const rt_scene *scene);
+                     const scene_camera *camera, const scene *scene);
 
 #endif /* RT_CPU_RENDER_CHUNK_H */

@@ -1,7 +1,6 @@
 #include "renderer.h"
 #include "viewport.h"
 #include "scene.h"
-#include "camera.h"
 #include "sphere.h"
 #include "plane.h"
 #include "box.h"
@@ -206,113 +205,113 @@ static void build_test_texture(void) {
     }
 }
 
-static void build_scene(rt_scene **scene, rt_camera **camera) {
-    *scene = rt_scene_create();
+static void build_scene(scene **scene, scene_camera **camera) {
+    *scene = scene_create();
 
     build_test_texture();
-    int t_grid = rt_scene_add_texture(*scene, (rt_texture){
+    int t_grid = scene_add_texture(*scene, (scene_texture){
         .pixels = rtdemo_test_texture_pixels,
         .width  = RTDEMO_TEX_SIZE,
         .height = RTDEMO_TEX_SIZE,
     });
 
-    int m_red    = rt_scene_add_material(*scene, (rt_material){
+    int m_red    = scene_add_material(*scene, (scene_material){
         .albedo    = {200,  40,  40},  /* deep red stone */
         .albedo2   = {255, 200, 160},  /* pale highlight */
-        .tex_kind  = RT_TEX_CELLS,
+        .tex_kind  = SCENE_TEX_CELLS,
         .tex_scale = 0.4f,
     });
-    int m_green  = rt_scene_add_material(*scene, (rt_material){
+    int m_green  = scene_add_material(*scene, (scene_material){
         .albedo    = { 80, 180,  80},  /* moss surface */
         .albedo2   = { 10,  25,  10},  /* crack line */
-        .tex_kind  = RT_TEX_CRACKS,
+        .tex_kind  = SCENE_TEX_CRACKS,
         .tex_scale = 0.3f,
     });
-    int m_blue   = rt_scene_add_material(*scene, (rt_material){
+    int m_blue   = scene_add_material(*scene, (scene_material){
         .albedo    = { 40,  90, 180},  /* sky */
         .albedo2   = {245, 245, 250},  /* cloud */
-        .tex_kind  = RT_TEX_CLOUDS,
+        .tex_kind  = SCENE_TEX_CLOUDS,
         .tex_scale = 0.6f,
     });
-    int m_yellow = rt_scene_add_material(*scene, (rt_material){
-        .tex_kind  = RT_TEX_IMAGE,
+    int m_yellow = scene_add_material(*scene, (scene_material){
+        .tex_kind  = SCENE_TEX_IMAGE,
         .tex_index = t_grid,
         .tex_scale = 1.0f,
     });
-    int m_grey   = rt_scene_add_material(*scene, (rt_material){
+    int m_grey   = scene_add_material(*scene, (scene_material){
         .albedo    = { 90,  90,  90},
         .albedo2   = {160, 160, 160},
-        .tex_kind  = RT_TEX_CHECKER,
+        .tex_kind  = SCENE_TEX_CHECKER,
         .tex_scale = 1.0f,
     });
-    int m_orange = rt_scene_add_material(*scene, (rt_material){
+    int m_orange = scene_add_material(*scene, (scene_material){
         .albedo    = {255, 180,  60},  /* bottom */
         .albedo2   = {160,  20, 120},  /* top */
-        .tex_kind  = RT_TEX_GRADIENT,
+        .tex_kind  = SCENE_TEX_GRADIENT,
         .tex_scale = 1.2f,
     });
-    int m_purple = rt_scene_add_material(*scene, (rt_material){
+    int m_purple = scene_add_material(*scene, (scene_material){
         .albedo    = {200, 160, 100},  /* light wood */
         .albedo2   = { 70,  35,  15},  /* dark grain */
-        .tex_kind  = RT_TEX_WOOD,
+        .tex_kind  = SCENE_TEX_WOOD,
         .tex_scale = 0.25f,
     });
-    int m_cyan   = rt_scene_add_material(*scene, (rt_material){
+    int m_cyan   = scene_add_material(*scene, (scene_material){
         .albedo    = {230, 230, 235},  /* stone */
         .albedo2   = { 40,  60,  90},  /* vein */
-        .tex_kind  = RT_TEX_MARBLE,
+        .tex_kind  = SCENE_TEX_MARBLE,
         .tex_scale = 0.5f,
     });
-    int m_coral  = rt_scene_add_material(*scene, (rt_material){
+    int m_coral  = scene_add_material(*scene, (scene_material){
         .albedo    = {255, 120,  60},
         .albedo2   = {120,  30,  10},
-        .tex_kind  = RT_TEX_NOISE,
+        .tex_kind  = SCENE_TEX_NOISE,
         .tex_scale = 0.35f,
     });
-    int m_mirror = rt_scene_add_material(*scene, (rt_material){
+    int m_mirror = scene_add_material(*scene, (scene_material){
         .reflectivity = 1.0f,
     });
 
-    rt_scene_add_sphere(*scene, (rt_sphere){
+    scene_add_sphere(*scene, (scene_sphere){
         .center = {0.0f, 1.0f, 0.0f},
         .radius = 1.0f,
         .material = m_red
     });
-    rt_scene_add_sphere(*scene, (rt_sphere){
+    scene_add_sphere(*scene, (scene_sphere){
         .center = {-2.5f, 0.6f, -1.0f},
         .radius = 0.6f,
         .material = m_green
     });
-    rt_scene_add_sphere(*scene, (rt_sphere){
+    scene_add_sphere(*scene, (scene_sphere){
         .center = {2.0f, 0.8f, -0.5f},
         .radius = 0.8f,
         .material = m_blue
     });
-    rt_scene_add_sphere(*scene, (rt_sphere){
+    scene_add_sphere(*scene, (scene_sphere){
         .center = {0.5f, 0.4f, 2.0f},
         .radius = 0.4f,
         .material = m_yellow
     });
-    rt_scene_add_sphere(*scene, (rt_sphere){
+    scene_add_sphere(*scene, (scene_sphere){
         .center = {0.0f, 2.5f, -1.0f},
         .radius = 1.0f,
         .material = m_mirror
     });
 
-    rt_scene_add_plane(*scene, (rt_plane){
+    scene_add_plane(*scene, (scene_plane){
         .point = {0.0f, -1.0f, 0.0f},
         .normal = {0.0f, 0.96f, 0.29f},
         .material = m_grey
     });
 
-    rt_scene_add_disc(*scene, (rt_disc){
+    scene_add_disc(*scene, (scene_disc){
         .center = {-3.0f, 0.0f, 2.0f},
         .normal = {0.0f, 1.0f, 0.0f},
         .radius = 1.2f,
         .material = m_orange
     });
 
-    rt_scene_add_cylinder(*scene, (rt_cylinder){
+    scene_add_cylinder(*scene, (scene_cylinder){
         .center = {3.0f, 0.5f, -2.0f},
         .axis = {0.0f, 1.0f, 0.0f},
         .radius = 0.5f,
@@ -320,31 +319,31 @@ static void build_scene(rt_scene **scene, rt_camera **camera) {
         .material = m_purple
     });
 
-    rt_scene_add_triangle(*scene, (rt_triangle){
+    scene_add_triangle(*scene, (scene_triangle){
         .v0 = {-1.0f, 0.0f, -3.0f},
         .v1 = { 1.0f, 0.0f, -3.0f},
         .v2 = { 0.0f, 2.0f, -3.0f},
         .material = m_cyan
     });
 
-    rt_scene_add_box(*scene, (rt_box){
+    scene_add_box(*scene, (scene_box){
         .min = {-4.0f, -0.5f, -1.5f},
         .max = {-3.0f,  0.5f, -0.5f},
         .material = m_coral
     });
 
-    rt_scene_set_ambient(*scene, 0.15f);
-    rt_scene_add_light(*scene, (rt_light){
+    scene_set_ambient(*scene, 0.15f);
+    scene_add_light(*scene, (scene_light){
         .direction = {1.0f, 1.0f, -1.0f},
         .intensity = 0.85f
     });
 
-    static rt_frame sprite_frames[8];
+    static scene_frame sprite_frames[8];
     init_sprite_frames();
     for (int i = 0; i < 8; i++)
-        sprite_frames[i] = (rt_frame){ frame_data[i], S, S };
+        sprite_frames[i] = (scene_frame){ frame_data[i], S, S };
 
-    rt_scene_add_sprite(*scene, (rt_sprite){
+    scene_add_sprite(*scene, (scene_sprite){
         .position = {0.0f, 1.0f, 3.0f},
         .direction = {0.0f, 0.0f, 1.0f},
         .width = 2.0f,
@@ -353,7 +352,7 @@ static void build_scene(rt_scene **scene, rt_camera **camera) {
         .frames = sprite_frames
     });
 
-    *camera = rt_camera_create(
+    *camera = scene_camera_create(
         (vector){5.0f, 3.0f, 5.0f},
         (vector){-1.0f, -0.4f, -1.0f}
     );
@@ -435,8 +434,8 @@ int main(void) {
     fprintf(stderr, "Active: %s (press TAB to toggle)\n",
             rt_renderer_name(active));
 
-    rt_scene *scene;
-    rt_camera *camera;
+    scene *scene;
+    scene_camera *camera;
     build_scene(&scene, &camera);
 
     int render_scale = 1;
@@ -530,7 +529,7 @@ int main(void) {
         if (keys[SDL_SCANCODE_LSHIFT]) cam_pos.y -= move_speed * dt;
 
         vector cam_dir = cam_dir_from_yaw_pitch(cam_yaw, cam_pitch);
-        rt_camera_place(camera, cam_pos, cam_dir);
+        scene_camera_place(camera, cam_pos, cam_dir);
 
         Uint32 r_start = SDL_GetTicks();
         rt_renderer_render(active, scene, camera, &viewport, pixels);
@@ -563,8 +562,8 @@ int main(void) {
     if (cpu_rnd) rt_renderer_destroy(cpu_rnd);
     if (gpu_rnd) rt_renderer_destroy(gpu_rnd);
     free(pixels);
-    rt_camera_destroy(camera);
-    rt_scene_destroy(scene);
+    scene_camera_destroy(camera);
+    scene_destroy(scene);
     SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);
     SDL_Quit();

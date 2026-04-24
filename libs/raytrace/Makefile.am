@@ -1,6 +1,6 @@
 noinst_LTLIBRARIES = libraytrace.la
 
-libraytrace_la_SOURCES = renderer.c scene.c camera.c
+libraytrace_la_SOURCES = renderer.c
 
 if BUILD_CPU_BACKEND
 libraytrace_la_SOURCES += cpu/renderer.c cpu/render_chunk.c \
@@ -9,13 +9,14 @@ libraytrace_la_SOURCES += cpu/renderer.c cpu/render_chunk.c \
                           cpu/sprite.c cpu/heightfield.c
 endif
 
-noinst_HEADERS = viewport.h renderer.h rt_color.h material.h texture.h scene.h \
-                 camera.h sphere.h plane.h disc.h cylinder.h triangle.h box.h \
+noinst_HEADERS = viewport.h renderer.h \
+                 sphere.h plane.h disc.h cylinder.h triangle.h box.h \
                  sprite.h heightfield.h cpu/render_chunk.h
 libraytrace_la_CPPFLAGS = -I$(top_srcdir)/libs/math \
+                          -I$(top_srcdir)/libs/scene \
                           -I$(top_srcdir)/libs/thread \
                           -I$(top_srcdir)/libs/raytrace
-libraytrace_la_LIBADD = -lm
+libraytrace_la_LIBADD = $(top_builddir)/libs/scene/libscene.la -lm
 
 if BUILD_OPENGL_BACKEND
 libraytrace_la_SOURCES += opengl/renderer.c

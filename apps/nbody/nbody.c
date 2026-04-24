@@ -5,7 +5,6 @@
 #include "renderer.h"
 #include "viewport.h"
 #include "scene.h"
-#include "camera.h"
 #include "sphere.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,11 +30,11 @@ static float camera_azimuth = 0.0f;
 static float camera_elevation = 0.3f;
 static float camera_distance = 1500.0f;
 static float time_scale = 1.0f;
-static rt_camera *camera = NULL;
+static scene_camera *camera = NULL;
 
 /* Raytracer state (lazy-initialized in nbody_render) */
 #define RT_SCALE 4
-static rt_scene *rt_scene_ptr = NULL;
+static scene *scene_ptr = NULL;
 static uint32_t *pixel_buffer = NULL;
 static void *sdl_texture = NULL;
 static int rt_width = 0;
@@ -50,7 +49,7 @@ static void update_camera_from_orbital(void) {
         -camera_distance * cosf(camera_elevation) * cosf(camera_azimuth)
     };
     vector dir = vector_normalize(vector_scale(pos, -1.0f));
-    rt_camera_place(camera, pos, dir);
+    scene_camera_place(camera, pos, dir);
 }
 
 static void handle_reset(void)      { nbody_reset(); }
@@ -141,7 +140,7 @@ void nbody_init(const nbody_config *config) {
     }
     fprintf(stderr, "Using renderer: %s\n", rt_renderer_name(rt_rnd));
 
-    camera = rt_camera_create((vector){0, 0, 0}, (vector){0, 0, -1});
+    camera = scene_camera_create((vector){0, 0, 0}, (vector){0, 0, -1});
     if (!camera) {
         fprintf(stderr, "Failed to create camera\n");
         exit(EXIT_FAILURE);
@@ -191,12 +190,12 @@ void nbody_cleanup(void) {
         world = NULL;
     }
     if (camera) {
-        rt_camera_destroy(camera);
+        scene_camera_destroy(camera);
         camera = NULL;
     }
-    if (rt_scene_ptr) {
-        rt_scene_destroy(rt_scene_ptr);
-        rt_scene_ptr = NULL;
+    if (scene_ptr) {
+        scene_destroy(scene_ptr);
+        scene_ptr = NULL;
     }
     if (pixel_buffer) {
         free(pixel_buffer);
@@ -215,30 +214,30 @@ void nbody_update(void) {
     }
 }
 
-static rt_sphere body_to_sphere(int id, rt_scene *scene) {
+static scene_sphere body_to_sphere(int id, scene *scene) {
     float mass = physics_world_body_mass(world, id);
     float t = logf(mass) / logf(1000.0f);
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
 
-    rt_material mat = {0};
+    scene_material mat = {0};
     mat.albedo.r = (uint8_t)(50 + t * 205);
     mat.albedo.g = (uint8_t)(50 * (1 - t * t));
     mat.albedo.b = (uint8_t)(255 * (1 - t * t));
 
-    rt_sphere sp;
+    scene_sphere sp;
     sp.center = physics_world_body_position(world, id);
     sp.radius = 2.0f + logf(mass) * 2.0f;
     if (sp.radius < 1.0f) sp.radius = 1.0f;
-    sp.material = rt_scene_add_material(scene, mat);
+    sp.material = scene_add_material(scene, mat);
 
     return sp;
 }
 
 static void ensure_render_resources(int w, int h) {
-    if (!rt_scene_ptr) {
-        rt_scene_ptr = rt_scene_create();
-        rt_scene_set_ambient(rt_scene_ptr, 0.12f);
+    if (!scene_ptr) {
+        scene_ptr = scene_create();
+        scene_set_ambient(scene_ptr, 0.12f);
     }
     if (!pixel_buffer || rt_width != w || rt_height != h) {
         free(pixel_buffer);
@@ -251,24 +250,24 @@ static void ensure_render_resources(int w, int h) {
 }
 
 /* Three-point rig that slowly orbits the scene, so bodies glint
- * as they coalesce. Re-added every frame because rt_scene_clear
+ * as they coalesce. Re-added every frame because scene_clear
  * wipes lights. */
 static void setup_lights(void) {
     float a = lighting_time;
     float ca = cosf(a), sa = sinf(a);
 
     /* Key: high front, rotates around Y */
-    rt_scene_add_light(rt_scene_ptr, (rt_light){
+    scene_add_light(scene_ptr, (scene_light){
         .direction = { ca, 0.9f, sa },
         .intensity = 0.75f
     });
     /* Fill: low opposite, soft */
-    rt_scene_add_light(rt_scene_ptr, (rt_light){
+    scene_add_light(scene_ptr, (scene_light){
         .direction = { -ca, -0.35f, -sa },
         .intensity = 0.25f
     });
     /* Rim: perpendicular to key, subtle edge glow */
-    rt_scene_add_light(rt_scene_ptr, (rt_light){
+    scene_add_light(scene_ptr, (scene_light){
         .direction = { -sa, 0.2f, ca },
         .intensity = 0.35f
     });
@@ -276,8 +275,8 @@ static void setup_lights(void) {
     lighting_time += 0.012f;
 }
 
-static void render_scene(const rt_camera *cam, const rt_viewport *vp) {
-    rt_renderer_render(rt_rnd, rt_scene_ptr, cam, vp, pixel_buffer);
+static void render_scene(const scene_camera *cam, const rt_viewport *vp) {
+    rt_renderer_render(rt_rnd, scene_ptr, cam, vp, pixel_buffer);
 
     render_clear();
     render_texture_update(sdl_texture, pixel_buffer, vp->width * (int)sizeof(uint32_t));
@@ -292,13 +291,13 @@ void nbody_render(int screen_width, int screen_height) {
 
     rt_viewport viewport = { .width = w, .height = h, .fov = 0.9273f };
 
-    rt_scene_clear(rt_scene_ptr);
+    scene_clear(scene_ptr);
     setup_lights();
 
     int cap = physics_world_capacity(world);
     for (int i = 0; i < cap; i++) {
         if (!physics_world_body_alive(world, i)) continue;
-        rt_scene_add_sphere(rt_scene_ptr, body_to_sphere(i, rt_scene_ptr));
+        scene_add_sphere(scene_ptr, body_to_sphere(i, scene_ptr));
     }
 
     render_scene(camera, &viewport);

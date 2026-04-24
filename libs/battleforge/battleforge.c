@@ -66,8 +66,8 @@ struct bf_engine {
     int log_write_pos;
     int log_count;
 
-    rt_scene *scene;
-    rt_camera *rt_cam;
+    scene *scene;
+    scene_camera *rt_cam;
     rt_viewport viewport;
     rt_renderer *renderer;
     rt_backend   backend;
@@ -320,8 +320,8 @@ bf_engine *bf_create(bf_config config) {
     e->camera.direction = (vector){0.0f, -0.3f, -1.0f};
 
     /* Raytracer resources */
-    e->scene = rt_scene_create();
-    e->rt_cam = rt_camera_create(e->camera.position, e->camera.direction);
+    e->scene = scene_create();
+    e->rt_cam = scene_camera_create(e->camera.position, e->camera.direction);
     if (!e->scene || !e->rt_cam) {
         bf_destroy(e);
         return NULL;
@@ -361,8 +361,8 @@ rt_backend bf_get_backend(const bf_engine *e) {
 void bf_destroy(bf_engine *e) {
     if (!e) return;
     if (e->renderer) rt_renderer_destroy(e->renderer);
-    if (e->rt_cam) rt_camera_destroy(e->rt_cam);
-    if (e->scene) rt_scene_destroy(e->scene);
+    if (e->rt_cam) scene_camera_destroy(e->rt_cam);
+    if (e->scene) scene_destroy(e->scene);
     /* Free registered maps (they own the height/color/normal data) */
     for (int i = 0; i < e->map_count; i++) {
         if (e->maps[i].map) {
@@ -828,7 +828,7 @@ void bf_tick(bf_engine *e, float dt) {
 }
 
 static slice_sheet *build_sprite_frames(bf_engine *e, int entity_id,
-                                        rt_frame *out_frames) {
+                                        scene_frame *out_frames) {
     bf_visual *vis = &e->visuals[entity_id];
     if (vis->desc.kind != BF_VIS_SPRITE) return NULL;
     int sheet_id = vis->desc.sprite.sheet_id;
@@ -846,7 +846,7 @@ static slice_sheet *build_sprite_frames(bf_engine *e, int entity_id,
     if (col < 0 || col >= sheet->total_columns) col = 0;
 
     for (int a = 0; a < sheet->angles; a++) {
-        out_frames[a] = (rt_frame){
+        out_frames[a] = (scene_frame){
             .pixels = sheet->pixels[a * sheet->total_columns + col],
             .width = sheet->frame_width,
             .height = sheet->frame_height
@@ -857,15 +857,15 @@ static slice_sheet *build_sprite_frames(bf_engine *e, int entity_id,
 
 void bf_render(bf_engine *e, uint32_t *pixel_buf) {
     /* Update camera */
-    rt_camera_place(e->rt_cam, e->camera.position, e->camera.direction);
+    scene_camera_place(e->rt_cam, e->camera.position, e->camera.direction);
 
     /* Rebuild scene */
-    rt_scene_clear(e->scene);
+    scene_clear(e->scene);
 
     /* Lighting from map */
     if (e->map_set) {
-        rt_scene_set_ambient(e->scene, e->map.ambient);
-        rt_scene_add_light(e->scene, (rt_light){
+        scene_set_ambient(e->scene, e->map.ambient);
+        scene_add_light(e->scene, (scene_light){
             .direction = e->map.light_dir,
             .intensity = e->map.light_intensity
         });
@@ -878,8 +878,8 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
            world-Y at the hit point, giving a fixed horizon→zenith band
            regardless of where the camera flies. */
         if (e->map.sky_radius > 0.0f) {
-            int sky_mat = rt_scene_add_material(e->scene, e->map.sky_material);
-            rt_scene_add_sphere(e->scene, (rt_sphere){
+            int sky_mat = scene_add_material(e->scene, e->map.sky_material);
+            scene_add_sphere(e->scene, (scene_sphere){
                 .center = e->camera.position,
                 .radius = e->map.sky_radius,
                 .material = sky_mat,
@@ -891,10 +891,10 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
            so the heightfield shader can modulate the per-cell colors. */
         if (e->map.heights) {
             int terrain_mat = -1;
-            const rt_material *tm = &e->map.terrain_material;
-            if (tm->tex_kind != RT_TEX_NONE || tm->reflectivity > 0.0f)
-                terrain_mat = rt_scene_add_material(e->scene, *tm);
-            rt_heightfield hf = {
+            const scene_material *tm = &e->map.terrain_material;
+            if (tm->tex_kind != SCENE_TEX_NONE || tm->reflectivity > 0.0f)
+                terrain_mat = scene_add_material(e->scene, *tm);
+            scene_heightfield hf = {
                 .heights = e->map.heights,
                 .colors = e->map.colors,
                 .normals = e->map.normals,
@@ -907,7 +907,7 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
                 .max_height = e->map.max_height,
                 .material = terrain_mat,
             };
-            rt_scene_add_heightfield(e->scene, &hf);
+            scene_add_heightfield(e->scene, &hf);
         }
     }
 
@@ -921,7 +921,7 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
             continue;
         if (e->visuals[i].desc.kind == BF_VIS_SPRITE) sprite_entity_count++;
     }
-    rt_frame (*all_frames)[MAX_ANGLES] = malloc(
+    scene_frame (*all_frames)[MAX_ANGLES] = malloc(
         (sprite_entity_count > 0 ? sprite_entity_count : 1) * sizeof(*all_frames));
     if (!all_frames) return;
 
@@ -942,7 +942,7 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
             float spr_h = e->sprites[sheet_id].height;
             vector spr_pos = pos;
             spr_pos.y += spr_h * 0.5f;
-            rt_scene_add_sprite(e->scene, (rt_sprite){
+            scene_add_sprite(e->scene, (scene_sprite){
                 .position = spr_pos,
                 .direction = e->positions[i].direction,
                 .width = e->sprites[sheet_id].width,
@@ -954,10 +954,10 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
             break;
         }
         case BF_VIS_SPHERE: {
-            int mat_id = rt_scene_add_material(e->scene, vis->desc.sphere.material);
+            int mat_id = scene_add_material(e->scene, vis->desc.sphere.material);
             vector center = pos;
             center.y += vis->desc.sphere.radius;   /* rest on terrain */
-            rt_scene_add_sphere(e->scene, (rt_sphere){
+            scene_add_sphere(e->scene, (scene_sphere){
                 .center = center,
                 .radius = vis->desc.sphere.radius,
                 .material = mat_id,
@@ -984,7 +984,7 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
 
     /* Construct ray matching the raytracer's projection */
     vector origin, forward, right, up;
-    rt_camera_get_basis(e->rt_cam, &origin, &forward, &right, &up);
+    scene_camera_get_basis(e->rt_cam, &origin, &forward, &right, &up);
 
     float half_w = (float)e->config.render_width * 0.5f;
     float half_h = (float)e->config.render_height * 0.5f;
@@ -1014,11 +1014,11 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
 
         switch (vis->desc.kind) {
         case BF_VIS_SPRITE: {
-            rt_frame frames[MAX_ANGLES];
+            scene_frame frames[MAX_ANGLES];
             slice_sheet *sheet = build_sprite_frames(e, i, frames);
             if (!sheet) break;
             int sheet_id = vis->desc.sprite.sheet_id;
-            rt_sprite spr = {
+            scene_sprite spr = {
                 .position = e->positions[i].position,
                 .direction = e->positions[i].direction,
                 .width = e->sprites[sheet_id].width,
@@ -1032,7 +1032,7 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
         case BF_VIS_SPHERE: {
             vector center = e->positions[i].position;
             center.y += vis->desc.sphere.radius;
-            rt_sphere s = {
+            scene_sphere s = {
                 .center = center,
                 .radius = vis->desc.sphere.radius,
                 .material = 0,  /* unused for intersection */
@@ -1063,7 +1063,7 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
     /* Test heightfield terrain — intersection only, no shading, so the
        material field is irrelevant here. */
     if (e->map_set && e->map.heights) {
-        rt_heightfield hf = {
+        scene_heightfield hf = {
             .heights = e->map.heights,
             .colors = e->map.colors,
             .normals = e->map.normals,

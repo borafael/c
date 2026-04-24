@@ -5,7 +5,6 @@
 #include "renderer.h"
 #include "viewport.h"
 #include "scene.h"
-#include "camera.h"
 #include "sphere.h"
 #include <SDL2/SDL.h>
 
@@ -26,11 +25,11 @@
 
 /* ---- Scene knobs — tweak to taste -------------------------------------- */
 
-/* Inner (textured) sphere. Pick any RT_TEX_* from material.h: NOISE,
+/* Inner (textured) sphere. Pick any SCENE_TEX_* from material.h: NOISE,
  * MARBLE, WOOD, CELLS, CRACKS, SPOTS, CLOUDS all look interesting on
  * a ball. tex_scale controls feature size (world units per feature). */
 #define INNER_RADIUS        1.4f
-#define INNER_TEX_KIND      RT_TEX_NONE
+#define INNER_TEX_KIND      SCENE_TEX_NONE
 #define INNER_TEX_SCALE     0.35f
 #define INNER_ALBEDO_A      {40,  90, 180}
 #define INNER_ALBEDO_B      {230, 220, 180}
@@ -39,11 +38,11 @@
 /* Outer (mirror) sphere. Almost-black albedo + reflectivity 1.0 gives
  * the cleanest hall-of-reflections look; raise the albedo to tint the
  * room, lower the reflectivity to wash it out. Set OUTER_TEX_KIND to
- * any RT_TEX_* (same options as the inner sphere) to pattern the
+ * any SCENE_TEX_* (same options as the inner sphere) to pattern the
  * mirror — with full reflectivity the pattern is barely visible, so
  * drop OUTER_REFLECTIVITY (e.g. 0.6) to let the texture show through. */
 #define OUTER_RADIUS        7.0f
-#define OUTER_TEX_KIND      RT_TEX_CELLS
+#define OUTER_TEX_KIND      SCENE_TEX_CELLS
 #define OUTER_TEX_SCALE     1.0f
 #define OUTER_ALBEDO_A      {250,  8,  12}
 #define OUTER_ALBEDO_B      {40, 40, 60}
@@ -56,17 +55,17 @@
 
 /* ------------------------------------------------------------------------ */
 
-static void build_scene(rt_scene **scene_out, rt_camera **camera_out) {
-    rt_scene *scene = rt_scene_create();
+static void build_scene(scene **scene_out, scene_camera **camera_out) {
+    scene *scene = scene_create();
 
-    int m_inner = rt_scene_add_material(scene, (rt_material){
+    int m_inner = scene_add_material(scene, (scene_material){
         .albedo       = INNER_ALBEDO_A,
         .albedo2      = INNER_ALBEDO_B,
         .tex_kind     = INNER_TEX_KIND,
         .tex_scale    = INNER_TEX_SCALE,
         .reflectivity = INNER_REFLECTIVITY,
     });
-    int m_outer = rt_scene_add_material(scene, (rt_material){
+    int m_outer = scene_add_material(scene, (scene_material){
         .albedo       = OUTER_ALBEDO_A,
         .albedo2      = OUTER_ALBEDO_B,
         .tex_kind     = OUTER_TEX_KIND,
@@ -74,29 +73,29 @@ static void build_scene(rt_scene **scene_out, rt_camera **camera_out) {
         .reflectivity = OUTER_REFLECTIVITY,
     });
 
-    rt_scene_add_sphere(scene, (rt_sphere){
+    scene_add_sphere(scene, (scene_sphere){
         .center   = {0.0f, 0.0f, 0.0f},
         .radius   = INNER_RADIUS,
         .material = m_inner,
     });
-    rt_scene_add_sphere(scene, (rt_sphere){
+    scene_add_sphere(scene, (scene_sphere){
         .center   = {0.0f, 0.0f, 0.0f},
         .radius   = OUTER_RADIUS,
         .material = m_outer,
     });
 
-    rt_scene_set_ambient(scene, 0.25f);
-    rt_scene_add_light(scene, (rt_light){
+    scene_set_ambient(scene, 0.25f);
+    scene_add_light(scene, (scene_light){
         .direction = {0.4f, 0.9f, 0.3f},
         .intensity = 0.8f,
     });
-    rt_scene_add_light(scene, (rt_light){
+    scene_add_light(scene, (scene_light){
         .direction = {-0.6f, 0.3f, -0.5f},
         .intensity = 0.4f,
     });
 
     *scene_out = scene;
-    *camera_out = rt_camera_create(
+    *camera_out = scene_camera_create(
         (vector){ORBIT_RADIUS, 0.5f, 0.0f},
         (vector){-1.0f, 0.0f, 0.0f}
     );
@@ -184,8 +183,8 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Active: %s (TAB to toggle, SPACE auto-orbit, WASD/arrows manual)\n",
             rt_renderer_name(active));
 
-    rt_scene *scene;
-    rt_camera *camera;
+    scene *scene;
+    scene_camera *camera;
     build_scene(&scene, &camera);
 
     int render_scale = 1;
@@ -316,7 +315,7 @@ int main(int argc, char *argv[]) {
         }
 
         vector cam_dir = cam_dir_from_yaw_pitch(cam_yaw, cam_pitch);
-        rt_camera_place(camera, cam_pos, cam_dir);
+        scene_camera_place(camera, cam_pos, cam_dir);
 
         Uint32 r_start = SDL_GetTicks();
         rt_renderer_render(active, scene, camera, &viewport, pixels);
@@ -348,8 +347,8 @@ int main(int argc, char *argv[]) {
     if (cpu_rnd) rt_renderer_destroy(cpu_rnd);
     if (gpu_rnd) rt_renderer_destroy(gpu_rnd);
     free(pixels);
-    rt_camera_destroy(camera);
-    rt_scene_destroy(scene);
+    scene_camera_destroy(camera);
+    scene_destroy(scene);
     SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);
     SDL_Quit();

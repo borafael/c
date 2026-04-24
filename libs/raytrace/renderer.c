@@ -35,8 +35,8 @@ void rt_renderer_destroy(rt_renderer *r) {
 }
 
 void rt_renderer_render(rt_renderer *r,
-                        const rt_scene *scene,
-                        const rt_camera *camera,
+                        const scene *scene,
+                        const scene_camera *camera,
                         const rt_viewport *viewport,
                         uint32_t *pixels) {
     r->render_fn(r, scene, camera, viewport, pixels);

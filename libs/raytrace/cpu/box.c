@@ -2,7 +2,7 @@
 #include <math.h>
 #include <float.h>
 
-float rt_intersect_box(vector ro, vector rd, const rt_box *box) {
+float rt_intersect_box(vector ro, vector rd, const scene_box *box) {
     float tmin = -FLT_MAX;
     float tmax = FLT_MAX;
 
@@ -45,7 +45,7 @@ float rt_intersect_box(vector ro, vector rd, const rt_box *box) {
     return -1.0f;
 }
 
-vector rt_normal_box(vector hp, const rt_box *box) {
+vector rt_normal_box(vector hp, const scene_box *box) {
     float eps = 1e-4f;
     if (fabsf(hp.x - box->min.x) < eps) return (vector){-1, 0, 0};
     if (fabsf(hp.x - box->max.x) < eps) return (vector){ 1, 0, 0};

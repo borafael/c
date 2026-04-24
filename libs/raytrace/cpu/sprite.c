@@ -2,7 +2,7 @@
 #define _USE_MATH_DEFINES
 #include <math.h>
 
-float rt_intersect_sprite(vector ro, vector rd, const rt_sprite *spr,
+float rt_intersect_sprite(vector ro, vector rd, const scene_sprite *spr,
                            vector cam_origin, vector *out_right,
                            vector *out_up, vector *out_normal) {
     /* Billboard normal: from sprite toward camera */
@@ -42,7 +42,7 @@ float rt_intersect_sprite(vector ro, vector rd, const rt_sprite *spr,
     return t;
 }
 
-int rt_sprite_select_frame(const rt_sprite *spr, vector cam_origin) {
+int rt_sprite_select_frame(const scene_sprite *spr, vector cam_origin) {
     if (spr->frame_count <= 1) return 0;
 
     vector to_cam = vector_sub(cam_origin, spr->position);
@@ -58,7 +58,7 @@ int rt_sprite_select_frame(const rt_sprite *spr, vector cam_origin) {
     return index;
 }
 
-uint32_t rt_sprite_sample(const rt_sprite *spr, const rt_frame *frame,
+uint32_t rt_sprite_sample(const scene_sprite *spr, const scene_frame *frame,
                             vector hp, vector right, vector up) {
     vector diff = vector_sub(hp, spr->position);
     float local_x = vector_dot(diff, right);
@@ -78,7 +78,7 @@ uint32_t rt_sprite_sample(const rt_sprite *spr, const rt_frame *frame,
 }
 
 float rt_pick_sprite(vector ray_origin, vector ray_dir,
-                     const rt_sprite *sprite, vector camera_origin,
+                     const scene_sprite *sprite, vector camera_origin,
                      vector *hit_point) {
     vector spr_right, spr_up, spr_normal;
     float t = rt_intersect_sprite(ray_origin, ray_dir, sprite, camera_origin,
@@ -87,7 +87,7 @@ float rt_pick_sprite(vector ray_origin, vector ray_dir,
 
     vector hp = vector_add(ray_origin, vector_scale(ray_dir, t));
     int frame_idx = rt_sprite_select_frame(sprite, camera_origin);
-    const rt_frame *frame = &sprite->frames[frame_idx];
+    const scene_frame *frame = &sprite->frames[frame_idx];
     uint32_t pixel = rt_sprite_sample(sprite, frame, hp, spr_right, spr_up);
     uint8_t alpha = (pixel >> 24) & 0xFF;
     if (alpha == 0) return -1.0f;
