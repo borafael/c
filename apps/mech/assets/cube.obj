@@ -1,0 +1,24 @@
+# Unit cube centered on origin (size 1, from -0.5 to 0.5).
+# Six quad faces, winding chosen so face normals point outward.
+
+v -0.5 -0.5 -0.5
+v  0.5 -0.5 -0.5
+v  0.5  0.5 -0.5
+v -0.5  0.5 -0.5
+v -0.5 -0.5  0.5
+v  0.5 -0.5  0.5
+v  0.5  0.5  0.5
+v -0.5  0.5  0.5
+
+# -Z (back)
+f 1 4 3 2
+# +Z (front)
+f 5 6 7 8
+# -X (left)
+f 1 5 8 4
+# +X (right)
+f 2 3 7 6
+# -Y (bottom)
+f 1 2 6 5
+# +Y (top)
+f 4 8 7 3

@@ -1,5 +1,6 @@
 #include "scene.h"
 #include <stdlib.h>
+#include <math.h>
 
 #define SCENE_DEFAULT_CAPACITY 64
 
@@ -251,6 +252,35 @@ int scene_add_mesh(scene *s, scene_mesh mesh) {
     int idx = s->mesh_count;
     s->meshes[s->mesh_count++] = mesh;
     return idx;
+}
+
+void scene_mesh_compute_bounds(scene_mesh *mesh) {
+    if (!mesh || mesh->vertex_count <= 0 || !mesh->vertices) {
+        if (mesh) {
+            mesh->bounds_center = (vector){0, 0, 0};
+            mesh->bounds_radius = 0.0f;
+        }
+        return;
+    }
+    double cx = 0, cy = 0, cz = 0;
+    for (int i = 0; i < mesh->vertex_count; i++) {
+        cx += mesh->vertices[i].position.x;
+        cy += mesh->vertices[i].position.y;
+        cz += mesh->vertices[i].position.z;
+    }
+    float inv = 1.0f / (float)mesh->vertex_count;
+    mesh->bounds_center = (vector){
+        (float)cx * inv, (float)cy * inv, (float)cz * inv
+    };
+    float max_r2 = 0.0f;
+    for (int i = 0; i < mesh->vertex_count; i++) {
+        float dx = mesh->vertices[i].position.x - mesh->bounds_center.x;
+        float dy = mesh->vertices[i].position.y - mesh->bounds_center.y;
+        float dz = mesh->vertices[i].position.z - mesh->bounds_center.z;
+        float d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 > max_r2) max_r2 = d2;
+    }
+    mesh->bounds_radius = sqrtf(max_r2);
 }
 
 int scene_add_node(scene *s, scene_node node) {

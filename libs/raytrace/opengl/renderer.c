@@ -1051,15 +1051,56 @@ static void upload_cylinders(opengl_backend_data *d, const scene *s) {
 }
 
 static void upload_triangles(opengl_backend_data *d, const scene *s) {
-    int n = s->triangle_count;
+    /* Explicit triangles + mesh triangles share the same SSBO. The GPU
+     * shader is mesh-oblivious: it just loops a flat triangle array.
+     * Per-vertex normals are discarded here — the shader computes face
+     * normals, so meshes render flat-shaded on the GPU (fine for
+     * low-poly / retro looks; matches the existing triangle path). */
+    int mesh_tri_total = 0;
+    for (int i = 0; i < s->mesh_count; i++) {
+        if (s->meshes[i].index_count >= 3) {
+            mesh_tri_total += s->meshes[i].index_count / 3;
+        }
+    }
+    int n = s->triangle_count + mesh_tri_total;
+
     gpu_triangle *buf = NULL;
     if (n > 0) {
         buf = malloc(sizeof(gpu_triangle) * (size_t)n);
-        for (int i = 0; i < n; i++) {
-            set_vec4(buf[i].v0, s->triangles[i].v0.x, s->triangles[i].v0.y, s->triangles[i].v0.z, 0.0f);
-            set_vec4(buf[i].v1, s->triangles[i].v1.x, s->triangles[i].v1.y, s->triangles[i].v1.z, 0.0f);
-            set_vec4(buf[i].v2, s->triangles[i].v2.x, s->triangles[i].v2.y, s->triangles[i].v2.z, 0.0f);
-            set_mat_ivec4(buf[i].mat, s->triangles[i].material);
+        int w = 0;
+        for (int i = 0; i < s->triangle_count; i++, w++) {
+            set_vec4(buf[w].v0, s->triangles[i].v0.x, s->triangles[i].v0.y, s->triangles[i].v0.z, 0.0f);
+            set_vec4(buf[w].v1, s->triangles[i].v1.x, s->triangles[i].v1.y, s->triangles[i].v1.z, 0.0f);
+            set_vec4(buf[w].v2, s->triangles[i].v2.x, s->triangles[i].v2.y, s->triangles[i].v2.z, 0.0f);
+            set_mat_ivec4(buf[w].mat, s->triangles[i].material);
+        }
+        for (int i = 0; i < s->mesh_count; i++) {
+            const scene_mesh *m = &s->meshes[i];
+            if (m->index_count < 3 || !m->indices || !m->vertices) continue;
+            int tri_count = m->index_count / 3;
+            for (int t = 0; t < tri_count; t++, w++) {
+                uint32_t i0 = m->indices[t * 3 + 0];
+                uint32_t i1 = m->indices[t * 3 + 1];
+                uint32_t i2 = m->indices[t * 3 + 2];
+                if ((int)i0 >= m->vertex_count ||
+                    (int)i1 >= m->vertex_count ||
+                    (int)i2 >= m->vertex_count) {
+                    /* Skip malformed triangle; zero it out so the shader's
+                     * degenerate-det test rejects it. */
+                    set_vec4(buf[w].v0, 0, 0, 0, 0);
+                    set_vec4(buf[w].v1, 0, 0, 0, 0);
+                    set_vec4(buf[w].v2, 0, 0, 0, 0);
+                    set_mat_ivec4(buf[w].mat, 0);
+                    continue;
+                }
+                vector p0 = m->vertices[i0].position;
+                vector p1 = m->vertices[i1].position;
+                vector p2 = m->vertices[i2].position;
+                set_vec4(buf[w].v0, p0.x, p0.y, p0.z, 0.0f);
+                set_vec4(buf[w].v1, p1.x, p1.y, p1.z, 0.0f);
+                set_vec4(buf[w].v2, p2.x, p2.y, p2.z, 0.0f);
+                set_mat_ivec4(buf[w].mat, m->material_index);
+            }
         }
     }
     upload_ssbo(d->ssbo[5], 5, buf, sizeof(gpu_triangle), n);
@@ -1376,7 +1417,15 @@ static void opengl_render(rt_renderer *r,
     glUniform1i(d->u_plane_count,       scene->plane_count);
     glUniform1i(d->u_disc_count,        scene->disc_count);
     glUniform1i(d->u_cylinder_count,    scene->cylinder_count);
-    glUniform1i(d->u_triangle_count,    scene->triangle_count);
+    /* Triangle SSBO holds explicit triangles followed by expanded mesh
+     * triangles — the count uniform must cover both. */
+    int mesh_tris = 0;
+    for (int mi = 0; mi < scene->mesh_count; mi++) {
+        if (scene->meshes[mi].index_count >= 3) {
+            mesh_tris += scene->meshes[mi].index_count / 3;
+        }
+    }
+    glUniform1i(d->u_triangle_count,    scene->triangle_count + mesh_tris);
     glUniform1i(d->u_box_count,         scene->box_count);
     glUniform1i(d->u_sprite_count,      scene->sprite_count);
     glUniform1i(d->u_heightfield_count, scene->heightfield_count);

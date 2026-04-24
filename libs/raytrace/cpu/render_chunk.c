@@ -7,6 +7,7 @@
 #include "box.h"
 #include "sprite.h"
 #include "heightfield.h"
+#include "mesh.h"
 #include <math.h>
 #include <float.h>
 
@@ -383,6 +384,30 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
             h.hit = 1;
+        }
+    }
+
+    for (int i = 0; i < scene->mesh_count; i++) {
+        rt_mesh_hit mh;
+        if (rt_intersect_mesh(ro, rd, &scene->meshes[i], &mh)) {
+            if (mh.t > 0.0f && mh.t < closest_t) {
+                closest_t = mh.t;
+                vector hp = vector_add(ro, vector_scale(rd, mh.t));
+                h.point = hp;
+                h.normal = mh.normal;
+                int mat_idx = scene->meshes[i].material_index;
+                if (mat_idx < 0 || mat_idx >= scene->material_count) {
+                    h.albedo = (scene_color){200, 200, 200};
+                    h.reflectivity = 0.0f;
+                    h.unlit = 0;
+                } else {
+                    const scene_material *m = &scene->materials[mat_idx];
+                    h.albedo = material_sample(m, scene->textures, hp, mh.u, mh.v);
+                    h.reflectivity = m->reflectivity;
+                    h.unlit = m->unlit;
+                }
+                h.hit = 1;
+            }
         }
     }
 

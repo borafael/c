@@ -94,6 +94,11 @@ apps/barrier/barrier
 apps/rtdemo/rtdemo
 apps/mirrors/mirrors
 apps/orb/orb
+apps/mech/mech
+
+# Mesh assets are Wavefront OBJ (text geometry), not compiled object files
+# — exempt from the global *.obj ignore.
+!apps/mech/assets/*.obj
 
 # --- Test binaries and results ---
 libs/math/tests/check_vector

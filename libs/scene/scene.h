@@ -160,7 +160,17 @@ typedef struct {
     uint32_t     *indices;        /* 3 per triangle */
     int           index_count;
     int           material_index;
+    /* Bounding sphere for O(1) ray-mesh reject. Populated by the OBJ
+     * loader; call scene_mesh_compute_bounds after any post-load vertex
+     * transformation to keep them in sync. A radius of 0 means "no
+     * bounds known" and renderers must iterate all triangles. */
+    vector        bounds_center;
+    float         bounds_radius;
 } scene_mesh;
+
+/* Recompute bounds_center / bounds_radius from the current vertex positions.
+ * Safe to call on an empty mesh (sets radius = 0). */
+void scene_mesh_compute_bounds(scene_mesh *mesh);
 
 /* ============================== Lights =================================== */
 typedef struct {
