@@ -129,6 +129,9 @@ static void free_owned_mesh_buffers(scene *s) {
     for (int i = 0; i < s->mesh_count; i++) {
         free(s->meshes[i].vertices);
         free(s->meshes[i].indices);
+        free(s->meshes[i].accel);
+        s->meshes[i].accel = NULL;
+        s->meshes[i].accel_count = 0;
     }
 }
 

@@ -166,6 +166,13 @@ typedef struct {
      * bounds known" and renderers must iterate all triangles. */
     vector        bounds_center;
     float         bounds_radius;
+    /* Opaque renderer-built acceleration cache (BVH on CPU). Owned by
+     * the scene — freed by scene_destroy / scene_clear. Renderers are
+     * responsible for building + interpreting the bytes; scene code just
+     * allocates and frees. accel == NULL means "no accel, fall back to
+     * linear triangle scan." */
+    void         *accel;
+    int           accel_count;    /* renderer-defined units (e.g. BVH nodes) */
 } scene_mesh;
 
 /* Recompute bounds_center / bounds_radius from the current vertex positions.

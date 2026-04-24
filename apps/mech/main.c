@@ -23,6 +23,7 @@
 #include "scene.h"
 #include "obj.h"
 #include "ini.h"
+#include "mesh.h"   /* rt_scene_build_accel */
 
 #include <SDL2/SDL.h>
 
@@ -357,6 +358,10 @@ static int load_scene_from_ini(const char *ini_path,
     if (s->light_count == 0) {
         scene_add_light(s, (scene_light){ .direction = {0.3f, 0.9f, 0.3f}, .intensity = 0.8f });
     }
+
+    /* Build per-mesh BVHs after all transforms are baked. The CPU
+     * ray-mesh test uses these; linear scan stays the fallback. */
+    rt_scene_build_accel(s);
 
     vector forward = vector_normalize(vector_sub(cam_target, cam_pos));
     *scene_out  = s;

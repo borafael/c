@@ -26,4 +26,12 @@ typedef struct {
 int rt_intersect_mesh(vector ro, vector rd, const scene_mesh *mesh,
                       rt_mesh_hit *out);
 
+/* Build or rebuild the CPU BVH for `mesh`. Call after any vertex-position
+ * mutation (load, transform bake). Frees any prior accel cache. May
+ * reorder mesh->indices. Safe to call on an empty mesh. */
+void rt_mesh_build_bvh(scene_mesh *mesh);
+
+/* Convenience: rt_mesh_build_bvh on every mesh in the scene. */
+void rt_scene_build_accel(scene *s);
+
 #endif /* RT_MESH_H */
