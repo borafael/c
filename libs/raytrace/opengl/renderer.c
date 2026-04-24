@@ -13,6 +13,8 @@
 #include "box.h"
 #include "sprite.h"
 #include "heightfield.h"
+#include "mesh.h"
+#include "cpu/bvh.h"   /* rt_bvh_node — shared BVH node format across backends */
 
 #define GL_GLEXT_PROTOTYPES 1
 #include <GL/gl.h>
@@ -44,6 +46,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "uniform int   u_sprite_count;\n"
 "uniform int   u_heightfield_count;\n"
 "uniform int   u_light_count;\n"
+"uniform int   u_mesh_count;\n"
 "\n"
 "struct Sphere   { vec4 center_radius; ivec4 mat; };\n"
 "struct Plane    { vec4 point; vec4 normal; ivec4 mat; };\n"
@@ -53,6 +56,19 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "struct Box      { vec4 minp; vec4 maxp; ivec4 mat; };\n"
 "struct Sprite   { vec4 position_w; vec4 direction_h; ivec4 frame_info; };\n"
 "struct Light    { vec4 direction_intensity; };\n"
+"/* Per-mesh descriptor for BVH traversal. The triangle SSBO layout is:\n"
+" * [0 .. u_triangle_count)       explicit scene triangles (no BVH)\n"
+" * [u_triangle_count .. end)     per-mesh triangles, mesh.tri_start points at\n"
+" *                               each mesh's run. Leaf tri_start is LOCAL to\n"
+" *                               the mesh (absolute index = mesh.tri_start +\n"
+" *                               leaf.tri_start + k). */\n"
+"struct Mesh     { vec4 bounds;  ivec4 info; };   /* bounds: xyz center, w radius.\n"
+"                                                    info: (bvh_start, bvh_count,\n"
+"                                                           tri_start, tri_count) */\n"
+"struct BvhNode  { vec4 aabb_min; vec4 aabb_max; ivec4 info; };\n"
+"                                                /* info: (tri_start_local,\n"
+"                                                          tri_count,\n"
+"                                                          second_child_offset, _) */\n"
 "struct Material {\n"
 "    vec4  albedo;   /* tile A / base color */\n"
 "    vec4  albedo2;  /* tile B (checker) */\n"
@@ -80,6 +96,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "layout(std430, binding = 12) readonly buffer HfColors    { uint  hf_colors[];     };\n"
 "layout(std430, binding = 13) readonly buffer MatBuf      { Material materials[];  };\n"
 "layout(std430, binding = 14) readonly buffer TexBuf      { Texture  textures[];   };\n"
+"layout(std430, binding = 15) readonly buffer MeshBuf     { Mesh     meshes[];     };\n"
+"layout(std430, binding = 16) readonly buffer BvhBuf      { BvhNode  bvh_nodes[];  };\n"
 "\n"
 "/* Sampler for sprite frames: all frames packed into one texture array */\n"
 "uniform sampler2DArray u_sprite_atlas;\n"
@@ -718,6 +736,87 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            h.hit = true;\n"
 "        }\n"
 "    }\n"
+"    /* --- Mesh triangles via per-mesh BVH ------------------------------- */\n"
+"    if (u_mesh_count > 0) {\n"
+"        vec3 inv_rd;\n"
+"        inv_rd.x = (abs(rd.x) > 1e-20) ? 1.0 / rd.x : (rd.x >= 0.0 ? 1e30 : -1e30);\n"
+"        inv_rd.y = (abs(rd.y) > 1e-20) ? 1.0 / rd.y : (rd.y >= 0.0 ? 1e30 : -1e30);\n"
+"        inv_rd.z = (abs(rd.z) > 1e-20) ? 1.0 / rd.z : (rd.z >= 0.0 ? 1e30 : -1e30);\n"
+"        for (int mi = 0; mi < u_mesh_count; mi++) {\n"
+"            Mesh mesh = meshes[mi];\n"
+"            /* Bounding-sphere outer reject (skip if radius <= 0). */\n"
+"            if (mesh.bounds.w > 0.0) {\n"
+"                vec3 oc = ro - mesh.bounds.xyz;\n"
+"                float b = dot(oc, rd);\n"
+"                float cs = dot(oc, oc) - mesh.bounds.w * mesh.bounds.w;\n"
+"                if (cs > 0.0 && b > 0.0) continue;\n"
+"                if (b * b - cs < 0.0) continue;\n"
+"            }\n"
+"            int bvh_base  = mesh.info.x;\n"
+"            int bvh_count = mesh.info.y;\n"
+"            int tri_base  = mesh.info.z;\n"
+"            int tri_count = mesh.info.w;\n"
+"            if (bvh_count <= 0) {\n"
+"                /* No BVH — linear scan this mesh's triangle range. */\n"
+"                int end = tri_base + tri_count;\n"
+"                for (int ti = tri_base; ti < end; ti++) {\n"
+"                    float t = isect_triangle(ro, rd, triangles[ti]);\n"
+"                    if (t > 0.0 && t < closest_t) {\n"
+"                        closest_t = t;\n"
+"                        vec3 hp = ro + rd * t;\n"
+"                        h.point  = hp;\n"
+"                        h.normal = normal_triangle(triangles[ti]);\n"
+"                        vec2 uv  = uv_planar(hp, triangles[ti].v0.xyz, h.normal);\n"
+"                        int midx = triangles[ti].mat.x;\n"
+"                        h.albedo = material_sample(midx, hp, uv);\n"
+"                        h.reflectivity = materials[midx].scale.y;\n"
+"                        h.hit = true;\n"
+"                    }\n"
+"                }\n"
+"                continue;\n"
+"            }\n"
+"            int stack[32];\n"
+"            int sp = 0;\n"
+"            stack[sp++] = 0;\n"
+"            while (sp > 0) {\n"
+"                int idx = stack[--sp];\n"
+"                BvhNode node = bvh_nodes[bvh_base + idx];\n"
+"                vec3 t0 = (node.aabb_min.xyz - ro) * inv_rd;\n"
+"                vec3 t1 = (node.aabb_max.xyz - ro) * inv_rd;\n"
+"                vec3 tmin3 = min(t0, t1);\n"
+"                vec3 tmax3 = max(t0, t1);\n"
+"                float tmn = max(max(tmin3.x, tmin3.y), tmin3.z);\n"
+"                float tmx = min(min(tmax3.x, tmax3.y), tmax3.z);\n"
+"                if (tmx < 0.0 || tmn > tmx) continue;\n"
+"                float t_enter = max(tmn, 0.0);\n"
+"                if (t_enter > closest_t) continue;\n"
+"                int ncount = node.info.y;\n"
+"                if (ncount > 0) {\n"
+"                    int start = tri_base + node.info.x;\n"
+"                    int end   = start + ncount;\n"
+"                    for (int ti = start; ti < end; ti++) {\n"
+"                        float t = isect_triangle(ro, rd, triangles[ti]);\n"
+"                        if (t > 0.0 && t < closest_t) {\n"
+"                            closest_t = t;\n"
+"                            vec3 hp = ro + rd * t;\n"
+"                            h.point  = hp;\n"
+"                            h.normal = normal_triangle(triangles[ti]);\n"
+"                            vec2 uv  = uv_planar(hp, triangles[ti].v0.xyz, h.normal);\n"
+"                            int midx = triangles[ti].mat.x;\n"
+"                            h.albedo = material_sample(midx, hp, uv);\n"
+"                            h.reflectivity = materials[midx].scale.y;\n"
+"                            h.hit = true;\n"
+"                        }\n"
+"                    }\n"
+"                } else {\n"
+"                    if (sp + 2 <= 32) {\n"
+"                        stack[sp++] = idx + 1;\n"
+"                        stack[sp++] = idx + node.info.z;\n"
+"                    }\n"
+"                }\n"
+"            }\n"
+"        }\n"
+"    }\n"
 "    for (int i = 0; i < u_box_count; i++) {\n"
 "        vec3 hp;\n"
 "        float t = isect_box(ro, rd, boxes[i], hp);\n"
@@ -837,6 +936,17 @@ typedef struct {
     int32_t offsets[4];       /* heights_off, normals_off, colors_off, 0 */
 } gpu_heightfield;
 
+typedef struct {
+    float   bounds[4];        /* bounds_center.xyz, bounds_radius */
+    int32_t info[4];          /* bvh_start, bvh_count, tri_start (absolute), tri_count */
+} gpu_mesh;
+
+typedef struct {
+    float   aabb_min[4];
+    float   aabb_max[4];
+    int32_t info[4];          /* tri_start (local), tri_count, second_child_offset, 0 */
+} gpu_bvh_node;
+
 /* -- Backend state ---------------------------------------------------- */
 
 typedef struct {
@@ -845,12 +955,12 @@ typedef struct {
     int tex_w, tex_h;
 
     /* SSBOs */
-    GLuint ssbo[15];
+    GLuint ssbo[17];
     /* bindings:
      * [0] unused  [1] spheres  [2] planes  [3] discs  [4] cylinders
      * [5] triangles [6] boxes  [7] sprites [8] lights [9] heightfields
      * [10] hf heights [11] hf normals [12] hf colors [13] materials
-     * [14] textures (metadata) */
+     * [14] textures (metadata) [15] meshes [16] bvh nodes */
 
     /* Sprite texture atlas: one 2D texture array, all sprite frames */
     GLuint sprite_atlas;
@@ -865,7 +975,7 @@ typedef struct {
     GLint u_fov, u_ambient;
     GLint u_sphere_count, u_plane_count, u_disc_count, u_cylinder_count;
     GLint u_triangle_count, u_box_count, u_sprite_count;
-    GLint u_heightfield_count, u_light_count;
+    GLint u_heightfield_count, u_light_count, u_mesh_count;
     GLint u_sprite_atlas, u_tex_atlas;
 } opengl_backend_data;
 
@@ -938,6 +1048,7 @@ static void cache_uniform_locs(opengl_backend_data *d) {
     d->u_sprite_count       = glGetUniformLocation(d->program, "u_sprite_count");
     d->u_heightfield_count  = glGetUniformLocation(d->program, "u_heightfield_count");
     d->u_light_count        = glGetUniformLocation(d->program, "u_light_count");
+    d->u_mesh_count         = glGetUniformLocation(d->program, "u_mesh_count");
     d->u_sprite_atlas       = glGetUniformLocation(d->program, "u_sprite_atlas");
     d->u_tex_atlas          = glGetUniformLocation(d->program, "u_tex_atlas");
 }
@@ -1105,6 +1216,69 @@ static void upload_triangles(opengl_backend_data *d, const scene *s) {
     }
     upload_ssbo(d->ssbo[5], 5, buf, sizeof(gpu_triangle), n);
     free(buf);
+}
+
+/* Per-mesh BVH + descriptor upload. Assumes upload_triangles has the same
+ * per-mesh layout: explicit triangles [0..triangle_count), then each mesh's
+ * triangles concatenated in mesh iteration order. Mesh BVHs are built by
+ * the CPU (rt_scene_build_accel) and stored in mesh->accel — we just
+ * concatenate them into a single SSBO and record per-mesh offsets. */
+static void upload_meshes(opengl_backend_data *d, const scene *s) {
+    int n = s->mesh_count;
+
+    int bvh_total = 0;
+    for (int i = 0; i < n; i++) {
+        bvh_total += s->meshes[i].accel_count;
+    }
+
+    gpu_mesh     *meta  = NULL;
+    gpu_bvh_node *nodes = NULL;
+    if (n > 0) {
+        meta = malloc(sizeof(gpu_mesh) * (size_t)n);
+        if (bvh_total > 0) {
+            nodes = malloc(sizeof(gpu_bvh_node) * (size_t)bvh_total);
+        }
+        int tri_cursor = s->triangle_count;   /* mesh tris follow explicit tris */
+        int node_cursor = 0;
+        for (int i = 0; i < n; i++) {
+            const scene_mesh *m = &s->meshes[i];
+            int tri_count = (m->index_count >= 3) ? (m->index_count / 3) : 0;
+
+            meta[i].bounds[0] = m->bounds_center.x;
+            meta[i].bounds[1] = m->bounds_center.y;
+            meta[i].bounds[2] = m->bounds_center.z;
+            meta[i].bounds[3] = m->bounds_radius;
+            meta[i].info[0]   = node_cursor;
+            meta[i].info[1]   = m->accel_count;
+            meta[i].info[2]   = tri_cursor;
+            meta[i].info[3]   = tri_count;
+
+            if (m->accel && m->accel_count > 0) {
+                const rt_bvh_node *src = (const rt_bvh_node *)m->accel;
+                for (int k = 0; k < m->accel_count; k++) {
+                    gpu_bvh_node *dst = &nodes[node_cursor + k];
+                    dst->aabb_min[0] = src[k].aabb_min[0];
+                    dst->aabb_min[1] = src[k].aabb_min[1];
+                    dst->aabb_min[2] = src[k].aabb_min[2];
+                    dst->aabb_min[3] = 0.0f;
+                    dst->aabb_max[0] = src[k].aabb_max[0];
+                    dst->aabb_max[1] = src[k].aabb_max[1];
+                    dst->aabb_max[2] = src[k].aabb_max[2];
+                    dst->aabb_max[3] = 0.0f;
+                    dst->info[0] = src[k].tri_start;
+                    dst->info[1] = src[k].tri_count;
+                    dst->info[2] = src[k].second_child_offset;
+                    dst->info[3] = 0;
+                }
+                node_cursor += m->accel_count;
+            }
+            tri_cursor += tri_count;
+        }
+    }
+
+    upload_ssbo(d->ssbo[15], 15, meta,  sizeof(gpu_mesh),     n);
+    upload_ssbo(d->ssbo[16], 16, nodes, sizeof(gpu_bvh_node), bvh_total);
+    free(meta); free(nodes);
 }
 
 static void upload_boxes(opengl_backend_data *d, const scene *s) {
@@ -1370,7 +1544,7 @@ static void opengl_destroy(rt_renderer *r) {
         if (d->output_tex)   glDeleteTextures(1, &d->output_tex);
         if (d->sprite_atlas) glDeleteTextures(1, &d->sprite_atlas);
         if (d->tex_atlas)    glDeleteTextures(1, &d->tex_atlas);
-        for (int i = 0; i < 15; i++) {
+        for (int i = 0; i < 17; i++) {
             if (d->ssbo[i]) glDeleteBuffers(1, &d->ssbo[i]);
         }
         free(d);
@@ -1397,6 +1571,7 @@ static void opengl_render(rt_renderer *r,
     upload_discs(d, scene);
     upload_cylinders(d, scene);
     upload_triangles(d, scene);
+    upload_meshes(d, scene);        /* mesh descriptors + BVH nodes */
     upload_boxes(d, scene);
     upload_sprites(d, scene);       /* must run before sprite atlas bind */
     upload_lights(d, scene);
@@ -1417,15 +1592,11 @@ static void opengl_render(rt_renderer *r,
     glUniform1i(d->u_plane_count,       scene->plane_count);
     glUniform1i(d->u_disc_count,        scene->disc_count);
     glUniform1i(d->u_cylinder_count,    scene->cylinder_count);
-    /* Triangle SSBO holds explicit triangles followed by expanded mesh
-     * triangles — the count uniform must cover both. */
-    int mesh_tris = 0;
-    for (int mi = 0; mi < scene->mesh_count; mi++) {
-        if (scene->meshes[mi].index_count >= 3) {
-            mesh_tris += scene->meshes[mi].index_count / 3;
-        }
-    }
-    glUniform1i(d->u_triangle_count,    scene->triangle_count + mesh_tris);
+    /* The triangle SSBO still holds explicit + mesh triangles, but only
+     * explicit ones are scanned linearly here; mesh triangles are reached
+     * through the per-mesh BVH traversal below. */
+    glUniform1i(d->u_triangle_count,    scene->triangle_count);
+    glUniform1i(d->u_mesh_count,        scene->mesh_count);
     glUniform1i(d->u_box_count,         scene->box_count);
     glUniform1i(d->u_sprite_count,      scene->sprite_count);
     glUniform1i(d->u_heightfield_count, scene->heightfield_count);
@@ -1458,7 +1629,7 @@ rt_renderer *rt_opengl_renderer_create(void) {
     if (!d->program) { free(d); free(r); return NULL; }
 
     cache_uniform_locs(d);
-    glGenBuffers(15, d->ssbo);
+    glGenBuffers(17, d->ssbo);
 
     r->destroy_fn   = opengl_destroy;
     r->render_fn    = opengl_render;
