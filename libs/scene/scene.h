@@ -208,10 +208,55 @@ typedef struct {
 scene_transform scene_transform_identity(void);
 
 typedef struct {
+    char            name[64];     /* loader-provided identifier; "" if unset */
     scene_transform transform;    /* local, relative to parent */
     int             mesh_index;   /* into scene->meshes, or -1 */
     int             parent_index; /* into scene->nodes, or -1 for root */
 } scene_node;
+
+/* ============================== Animation ================================
+ *
+ * An animation is a bundle of per-node transform tracks sampled over time.
+ * Format-agnostic: populated today by the FBX loader, potentially glTF or
+ * hand-authored keyframes later. Purely data — sampling lives in
+ * scene_anim_sample, which writes into scene_node.transform. Renderers see
+ * only the resolved node transforms and remain animation-unaware.
+ *
+ * Each track targets one node and one of its 9 transform channels
+ * (pos.x/y/z, rot.x/y/z, scale.x/y/z). Keys are (time_seconds, value) with
+ * linear interpolation between them — sufficient for rigid animation;
+ * cubic curves can be added later without breaking callers.
+ *
+ * Ownership: keys arrays and tracks arrays are owned by the scene and
+ * freed by scene_destroy / scene_clear.
+ */
+typedef enum {
+    SCENE_ANIM_POS_X = 0, SCENE_ANIM_POS_Y, SCENE_ANIM_POS_Z,
+    SCENE_ANIM_ROT_X,     SCENE_ANIM_ROT_Y, SCENE_ANIM_ROT_Z,
+    SCENE_ANIM_SCL_X,     SCENE_ANIM_SCL_Y, SCENE_ANIM_SCL_Z,
+    SCENE_ANIM_CHANNEL_COUNT
+} scene_anim_channel;
+
+typedef struct {
+    float time;     /* seconds from clip start */
+    float value;
+} scene_anim_key;
+
+typedef struct {
+    int                 node_index;    /* into scene->nodes */
+    scene_anim_channel  channel;
+    scene_anim_key     *keys;          /* owned by the scene */
+    int                 key_count;
+} scene_anim_track;
+
+typedef struct {
+    char              name[64];        /* e.g. "Walk", "Idle" */
+    float             duration;        /* seconds; 0 = still pose */
+    scene_anim_track *tracks;          /* owned by the scene */
+    int               track_count;
+} scene_animation;
+
+/* scene_anim_sample is declared below, after the `scene` type. */
 
 /* ============================== Camera ===================================
  *
@@ -252,6 +297,7 @@ typedef struct {
     scene_texture     *textures;     int texture_count,     texture_capacity;
     scene_mesh        *meshes;       int mesh_count,        mesh_capacity;
     scene_node        *nodes;        int node_count,        node_capacity;
+    scene_animation   *animations;   int animation_count,   animation_capacity;
     float              ambient;
 } scene;
 
@@ -284,6 +330,23 @@ int scene_add_material(scene *s, scene_material material);
 int scene_add_texture(scene *s, scene_texture texture);
 int scene_add_mesh(scene *s, scene_mesh mesh);
 int scene_add_node(scene *s, scene_node node);
+
+/* Returns the index of the first node whose name matches `name`, or -1
+ * if none. Case-sensitive, exact match. Use after importing a rig to
+ * resolve incoming animation tracks from a separate FBX. */
+int scene_find_node_by_name(const scene *s, const char *name);
+
+/* Appends an animation. Takes ownership of `anim.tracks` (and each
+ * track's keys array) — freed by scene_destroy / scene_clear. */
+int scene_add_animation(scene *s, scene_animation anim);
+
+/* Sample `anim` at time `t` (seconds), writing into the local transforms
+ * of the nodes each track targets. If loop != 0, wraps via fmodf(t,
+ * duration); otherwise clamps to [0, duration]. Nodes and channels not
+ * covered by a track are left untouched — callers should seed node
+ * transforms to a neutral pose before sampling if desired. */
+void scene_anim_sample(scene *s, const scene_animation *anim,
+                       float t, int loop);
 
 void scene_set_ambient(scene *s, float ambient);
 

@@ -65,5 +65,6 @@ AC_CONFIG_FILES([
     apps/orb/Makefile
     apps/mech/Makefile
     apps/barrier/Makefile
+    apps/anim/Makefile
 ])
 AC_OUTPUT

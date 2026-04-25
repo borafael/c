@@ -1,5 +1,6 @@
 #include "scene.h"
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 
 #define SCENE_DEFAULT_CAPACITY 64
@@ -99,6 +100,7 @@ scene *scene_create(void) {
     s->texture_capacity      = SCENE_DEFAULT_CAPACITY;
     s->mesh_capacity         = SCENE_DEFAULT_CAPACITY;
     s->node_capacity         = SCENE_DEFAULT_CAPACITY;
+    s->animation_capacity    = SCENE_DEFAULT_CAPACITY;
     s->ambient               = 0.15f;
 
     s->spheres      = malloc(sizeof(scene_sphere)      * s->sphere_capacity);
@@ -114,11 +116,12 @@ scene *scene_create(void) {
     s->textures     = malloc(sizeof(scene_texture)     * s->texture_capacity);
     s->meshes       = malloc(sizeof(scene_mesh)        * s->mesh_capacity);
     s->nodes        = malloc(sizeof(scene_node)        * s->node_capacity);
+    s->animations   = malloc(sizeof(scene_animation)   * s->animation_capacity);
 
     if (!s->spheres || !s->planes || !s->discs || !s->cylinders ||
         !s->triangles || !s->boxes || !s->sprites || !s->heightfields ||
         !s->lights || !s->materials || !s->textures ||
-        !s->meshes || !s->nodes) {
+        !s->meshes || !s->nodes || !s->animations) {
         scene_destroy(s);
         return NULL;
     }
@@ -135,9 +138,22 @@ static void free_owned_mesh_buffers(scene *s) {
     }
 }
 
+static void free_owned_animation_buffers(scene *s) {
+    for (int i = 0; i < s->animation_count; i++) {
+        scene_animation *a = &s->animations[i];
+        for (int t = 0; t < a->track_count; t++) {
+            free(a->tracks[t].keys);
+        }
+        free(a->tracks);
+        a->tracks = NULL;
+        a->track_count = 0;
+    }
+}
+
 void scene_clear(scene *s) {
     if (!s) return;
     free_owned_mesh_buffers(s);
+    free_owned_animation_buffers(s);
     s->sphere_count      = 0;
     s->plane_count       = 0;
     s->disc_count        = 0;
@@ -151,11 +167,13 @@ void scene_clear(scene *s) {
     s->texture_count     = 0;
     s->mesh_count        = 0;
     s->node_count        = 0;
+    s->animation_count   = 0;
 }
 
 void scene_destroy(scene *s) {
     if (!s) return;
     free_owned_mesh_buffers(s);
+    free_owned_animation_buffers(s);
     free(s->spheres);
     free(s->planes);
     free(s->discs);
@@ -169,6 +187,7 @@ void scene_destroy(scene *s) {
     free(s->textures);
     free(s->meshes);
     free(s->nodes);
+    free(s->animations);
     free(s);
 }
 
@@ -291,6 +310,88 @@ int scene_add_node(scene *s, scene_node node) {
     int idx = s->node_count;
     s->nodes[s->node_count++] = node;
     return idx;
+}
+
+int scene_find_node_by_name(const scene *s, const char *name) {
+    if (!s || !name || !*name) return -1;
+    for (int i = 0; i < s->node_count; i++) {
+        if (strcmp(s->nodes[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+int scene_add_animation(scene *s, scene_animation anim) {
+    GROW_IF_NEEDED(s->animations, s->animation_count, s->animation_capacity,
+                   scene_animation);
+    int idx = s->animation_count;
+    s->animations[s->animation_count++] = anim;
+    return idx;
+}
+
+/* Binary search for the keyframe interval containing `t`. Returns the
+ * index of the left key; the right key is left+1. At the boundaries,
+ * returns 0 or key_count-1 (caller clamps). */
+static int anim_find_key(const scene_anim_key *keys, int count, float t) {
+    if (count <= 1) return 0;
+    if (t <= keys[0].time) return 0;
+    if (t >= keys[count - 1].time) return count - 1;
+    int lo = 0, hi = count - 1;
+    while (hi - lo > 1) {
+        int mid = (lo + hi) >> 1;
+        if (keys[mid].time <= t) lo = mid;
+        else                     hi = mid;
+    }
+    return lo;
+}
+
+static float anim_sample_track(const scene_anim_track *track, float t) {
+    if (track->key_count == 0) return 0.0f;
+    if (track->key_count == 1) return track->keys[0].value;
+    int i = anim_find_key(track->keys, track->key_count, t);
+    if (i >= track->key_count - 1) return track->keys[track->key_count - 1].value;
+    const scene_anim_key *a = &track->keys[i];
+    const scene_anim_key *b = &track->keys[i + 1];
+    float dt = b->time - a->time;
+    if (dt <= 0.0f) return a->value;
+    float u = (t - a->time) / dt;
+    if (u < 0.0f) u = 0.0f;
+    if (u > 1.0f) u = 1.0f;
+    return a->value + (b->value - a->value) * u;
+}
+
+static float *channel_slot(scene_transform *tr, scene_anim_channel ch) {
+    switch (ch) {
+    case SCENE_ANIM_POS_X: return &tr->position.x;
+    case SCENE_ANIM_POS_Y: return &tr->position.y;
+    case SCENE_ANIM_POS_Z: return &tr->position.z;
+    case SCENE_ANIM_ROT_X: return &tr->rotation.x;
+    case SCENE_ANIM_ROT_Y: return &tr->rotation.y;
+    case SCENE_ANIM_ROT_Z: return &tr->rotation.z;
+    case SCENE_ANIM_SCL_X: return &tr->scale.x;
+    case SCENE_ANIM_SCL_Y: return &tr->scale.y;
+    case SCENE_ANIM_SCL_Z: return &tr->scale.z;
+    default:               return NULL;
+    }
+}
+
+void scene_anim_sample(scene *s, const scene_animation *anim,
+                       float t, int loop) {
+    if (!s || !anim || anim->track_count <= 0) return;
+    float d = anim->duration;
+    if (loop && d > 0.0f) {
+        t = fmodf(t, d);
+        if (t < 0.0f) t += d;
+    } else {
+        if (t < 0.0f)  t = 0.0f;
+        if (t > d)     t = d;
+    }
+    for (int i = 0; i < anim->track_count; i++) {
+        const scene_anim_track *tr = &anim->tracks[i];
+        if (tr->node_index < 0 || tr->node_index >= s->node_count) continue;
+        float *slot = channel_slot(&s->nodes[tr->node_index].transform,
+                                   tr->channel);
+        if (slot) *slot = anim_sample_track(tr, t);
+    }
 }
 
 void scene_set_ambient(scene *s, float ambient) {

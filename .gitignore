@@ -95,6 +95,7 @@ apps/rtdemo/rtdemo
 apps/mirrors/mirrors
 apps/orb/orb
 apps/mech/mech
+apps/anim/anim
 
 # Mesh assets are Wavefront OBJ (text geometry), not compiled object files
 # — exempt from the global *.obj ignore.
@@ -104,11 +105,14 @@ apps/mech/mech
 libs/math/tests/check_vector
 libs/ini/tests/check_ini
 libs/physics/tests/check_physics
+libs/scene/tests/check_fbx
 *.trs
 
 # --- Build stamps ---
 libs/math/tests/.dirstamp
 libs/physics/tests/.dirstamp
+libs/scene/tests/.dirstamp
+libs/scene/vendor/ufbx/.dirstamp
 libs/raytrace/cpu/.dirstamp
 libs/raytrace/opengl/.dirstamp
 
