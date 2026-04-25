@@ -10,6 +10,7 @@
 #include "mesh.h"
 #include <math.h>
 #include <float.h>
+#include <stddef.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -298,6 +299,7 @@ typedef struct {
 } hit_info;
 
 static hit_info closest_hit(vector ro, vector rd, const scene *scene,
+                            const mat4 *mesh_world_inv,
                             vector camera_origin) {
     hit_info h = {0};
     float closest_t = FLT_MAX;
@@ -389,7 +391,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
 
     for (int i = 0; i < scene->mesh_count; i++) {
         rt_mesh_hit mh;
-        if (rt_intersect_mesh(ro, rd, &scene->meshes[i], &mh)) {
+        const mat4 *winv = mesh_world_inv ? &mesh_world_inv[i] : NULL;
+        if (rt_intersect_mesh(ro, rd, &scene->meshes[i], winv, &mh)) {
             if (mh.t > 0.0f && mh.t < closest_t) {
                 closest_t = mh.t;
                 vector hp = vector_add(ro, vector_scale(rd, mh.t));
@@ -494,7 +497,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
 
 void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
                      int y_start, int y_end,
-                     const scene_camera *camera, const scene *scene) {
+                     const scene_camera *camera, const scene *scene,
+                     const mat4 *mesh_world_inv) {
     int width = viewport->width;
     int height = viewport->height;
     float fov_factor = (float)height / (2.0f * tanf(viewport->fov / 2.0f));
@@ -520,7 +524,8 @@ void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
             vector rd = dir;
 
             for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {
-                hit_info h = closest_hit(ro, rd, scene, camera->origin);
+                hit_info h = closest_hit(ro, rd, scene, mesh_world_inv,
+                                         camera->origin);
                 if (!h.hit) break;
 
                 float shade;

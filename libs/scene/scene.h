@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "vector.h"
+#include "matrix.h"
 
 /* =========================================================================
  * libs/scene — renderer-agnostic scene representation.
@@ -347,6 +348,16 @@ int scene_add_animation(scene *s, scene_animation anim);
  * transforms to a neutral pose before sampling if desired. */
 void scene_anim_sample(scene *s, const scene_animation *anim,
                        float t, int loop);
+
+/* One forward sweep over scene->nodes, writing each node's world-space
+ * 4x4 transform (parent_world * T * R * S) into out_world[i]. Requires
+ * parents to precede children — true for nodes added by scene_add_fbx
+ * and any caller that follows the same convention.
+ *
+ * out_world must point at a buffer of at least s->node_count entries.
+ * Properly composes rotations as matrices, so chains rotating around
+ * mixed axes are exact (unlike summing Euler angles channel-wise). */
+void scene_resolve_world_transforms(const scene *s, mat4 *out_world);
 
 void scene_set_ambient(scene *s, float ambient);
 

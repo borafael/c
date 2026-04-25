@@ -20,9 +20,10 @@
  * (no deformation at joints; lossy).
  *
  * Euler convention: ufbx stores rotation as a quaternion; we convert to
- * Euler XYZ (radians) at load time. Near gimbal lock (pitch ±90°) baked
- * animation tracks may exhibit angle flipping — not a concern for the
- * typical rigid-limb case.
+ * Euler XYZ at load time, with ufbx's degrees rescaled to radians (the
+ * project-wide unit). Near gimbal lock (pitch ±90°) baked animation
+ * tracks may exhibit angle flipping — not a concern for the typical
+ * rigid-limb case.
  */
 
 typedef enum {

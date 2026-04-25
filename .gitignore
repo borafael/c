@@ -119,3 +119,9 @@ libs/raytrace/opengl/.dirstamp
 # --- Cross-compilation ---
 deps/
 build/
+
+# --- Downloaded test assets ---
+samples/
+
+# --- New test binaries ---
+libs/math/tests/check_matrix

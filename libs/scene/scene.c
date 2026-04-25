@@ -394,6 +394,21 @@ void scene_anim_sample(scene *s, const scene_animation *anim,
     }
 }
 
+void scene_resolve_world_transforms(const scene *s, mat4 *out_world) {
+    if (!s || !out_world) return;
+    for (int i = 0; i < s->node_count; i++) {
+        const scene_node *n = &s->nodes[i];
+        mat4 local = mat4_trs(n->transform.position,
+                              n->transform.rotation,
+                              n->transform.scale);
+        if (n->parent_index < 0) {
+            out_world[i] = local;
+        } else {
+            out_world[i] = mat4_mul(out_world[n->parent_index], local);
+        }
+    }
+}
+
 void scene_set_ambient(scene *s, float ambient) {
     s->ambient = ambient;
 }

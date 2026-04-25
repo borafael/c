@@ -105,24 +105,37 @@ static void bvh_traverse(vector ro, vector rd, const scene_mesh *mesh,
 }
 
 int rt_intersect_mesh(vector ro, vector rd, const scene_mesh *mesh,
-                      rt_mesh_hit *out) {
+                      const mat4 *world_inv, rt_mesh_hit *out) {
     if (!mesh || mesh->index_count < 3 || !mesh->indices || !mesh->vertices) {
         return 0;
+    }
+
+    /* Push the ray into mesh-local space if the caller provided the
+     * mesh's inverse world transform. BVH AABBs and triangle vertices
+     * stay in their stored space; only the ray moves. */
+    vector ro_local = ro, rd_local = rd;
+    if (world_inv) {
+        ro_local = mat4_transform_point(*world_inv, ro);
+        rd_local = mat4_transform_dir(*world_inv, rd);
     }
 
     /* Cheap outer bounding-sphere reject. Faster than an AABB slab test
      * and catches most obvious misses before we touch the BVH. */
     if (mesh->bounds_radius > 0.0f) {
-        vector oc = vector_sub(ro, mesh->bounds_center);
-        float b = vector_dot(oc, rd);
-        float c = vector_dot(oc, oc) - mesh->bounds_radius * mesh->bounds_radius;
+        vector oc = vector_sub(ro_local, mesh->bounds_center);
+        float b = vector_dot(oc, rd_local);
+        /* Compare against rd_local · rd_local times r² so a non-unit
+         * local rd (from a scaled inverse) still rejects correctly. */
+        float rd2 = vector_dot(rd_local, rd_local);
+        float r2 = mesh->bounds_radius * mesh->bounds_radius;
+        float c = vector_dot(oc, oc) - r2;
         if (c > 0.0f && b > 0.0f) return 0;
-        float disc = b * b - c;
+        float disc = b * b - rd2 * c;
         if (disc < 0.0f) return 0;
     }
 
     mesh_best best = { .t = FLT_MAX };
-    bvh_traverse(ro, rd, mesh, &best);
+    bvh_traverse(ro_local, rd_local, mesh, &best);
     if (!best.have_hit) return 0;
 
     float w0 = 1.0f - best.bu - best.bv;
@@ -146,6 +159,15 @@ int rt_intersect_mesh(vector ro, vector rd, const scene_mesh *mesh,
         n = vector_normalize(vector_cross(e1, e2));
     } else {
         n = vector_scale(n, 1.0f / nmag);
+    }
+
+    /* Bring the local-space normal back to world space using the
+     * inverse-transpose rule. With the mat4_transform_normal helper
+     * that's `transpose(world_inv_3x3) * n_local`, which equals
+     * `world_3x3 * n_local` for pure rotation and corrects for
+     * non-uniform scale. Renormalize since scale can stretch length. */
+    if (world_inv) {
+        n = vector_normalize(mat4_transform_normal(*world_inv, n));
     }
 
     out->t = best.t;

@@ -21,11 +21,18 @@ static scene_color color_from_ufbx(ufbx_vec3 c) {
                           (uint8_t)(b * 255.0 + 0.5) };
 }
 
+/* ufbx_quat_to_euler returns degrees. scene_transform.rotation is
+ * radians (consumed by mat4_rotate_xyz / sinf / cosf), so convert at
+ * the loader boundary. */
+#define UFBX_DEG_TO_RAD ((float)(M_PI / 180.0))
+
 static scene_transform transform_from_ufbx(ufbx_transform t) {
     ufbx_vec3 e = ufbx_quat_to_euler(t.rotation, UFBX_ROTATION_ORDER_XYZ);
     scene_transform out;
     out.position = vec3_from_ufbx(t.translation);
-    out.rotation = (vector){ (float)e.x, (float)e.y, (float)e.z };
+    out.rotation = (vector){ (float)e.x * UFBX_DEG_TO_RAD,
+                             (float)e.y * UFBX_DEG_TO_RAD,
+                             (float)e.z * UFBX_DEG_TO_RAD };
     out.scale    = vec3_from_ufbx(t.scale);
     return out;
 }
@@ -219,9 +226,9 @@ static int emit_animation(const ufbx_anim_stack *stack,
             samples[0 * nframes + f] = (float)tr.translation.x;
             samples[1 * nframes + f] = (float)tr.translation.y;
             samples[2 * nframes + f] = (float)tr.translation.z;
-            samples[3 * nframes + f] = (float)e.x;
-            samples[4 * nframes + f] = (float)e.y;
-            samples[5 * nframes + f] = (float)e.z;
+            samples[3 * nframes + f] = (float)e.x * UFBX_DEG_TO_RAD;
+            samples[4 * nframes + f] = (float)e.y * UFBX_DEG_TO_RAD;
+            samples[5 * nframes + f] = (float)e.z * UFBX_DEG_TO_RAD;
             samples[6 * nframes + f] = (float)tr.scale.x;
             samples[7 * nframes + f] = (float)tr.scale.y;
             samples[8 * nframes + f] = (float)tr.scale.z;
