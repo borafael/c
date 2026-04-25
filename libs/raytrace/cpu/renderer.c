@@ -1,8 +1,8 @@
 #include "renderer.h"
 #include "render_chunk.h"
+#include "scene_accel.h"
 #include "thread_pool.h"
 #include "matrix.h"
-#include "bvh.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -36,11 +36,7 @@ typedef struct {
     thread_pool *pool;
     int num_threads;
     cpu_render_task *tasks;       /* scratch buffer sized [num_threads] */
-    /* Per-frame world-transform scratch. Grown on demand. */
-    mat4 *node_world;             /* sized scene->node_count */
-    int   node_world_capacity;
-    mat4 *mesh_world_inv;         /* sized scene->mesh_count */
-    int   mesh_world_inv_capacity;
+    rt_scene_accel accel;         /* per-frame node/mesh transform scratch */
 } cpu_backend_data;
 
 static void cpu_render_task_fn(void *arg) {
@@ -53,68 +49,9 @@ static void cpu_destroy(rt_renderer *r) {
     cpu_backend_data *d = r->backend_data;
     thread_pool_destroy(d->pool);
     free(d->tasks);
-    free(d->node_world);
-    free(d->mesh_world_inv);
+    rt_scene_accel_dispose(&d->accel);
     free(d);
     free(r);
-}
-
-/* Compute per-mesh inverse-world matrices from the scene's node tree.
- * Meshes referenced by no node are left at identity (back-compat with
- * OBJ flows that store world-space vertices and add no nodes). Returns
- * NULL if the scene has no meshes or if scratch alloc fails.
- *
- * For skinned meshes, also runs scene_apply_skinning before resolving
- * the inverse-world matrices, then refreshes their BVH (vertices have
- * moved). Skinned meshes follow the same world-from-owning-node path as
- * rigid ones — apply_skinning writes vertex positions in mesh-local
- * space, so the renderer's contract is unchanged. */
-static const mat4 *resolve_mesh_world_inv(cpu_backend_data *d,
-                                          scene *s) {
-    if (s->mesh_count <= 0) return NULL;
-
-    if (d->mesh_world_inv_capacity < s->mesh_count) {
-        mat4 *grown = realloc(d->mesh_world_inv,
-                              sizeof(mat4) * (size_t)s->mesh_count);
-        if (!grown) return NULL;
-        d->mesh_world_inv = grown;
-        d->mesh_world_inv_capacity = s->mesh_count;
-    }
-    mat4 ident = mat4_identity();
-    for (int i = 0; i < s->mesh_count; i++) d->mesh_world_inv[i] = ident;
-
-    if (s->node_count <= 0) return d->mesh_world_inv;
-
-    if (d->node_world_capacity < s->node_count) {
-        mat4 *grown = realloc(d->node_world,
-                              sizeof(mat4) * (size_t)s->node_count);
-        if (!grown) return d->mesh_world_inv;  /* identity is still correct */
-        d->node_world = grown;
-        d->node_world_capacity = s->node_count;
-    }
-    scene_resolve_world_transforms(s, d->node_world);
-
-    /* Skinning pass: deform skinned meshes from rest pose into mesh-local
-     * space, then rebuild each skinned mesh's BVH (vertices moved, the
-     * old BVH is now stale). Rigid meshes are untouched. */
-    if (s->skin_count > 0) {
-        scene_apply_skinning(s, d->node_world);
-        for (int mi = 0; mi < s->mesh_count; mi++) {
-            if (s->meshes[mi].skin_index >= 0) {
-                rt_bvh_build(&s->meshes[mi]);
-            }
-        }
-    }
-
-    /* If multiple nodes reference the same mesh, the LAST one wins.
-     * In practice each FBX-emitted mesh is owned by exactly one node. */
-    for (int i = 0; i < s->node_count; i++) {
-        int mi = s->nodes[i].mesh_index;
-        if (mi >= 0 && mi < s->mesh_count) {
-            d->mesh_world_inv[mi] = mat4_affine_inverse(d->node_world[i]);
-        }
-    }
-    return d->mesh_world_inv;
 }
 
 static void cpu_render(rt_renderer *r,
@@ -135,7 +72,10 @@ static void cpu_render(rt_renderer *r,
     if (n > d->num_threads) n = d->num_threads;
     if (n < 1) n = 1;
 
-    const mat4 *mesh_world_inv = resolve_mesh_world_inv(d, scn);
+    const mat4 *mesh_world_inv = NULL;
+    if (rt_scene_accel_resolve(&d->accel, scn) && scn->mesh_count > 0) {
+        mesh_world_inv = d->accel.mesh_world_inv;
+    }
 
     for (int i = 0; i < n; i++) {
         d->tasks[i] = (cpu_render_task){

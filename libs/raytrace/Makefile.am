@@ -1,6 +1,6 @@
 noinst_LTLIBRARIES = libraytrace.la
 
-libraytrace_la_SOURCES = renderer.c
+libraytrace_la_SOURCES = renderer.c scene_accel.c
 
 if BUILD_CPU_BACKEND
 libraytrace_la_SOURCES += cpu/renderer.c cpu/render_chunk.c \
@@ -10,7 +10,7 @@ libraytrace_la_SOURCES += cpu/renderer.c cpu/render_chunk.c \
                           cpu/mesh.c cpu/bvh.c
 endif
 
-noinst_HEADERS = viewport.h renderer.h \
+noinst_HEADERS = viewport.h renderer.h scene_accel.h \
                  sphere.h plane.h disc.h cylinder.h triangle.h box.h \
                  sprite.h heightfield.h mesh.h \
                  cpu/render_chunk.h cpu/bvh.h

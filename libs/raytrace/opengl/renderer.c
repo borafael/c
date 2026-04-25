@@ -14,7 +14,9 @@
 #include "sprite.h"
 #include "heightfield.h"
 #include "mesh.h"
+#include "scene_accel.h"
 #include "cpu/bvh.h"   /* rt_bvh_node — shared BVH node format across backends */
+#include "matrix.h"
 
 #define GL_GLEXT_PROTOTYPES 1
 #include <GL/gl.h>
@@ -47,24 +49,38 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "uniform int   u_heightfield_count;\n"
 "uniform int   u_light_count;\n"
 "uniform int   u_mesh_count;\n"
+"uniform int   u_material_count;\n"
 "\n"
 "struct Sphere   { vec4 center_radius; ivec4 mat; };\n"
 "struct Plane    { vec4 point; vec4 normal; ivec4 mat; };\n"
 "struct Disc     { vec4 center_radius; vec4 normal; ivec4 mat; };\n"
 "struct Cylinder { vec4 center_hh; vec4 axis_radius; ivec4 mat; };\n"
-"struct Triangle { vec4 v0; vec4 v1; vec4 v2; ivec4 mat; };\n"
+"/* Triangle: positions in v0..v2.xyz, per-vertex u in v0..v2.w, vertex\n"
+" * normals in n0..n2.xyz, per-vertex v in n0..n2.w. mat.x = material\n"
+" * index, mat.y = 1 if per-vertex normals/uvs are valid (mesh tris),\n"
+" * 0 to use face normal + planar UV (scene tris). */\n"
+"struct Triangle {\n"
+"    vec4  v0; vec4 v1; vec4 v2;\n"
+"    vec4  n0; vec4 n1; vec4 n2;\n"
+"    ivec4 mat;\n"
+"};\n"
 "struct Box      { vec4 minp; vec4 maxp; ivec4 mat; };\n"
 "struct Sprite   { vec4 position_w; vec4 direction_h; ivec4 frame_info; };\n"
 "struct Light    { vec4 direction_intensity; };\n"
-"/* Per-mesh descriptor for BVH traversal. The triangle SSBO layout is:\n"
-" * [0 .. u_triangle_count)       explicit scene triangles (no BVH)\n"
-" * [u_triangle_count .. end)     per-mesh triangles, mesh.tri_start points at\n"
-" *                               each mesh's run. Leaf tri_start is LOCAL to\n"
-" *                               the mesh (absolute index = mesh.tri_start +\n"
-" *                               leaf.tri_start + k). */\n"
-"struct Mesh     { vec4 bounds;  ivec4 info; };   /* bounds: xyz center, w radius.\n"
-"                                                    info: (bvh_start, bvh_count,\n"
-"                                                           tri_start, tri_count) */\n"
+"/* Per-mesh descriptor for BVH traversal. Triangles for each mesh live in\n"
+" * the triangle SSBO at [tri_start, tri_start+tri_count). Leaf tri_start\n"
+" * is LOCAL to the mesh; the absolute index is mesh.tri_start +\n"
+" * leaf.tri_start + k.\n"
+" *\n"
+" * world_inv (rows wi0..wi3) is the per-mesh world-from-local inverse:\n"
+" * the shader transforms ro/rd into mesh-local space before BVH\n"
+" * traversal, then maps the resulting normal back to world via the\n"
+" * inverse-transpose rule. wi3 is always (0,0,0,1) — affine. */\n"
+"struct Mesh     {\n"
+"    vec4  bounds;\n"
+"    ivec4 info;\n"
+"    vec4  wi0; vec4 wi1; vec4 wi2; vec4 wi3;\n"
+"};\n"
 "struct BvhNode  { vec4 aabb_min; vec4 aabb_max; ivec4 info; };\n"
 "                                                /* info: (tri_start_local,\n"
 "                                                          tri_count,\n"
@@ -79,7 +95,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "struct Heightfield {\n"
 "    vec4  origin_world;   /* origin_x, origin_z, world_w, world_d */\n"
 "    vec4  grid;           /* rows, cols, max_h, 0 */\n"
-"    ivec4 offsets;        /* heights_off, normals_off, colors_off, 0 */\n"
+"    ivec4 offsets;        /* heights_off, normals_off, colors_off, material_idx (-1 = raw colors) */\n"
 "};\n"
 "\n"
 "layout(std430, binding = 1)  readonly buffer SphereBuf   { Sphere   spheres[];    };\n"
@@ -172,7 +188,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    return normalize(hp - on_axis);\n"
 "}\n"
 "\n"
-"float isect_triangle(vec3 ro, vec3 rd, Triangle tri) {\n"
+"float isect_triangle_bary(vec3 ro, vec3 rd, Triangle tri,\n"
+"                           out float bu, out float bv) {\n"
 "    vec3 e1 = tri.v1.xyz - tri.v0.xyz;\n"
 "    vec3 e2 = tri.v2.xyz - tri.v0.xyz;\n"
 "    vec3 pvec = cross(rd, e2);\n"
@@ -186,11 +203,34 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    float v = dot(rd, qvec) * inv_det;\n"
 "    if (v < 0.0 || u + v > 1.0) return -1.0;\n"
 "    float t = dot(e2, qvec) * inv_det;\n"
-"    return (t > 0.0) ? t : -1.0;\n"
+"    if (t <= 0.0) return -1.0;\n"
+"    bu = u; bv = v;\n"
+"    return t;\n"
+"}\n"
+"\n"
+"float isect_triangle(vec3 ro, vec3 rd, Triangle tri) {\n"
+"    float bu, bv;\n"
+"    return isect_triangle_bary(ro, rd, tri, bu, bv);\n"
 "}\n"
 "\n"
 "vec3 normal_triangle(Triangle tri) {\n"
 "    return normalize(cross(tri.v1.xyz - tri.v0.xyz, tri.v2.xyz - tri.v0.xyz));\n"
+"}\n"
+"\n"
+"/* Per-mesh affine transforms (row-major mat4 stored as 4 vec4 rows). */\n"
+"vec3 mesh_xform_point(Mesh m, vec3 p) {\n"
+"    return vec3(dot(m.wi0.xyz, p) + m.wi0.w,\n"
+"                dot(m.wi1.xyz, p) + m.wi1.w,\n"
+"                dot(m.wi2.xyz, p) + m.wi2.w);\n"
+"}\n"
+"vec3 mesh_xform_dir(Mesh m, vec3 d) {\n"
+"    return vec3(dot(m.wi0.xyz, d), dot(m.wi1.xyz, d), dot(m.wi2.xyz, d));\n"
+"}\n"
+"/* Local-space normal back to world: transpose(world_inv_3x3) * n. */\n"
+"vec3 mesh_xform_normal(Mesh m, vec3 n) {\n"
+"    return vec3(m.wi0.x*n.x + m.wi1.x*n.y + m.wi2.x*n.z,\n"
+"                m.wi0.y*n.x + m.wi1.y*n.y + m.wi2.y*n.z,\n"
+"                m.wi0.z*n.x + m.wi1.z*n.y + m.wi2.z*n.z);\n"
 "}\n"
 "\n"
 "float isect_box(vec3 ro, vec3 rd, Box b, out vec3 hp_out) {\n"
@@ -651,6 +691,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "\n"
 "struct HitInfo {\n"
 "    bool  hit;\n"
+"    bool  unlit;\n"
 "    vec3  point;\n"
 "    vec3  normal;\n"
 "    vec3  albedo;\n"
@@ -660,6 +701,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "HitInfo closest_hit(vec3 ro, vec3 rd) {\n"
 "    HitInfo h;\n"
 "    h.hit = false;\n"
+"    h.unlit = false;\n"
 "    h.point = vec3(0.0);\n"
 "    h.normal = vec3(0.0);\n"
 "    h.albedo = vec3(0.0);\n"
@@ -677,6 +719,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            int midx = spheres[i].mat.x;\n"
 "            h.albedo = material_sample(midx, hp, uv);\n"
 "            h.reflectivity = materials[midx].scale.y;\n"
+"            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
 "        }\n"
 "    }\n"
@@ -691,6 +734,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            int midx = planes[i].mat.x;\n"
 "            h.albedo = material_sample(midx, hp, uv);\n"
 "            h.reflectivity = materials[midx].scale.y;\n"
+"            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
 "        }\n"
 "    }\n"
@@ -705,6 +749,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            int midx = discs[i].mat.x;\n"
 "            h.albedo = material_sample(midx, hp, uv);\n"
 "            h.reflectivity = materials[midx].scale.y;\n"
+"            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
 "        }\n"
 "    }\n"
@@ -719,6 +764,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            int midx = cylinders[i].mat.x;\n"
 "            h.albedo = material_sample(midx, hp, uv);\n"
 "            h.reflectivity = materials[midx].scale.y;\n"
+"            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
 "        }\n"
 "    }\n"
@@ -733,79 +779,99 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            int midx = triangles[i].mat.x;\n"
 "            h.albedo = material_sample(midx, hp, uv);\n"
 "            h.reflectivity = materials[midx].scale.y;\n"
+"            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
 "        }\n"
 "    }\n"
-"    /* --- Mesh triangles via per-mesh BVH ------------------------------- */\n"
-"    if (u_mesh_count > 0) {\n"
-"        vec3 inv_rd;\n"
-"        inv_rd.x = (abs(rd.x) > 1e-20) ? 1.0 / rd.x : (rd.x >= 0.0 ? 1e30 : -1e30);\n"
-"        inv_rd.y = (abs(rd.y) > 1e-20) ? 1.0 / rd.y : (rd.y >= 0.0 ? 1e30 : -1e30);\n"
-"        inv_rd.z = (abs(rd.z) > 1e-20) ? 1.0 / rd.z : (rd.z >= 0.0 ? 1e30 : -1e30);\n"
-"        for (int mi = 0; mi < u_mesh_count; mi++) {\n"
-"            Mesh mesh = meshes[mi];\n"
-"            /* Bounding-sphere outer reject (skip if radius <= 0). */\n"
-"            if (mesh.bounds.w > 0.0) {\n"
-"                vec3 oc = ro - mesh.bounds.xyz;\n"
-"                float b = dot(oc, rd);\n"
-"                float cs = dot(oc, oc) - mesh.bounds.w * mesh.bounds.w;\n"
-"                if (cs > 0.0 && b > 0.0) continue;\n"
-"                if (b * b - cs < 0.0) continue;\n"
-"            }\n"
-"            int bvh_base  = mesh.info.x;\n"
-"            int bvh_count = mesh.info.y;\n"
-"            int tri_base  = mesh.info.z;\n"
-"            int tri_count = mesh.info.w;\n"
-"            if (bvh_count <= 0) {\n"
-"                /* No BVH — linear scan this mesh's triangle range. */\n"
-"                int end = tri_base + tri_count;\n"
-"                for (int ti = tri_base; ti < end; ti++) {\n"
-"                    float t = isect_triangle(ro, rd, triangles[ti]);\n"
-"                    if (t > 0.0 && t < closest_t) {\n"
-"                        closest_t = t;\n"
-"                        vec3 hp = ro + rd * t;\n"
-"                        h.point  = hp;\n"
-"                        h.normal = normal_triangle(triangles[ti]);\n"
-"                        vec2 uv  = uv_planar(hp, triangles[ti].v0.xyz, h.normal);\n"
-"                        int midx = triangles[ti].mat.x;\n"
-"                        h.albedo = material_sample(midx, hp, uv);\n"
-"                        h.reflectivity = materials[midx].scale.y;\n"
-"                        h.hit = true;\n"
-"                    }\n"
+"    /* --- Mesh triangles via per-mesh BVH (mesh-local space) ----------- */\n"
+"    for (int mi = 0; mi < u_mesh_count; mi++) {\n"
+"        Mesh mesh = meshes[mi];\n"
+"\n"
+"        /* Push the ray into mesh-local space; bounds and BVH live there. */\n"
+"        vec3 ro_l = mesh_xform_point(mesh, ro);\n"
+"        vec3 rd_l = mesh_xform_dir(mesh, rd);\n"
+"\n"
+"        /* Bounding-sphere outer reject. With non-uniform local rd we need\n"
+"         * to compare against |rd_l|^2 * r^2, not r^2. */\n"
+"        if (mesh.bounds.w > 0.0) {\n"
+"            vec3 oc = ro_l - mesh.bounds.xyz;\n"
+"            float b = dot(oc, rd_l);\n"
+"            float rd2 = dot(rd_l, rd_l);\n"
+"            float r2 = mesh.bounds.w * mesh.bounds.w;\n"
+"            float cs = dot(oc, oc) - r2;\n"
+"            if (cs > 0.0 && b > 0.0) continue;\n"
+"            if (b * b - rd2 * cs < 0.0) continue;\n"
+"        }\n"
+"\n"
+"        vec3 inv_rd_l;\n"
+"        inv_rd_l.x = (abs(rd_l.x) > 1e-20) ? 1.0 / rd_l.x : (rd_l.x >= 0.0 ? 1e30 : -1e30);\n"
+"        inv_rd_l.y = (abs(rd_l.y) > 1e-20) ? 1.0 / rd_l.y : (rd_l.y >= 0.0 ? 1e30 : -1e30);\n"
+"        inv_rd_l.z = (abs(rd_l.z) > 1e-20) ? 1.0 / rd_l.z : (rd_l.z >= 0.0 ? 1e30 : -1e30);\n"
+"\n"
+"        int bvh_base  = mesh.info.x;\n"
+"        int bvh_count = mesh.info.y;\n"
+"        int tri_base  = mesh.info.z;\n"
+"        int tri_count = mesh.info.w;\n"
+"\n"
+"        /* Local-space best, applied back to world after the per-mesh loop. */\n"
+"        float best_t = closest_t;\n"
+"        vec3  best_n_l = vec3(0.0);\n"
+"        vec2  best_uv  = vec2(0.0);\n"
+"        int   best_mat = -1;\n"
+"        bool  hit_this_mesh = false;\n"
+"\n"
+"        if (bvh_count <= 0) {\n"
+"            int end = tri_base + tri_count;\n"
+"            for (int ti = tri_base; ti < end; ti++) {\n"
+"                float bu, bv;\n"
+"                float t = isect_triangle_bary(ro_l, rd_l, triangles[ti], bu, bv);\n"
+"                if (t > 0.0 && t < best_t) {\n"
+"                    best_t = t;\n"
+"                    float bw = 1.0 - bu - bv;\n"
+"                    Triangle tr = triangles[ti];\n"
+"                    vec3 n = bw * tr.n0.xyz + bu * tr.n1.xyz + bv * tr.n2.xyz;\n"
+"                    if (dot(n, n) < 1e-12) n = cross(tr.v1.xyz - tr.v0.xyz, tr.v2.xyz - tr.v0.xyz);\n"
+"                    best_n_l = normalize(n);\n"
+"                    best_uv  = vec2(bw * tr.v0.w + bu * tr.v1.w + bv * tr.v2.w,\n"
+"                                    bw * tr.n0.w + bu * tr.n1.w + bv * tr.n2.w);\n"
+"                    best_mat = tr.mat.x;\n"
+"                    hit_this_mesh = true;\n"
 "                }\n"
-"                continue;\n"
 "            }\n"
+"        } else {\n"
 "            int stack[32];\n"
 "            int sp = 0;\n"
 "            stack[sp++] = 0;\n"
 "            while (sp > 0) {\n"
 "                int idx = stack[--sp];\n"
 "                BvhNode node = bvh_nodes[bvh_base + idx];\n"
-"                vec3 t0 = (node.aabb_min.xyz - ro) * inv_rd;\n"
-"                vec3 t1 = (node.aabb_max.xyz - ro) * inv_rd;\n"
+"                vec3 t0 = (node.aabb_min.xyz - ro_l) * inv_rd_l;\n"
+"                vec3 t1 = (node.aabb_max.xyz - ro_l) * inv_rd_l;\n"
 "                vec3 tmin3 = min(t0, t1);\n"
 "                vec3 tmax3 = max(t0, t1);\n"
 "                float tmn = max(max(tmin3.x, tmin3.y), tmin3.z);\n"
 "                float tmx = min(min(tmax3.x, tmax3.y), tmax3.z);\n"
 "                if (tmx < 0.0 || tmn > tmx) continue;\n"
 "                float t_enter = max(tmn, 0.0);\n"
-"                if (t_enter > closest_t) continue;\n"
+"                if (t_enter > best_t) continue;\n"
 "                int ncount = node.info.y;\n"
 "                if (ncount > 0) {\n"
 "                    int start = tri_base + node.info.x;\n"
 "                    int end   = start + ncount;\n"
 "                    for (int ti = start; ti < end; ti++) {\n"
-"                        float t = isect_triangle(ro, rd, triangles[ti]);\n"
-"                        if (t > 0.0 && t < closest_t) {\n"
-"                            closest_t = t;\n"
-"                            vec3 hp = ro + rd * t;\n"
-"                            h.point  = hp;\n"
-"                            h.normal = normal_triangle(triangles[ti]);\n"
-"                            vec2 uv  = uv_planar(hp, triangles[ti].v0.xyz, h.normal);\n"
-"                            int midx = triangles[ti].mat.x;\n"
-"                            h.albedo = material_sample(midx, hp, uv);\n"
-"                            h.reflectivity = materials[midx].scale.y;\n"
-"                            h.hit = true;\n"
+"                        float bu, bv;\n"
+"                        float t = isect_triangle_bary(ro_l, rd_l, triangles[ti], bu, bv);\n"
+"                        if (t > 0.0 && t < best_t) {\n"
+"                            best_t = t;\n"
+"                            float bw = 1.0 - bu - bv;\n"
+"                            Triangle tr = triangles[ti];\n"
+"                            vec3 n = bw * tr.n0.xyz + bu * tr.n1.xyz + bv * tr.n2.xyz;\n"
+"                            if (dot(n, n) < 1e-12) n = cross(tr.v1.xyz - tr.v0.xyz, tr.v2.xyz - tr.v0.xyz);\n"
+"                            best_n_l = normalize(n);\n"
+"                            best_uv  = vec2(bw * tr.v0.w + bu * tr.v1.w + bv * tr.v2.w,\n"
+"                                            bw * tr.n0.w + bu * tr.n1.w + bv * tr.n2.w);\n"
+"                            best_mat = tr.mat.x;\n"
+"                            hit_this_mesh = true;\n"
 "                        }\n"
 "                    }\n"
 "                } else {\n"
@@ -815,6 +881,25 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                    }\n"
 "                }\n"
 "            }\n"
+"        }\n"
+"\n"
+"        if (hit_this_mesh) {\n"
+"            closest_t = best_t;\n"
+"            /* t is preserved across the linear ray transform, so the\n"
+"             * world-space hit point is just ro + rd * t. */\n"
+"            h.point  = ro + rd * best_t;\n"
+"            h.normal = normalize(mesh_xform_normal(mesh, best_n_l));\n"
+"            int midx = best_mat;\n"
+"            if (midx < 0 || midx >= u_material_count) {\n"
+"                h.albedo = vec3(200.0/255.0);\n"
+"                h.reflectivity = 0.0;\n"
+"                h.unlit = false;\n"
+"            } else {\n"
+"                h.albedo = material_sample(midx, h.point, best_uv);\n"
+"                h.reflectivity = materials[midx].scale.y;\n"
+"                h.unlit = (materials[midx].kind.z != 0);\n"
+"            }\n"
+"            h.hit = true;\n"
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_box_count; i++) {\n"
@@ -828,6 +913,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            int midx = boxes[i].mat.x;\n"
 "            h.albedo = material_sample(midx, hp, uv);\n"
 "            h.reflectivity = materials[midx].scale.y;\n"
+"            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
 "        }\n"
 "    }\n"
@@ -843,6 +929,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                h.normal = snormal;\n"
 "                h.albedo = px.rgb;\n"
 "                h.reflectivity = 0.0;\n"
+"                h.unlit = false;\n"
 "                h.hit = true;\n"
 "            }\n"
 "        }\n"
@@ -852,16 +939,30 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "        if (isect_heightfield(heightfields[i], ro, rd, t, hn, cr, cc) == 1) {\n"
 "            if (t > 0.0 && t < closest_t) {\n"
 "                closest_t = t;\n"
-"                h.point  = ro + rd * t;\n"
+"                vec3 hp = ro + rd * t;\n"
+"                h.point  = hp;\n"
 "                h.normal = hn;\n"
 "                int cells_per_row = int(heightfields[i].grid.y) - 1;\n"
 "                int ci = heightfields[i].offsets.z + (cr * cells_per_row + cc) * 3;\n"
-"                h.albedo = vec3(\n"
+"                vec3 cell = vec3(\n"
 "                    float(hf_colors[ci])     / 255.0,\n"
 "                    float(hf_colors[ci + 1]) / 255.0,\n"
 "                    float(hf_colors[ci + 2]) / 255.0\n"
 "                );\n"
-"                h.reflectivity = 0.0;\n"
+"                int hf_mat = heightfields[i].offsets.w;\n"
+"                if (hf_mat >= 0 && hf_mat < u_material_count) {\n"
+"                    /* Match CPU: sample material at hit point with UV =\n"
+"                     * (hp.x, hp.z), modulate per-cell biome color, take\n"
+"                     * material reflectivity + unlit. */\n"
+"                    vec3 tex = material_sample(hf_mat, hp, vec2(hp.x, hp.z));\n"
+"                    h.albedo = cell * tex;\n"
+"                    h.reflectivity = materials[hf_mat].scale.y;\n"
+"                    h.unlit = (materials[hf_mat].kind.z != 0);\n"
+"                } else {\n"
+"                    h.albedo = cell;\n"
+"                    h.reflectivity = 0.0;\n"
+"                    h.unlit = false;\n"
+"                }\n"
 "                h.hit = true;\n"
 "            }\n"
 "        }\n"
@@ -893,12 +994,17 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "        HitInfo h = closest_hit(ro, rd);\n"
 "        if (!h.hit) break;\n"
 "\n"
-"        float shade = u_ambient;\n"
-"        for (int i = 0; i < u_light_count; i++) {\n"
-"            float d = dot(h.normal, lights[i].direction_intensity.xyz);\n"
-"            if (d > 0.0) shade += d * lights[i].direction_intensity.w;\n"
+"        float shade;\n"
+"        if (h.unlit) {\n"
+"            shade = 1.0;\n"
+"        } else {\n"
+"            shade = u_ambient;\n"
+"            for (int i = 0; i < u_light_count; i++) {\n"
+"                float d = dot(h.normal, lights[i].direction_intensity.xyz);\n"
+"                if (d > 0.0) shade += d * lights[i].direction_intensity.w;\n"
+"            }\n"
+"            shade = min(shade, 1.0);\n"
 "        }\n"
-"        shade = min(shade, 1.0);\n"
 "\n"
 "        vec3 direct = h.albedo * shade;\n"
 "        result += throughput * (1.0 - h.reflectivity) * direct;\n"
@@ -919,7 +1025,15 @@ typedef struct { float cr[4]; int32_t mat[4]; } gpu_sphere;
 typedef struct { float point[4]; float normal[4]; int32_t mat[4]; } gpu_plane;
 typedef struct { float cr[4]; float normal[4]; int32_t mat[4]; } gpu_disc;
 typedef struct { float center_hh[4]; float axis_r[4]; int32_t mat[4]; } gpu_cylinder;
-typedef struct { float v0[4]; float v1[4]; float v2[4]; int32_t mat[4]; } gpu_triangle;
+/* Triangle layout: positions in v0/v1/v2.xyz, per-vertex u in v0/v1/v2.w;
+ * vertex normals in n0/n1/n2.xyz, per-vertex v in n0/n1/n2.w. mat = (mat,
+ * has_vertex_data, _, _). Mesh tris carry per-vertex data; explicit scene
+ * tris fill normals with the face normal and zero UVs. */
+typedef struct {
+    float v0[4]; float v1[4]; float v2[4];
+    float n0[4]; float n1[4]; float n2[4];
+    int32_t mat[4];
+} gpu_triangle;
 typedef struct { float minp[4]; float maxp[4]; int32_t mat[4]; } gpu_box;
 typedef struct { float position_w[4]; float direction_h[4]; int32_t frame_info[4]; } gpu_sprite;
 typedef struct { float dir_int[4]; } gpu_light;
@@ -937,8 +1051,12 @@ typedef struct {
 } gpu_heightfield;
 
 typedef struct {
-    float   bounds[4];        /* bounds_center.xyz, bounds_radius */
+    float   bounds[4];        /* bounds_center.xyz, bounds_radius (mesh-local) */
     int32_t info[4];          /* bvh_start, bvh_count, tri_start (absolute), tri_count */
+    float   wi0[4];           /* world_inv row 0 */
+    float   wi1[4];           /* world_inv row 1 */
+    float   wi2[4];           /* world_inv row 2 */
+    float   wi3[4];           /* world_inv row 3 (always 0,0,0,1 — affine) */
 } gpu_mesh;
 
 typedef struct {
@@ -975,8 +1093,11 @@ typedef struct {
     GLint u_fov, u_ambient;
     GLint u_sphere_count, u_plane_count, u_disc_count, u_cylinder_count;
     GLint u_triangle_count, u_box_count, u_sprite_count;
-    GLint u_heightfield_count, u_light_count, u_mesh_count;
+    GLint u_heightfield_count, u_light_count, u_mesh_count, u_material_count;
     GLint u_sprite_atlas, u_tex_atlas;
+
+    /* Per-frame node/mesh transform scratch (shared with CPU path). */
+    rt_scene_accel accel;
 } opengl_backend_data;
 
 /* -- GL helpers ------------------------------------------------------- */
@@ -1049,6 +1170,7 @@ static void cache_uniform_locs(opengl_backend_data *d) {
     d->u_heightfield_count  = glGetUniformLocation(d->program, "u_heightfield_count");
     d->u_light_count        = glGetUniformLocation(d->program, "u_light_count");
     d->u_mesh_count         = glGetUniformLocation(d->program, "u_mesh_count");
+    d->u_material_count     = glGetUniformLocation(d->program, "u_material_count");
     d->u_sprite_atlas       = glGetUniformLocation(d->program, "u_sprite_atlas");
     d->u_tex_atlas          = glGetUniformLocation(d->program, "u_tex_atlas");
 }
@@ -1162,11 +1284,11 @@ static void upload_cylinders(opengl_backend_data *d, const scene *s) {
 }
 
 static void upload_triangles(opengl_backend_data *d, const scene *s) {
-    /* Explicit triangles + mesh triangles share the same SSBO. The GPU
-     * shader is mesh-oblivious: it just loops a flat triangle array.
-     * Per-vertex normals are discarded here — the shader computes face
-     * normals, so meshes render flat-shaded on the GPU (fine for
-     * low-poly / retro looks; matches the existing triangle path). */
+    /* Explicit triangles + mesh triangles share the same SSBO. Mesh tris
+     * carry per-vertex normals + UVs (mat.y = 1) so the shader can do
+     * smooth shading and proper UV lookup. Scene tris fill normals with
+     * the face normal and zero UVs (mat.y = 0); they always go through
+     * the explicit-triangle loop, which uses face shading + planar UV. */
     int mesh_tri_total = 0;
     for (int i = 0; i < s->mesh_count; i++) {
         if (s->meshes[i].index_count >= 3) {
@@ -1180,10 +1302,22 @@ static void upload_triangles(opengl_backend_data *d, const scene *s) {
         buf = malloc(sizeof(gpu_triangle) * (size_t)n);
         int w = 0;
         for (int i = 0; i < s->triangle_count; i++, w++) {
-            set_vec4(buf[w].v0, s->triangles[i].v0.x, s->triangles[i].v0.y, s->triangles[i].v0.z, 0.0f);
-            set_vec4(buf[w].v1, s->triangles[i].v1.x, s->triangles[i].v1.y, s->triangles[i].v1.z, 0.0f);
-            set_vec4(buf[w].v2, s->triangles[i].v2.x, s->triangles[i].v2.y, s->triangles[i].v2.z, 0.0f);
-            set_mat_ivec4(buf[w].mat, s->triangles[i].material);
+            vector p0 = s->triangles[i].v0;
+            vector p1 = s->triangles[i].v1;
+            vector p2 = s->triangles[i].v2;
+            vector e1 = vector_sub(p1, p0);
+            vector e2 = vector_sub(p2, p0);
+            vector fn = vector_normalize(vector_cross(e1, e2));
+            set_vec4(buf[w].v0, p0.x, p0.y, p0.z, 0.0f);
+            set_vec4(buf[w].v1, p1.x, p1.y, p1.z, 0.0f);
+            set_vec4(buf[w].v2, p2.x, p2.y, p2.z, 0.0f);
+            set_vec4(buf[w].n0, fn.x, fn.y, fn.z, 0.0f);
+            set_vec4(buf[w].n1, fn.x, fn.y, fn.z, 0.0f);
+            set_vec4(buf[w].n2, fn.x, fn.y, fn.z, 0.0f);
+            buf[w].mat[0] = (int32_t)s->triangles[i].material;
+            buf[w].mat[1] = 0;  /* face-shaded scene tri */
+            buf[w].mat[2] = 0;
+            buf[w].mat[3] = 0;
         }
         for (int i = 0; i < s->mesh_count; i++) {
             const scene_mesh *m = &s->meshes[i];
@@ -1196,21 +1330,30 @@ static void upload_triangles(opengl_backend_data *d, const scene *s) {
                 if ((int)i0 >= m->vertex_count ||
                     (int)i1 >= m->vertex_count ||
                     (int)i2 >= m->vertex_count) {
-                    /* Skip malformed triangle; zero it out so the shader's
-                     * degenerate-det test rejects it. */
+                    /* Malformed: zero everything so degenerate-det rejects. */
                     set_vec4(buf[w].v0, 0, 0, 0, 0);
                     set_vec4(buf[w].v1, 0, 0, 0, 0);
                     set_vec4(buf[w].v2, 0, 0, 0, 0);
-                    set_mat_ivec4(buf[w].mat, 0);
+                    set_vec4(buf[w].n0, 0, 0, 0, 0);
+                    set_vec4(buf[w].n1, 0, 0, 0, 0);
+                    set_vec4(buf[w].n2, 0, 0, 0, 0);
+                    buf[w].mat[0] = 0; buf[w].mat[1] = 0;
+                    buf[w].mat[2] = 0; buf[w].mat[3] = 0;
                     continue;
                 }
-                vector p0 = m->vertices[i0].position;
-                vector p1 = m->vertices[i1].position;
-                vector p2 = m->vertices[i2].position;
-                set_vec4(buf[w].v0, p0.x, p0.y, p0.z, 0.0f);
-                set_vec4(buf[w].v1, p1.x, p1.y, p1.z, 0.0f);
-                set_vec4(buf[w].v2, p2.x, p2.y, p2.z, 0.0f);
-                set_mat_ivec4(buf[w].mat, m->material_index);
+                const scene_vertex *sv0 = &m->vertices[i0];
+                const scene_vertex *sv1 = &m->vertices[i1];
+                const scene_vertex *sv2 = &m->vertices[i2];
+                set_vec4(buf[w].v0, sv0->position.x, sv0->position.y, sv0->position.z, sv0->u);
+                set_vec4(buf[w].v1, sv1->position.x, sv1->position.y, sv1->position.z, sv1->u);
+                set_vec4(buf[w].v2, sv2->position.x, sv2->position.y, sv2->position.z, sv2->u);
+                set_vec4(buf[w].n0, sv0->normal.x, sv0->normal.y, sv0->normal.z, sv0->v);
+                set_vec4(buf[w].n1, sv1->normal.x, sv1->normal.y, sv1->normal.z, sv1->v);
+                set_vec4(buf[w].n2, sv2->normal.x, sv2->normal.y, sv2->normal.z, sv2->v);
+                buf[w].mat[0] = (int32_t)m->material_index;
+                buf[w].mat[1] = 1;  /* mesh tri: per-vertex normals + UVs valid */
+                buf[w].mat[2] = 0;
+                buf[w].mat[3] = 0;
             }
         }
     }
@@ -1222,8 +1365,12 @@ static void upload_triangles(opengl_backend_data *d, const scene *s) {
  * per-mesh layout: explicit triangles [0..triangle_count), then each mesh's
  * triangles concatenated in mesh iteration order. Mesh BVHs are built by
  * the CPU (rt_scene_build_accel) and stored in mesh->accel — we just
- * concatenate them into a single SSBO and record per-mesh offsets. */
-static void upload_meshes(opengl_backend_data *d, const scene *s) {
+ * concatenate them into a single SSBO and record per-mesh offsets.
+ *
+ * world_inv comes from the shared rt_scene_accel and is used by the
+ * shader to push rays into mesh-local space (matches the CPU path). */
+static void upload_meshes(opengl_backend_data *d, const scene *s,
+                          const mat4 *mesh_world_inv) {
     int n = s->mesh_count;
 
     int bvh_total = 0;
@@ -1233,6 +1380,7 @@ static void upload_meshes(opengl_backend_data *d, const scene *s) {
 
     gpu_mesh     *meta  = NULL;
     gpu_bvh_node *nodes = NULL;
+    mat4 ident = mat4_identity();
     if (n > 0) {
         meta = malloc(sizeof(gpu_mesh) * (size_t)n);
         if (bvh_total > 0) {
@@ -1252,6 +1400,14 @@ static void upload_meshes(opengl_backend_data *d, const scene *s) {
             meta[i].info[1]   = m->accel_count;
             meta[i].info[2]   = tri_cursor;
             meta[i].info[3]   = tri_count;
+
+            const mat4 *wi = mesh_world_inv ? &mesh_world_inv[i] : &ident;
+            for (int r = 0; r < 4; r++) {
+                meta[i].wi0[r] = wi->m[ 0 + r];
+                meta[i].wi1[r] = wi->m[ 4 + r];
+                meta[i].wi2[r] = wi->m[ 8 + r];
+                meta[i].wi3[r] = wi->m[12 + r];
+            }
 
             if (m->accel && m->accel_count > 0) {
                 const rt_bvh_node *src = (const rt_bvh_node *)m->accel;
@@ -1328,7 +1484,7 @@ static void upload_materials(opengl_backend_data *d, const scene *s) {
             buf[i].albedo2[3] = 0.0f;
             buf[i].kind[0] = (int32_t)m->tex_kind;
             buf[i].kind[1] = (int32_t)m->tex_index;
-            buf[i].kind[2] = 0;
+            buf[i].kind[2] = m->unlit ? 1 : 0;
             buf[i].kind[3] = 0;
             buf[i].scale[0] = m->tex_scale;
             buf[i].scale[1] = m->reflectivity;
@@ -1512,7 +1668,7 @@ static void upload_heightfields(opengl_backend_data *d, const scene *s) {
             meta[i].offsets[0] = h_off;
             meta[i].offsets[1] = n_off;
             meta[i].offsets[2] = c_off;
-            meta[i].offsets[3] = 0;
+            meta[i].offsets[3] = (int32_t)hf->material;  /* -1 = raw cell colors */
 
             memcpy(&heights[h_off], hf->heights, sizeof(float) * (size_t)verts);
             memcpy(&normals[n_off], hf->normals, sizeof(float) * (size_t)verts * 3);
@@ -1547,13 +1703,14 @@ static void opengl_destroy(rt_renderer *r) {
         for (int i = 0; i < 17; i++) {
             if (d->ssbo[i]) glDeleteBuffers(1, &d->ssbo[i]);
         }
+        rt_scene_accel_dispose(&d->accel);
         free(d);
     }
     free(r);
 }
 
 static void opengl_render(rt_renderer *r,
-                          const scene *scene,
+                          const scene *scene_in,
                           const scene_camera *camera,
                           const rt_viewport *viewport,
                           uint32_t *pixels) {
@@ -1561,23 +1718,31 @@ static void opengl_render(rt_renderer *r,
     int w = viewport->width;
     int h = viewport->height;
 
+    /* Skinning rewrites mesh vertex buffers and BVHs; rest of the path
+     * treats the scene as read-only (matches the CPU contract). */
+    scene *scn = (scene *)(uintptr_t)scene_in;
+    const mat4 *mesh_world_inv = NULL;
+    if (rt_scene_accel_resolve(&d->accel, scn) && scn->mesh_count > 0) {
+        mesh_world_inv = d->accel.mesh_world_inv;
+    }
+
     ensure_output_tex(d, w, h);
 
     glUseProgram(d->program);
     glBindImageTexture(0, d->output_tex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 
-    upload_spheres(d, scene);
-    upload_planes(d, scene);
-    upload_discs(d, scene);
-    upload_cylinders(d, scene);
-    upload_triangles(d, scene);
-    upload_meshes(d, scene);        /* mesh descriptors + BVH nodes */
-    upload_boxes(d, scene);
-    upload_sprites(d, scene);       /* must run before sprite atlas bind */
-    upload_lights(d, scene);
-    upload_heightfields(d, scene);
-    upload_materials(d, scene);
-    upload_textures(d, scene);
+    upload_spheres(d, scn);
+    upload_planes(d, scn);
+    upload_discs(d, scn);
+    upload_cylinders(d, scn);
+    upload_triangles(d, scn);
+    upload_meshes(d, scn, mesh_world_inv);
+    upload_boxes(d, scn);
+    upload_sprites(d, scn);         /* must run before sprite atlas bind */
+    upload_lights(d, scn);
+    upload_heightfields(d, scn);
+    upload_materials(d, scn);
+    upload_textures(d, scn);
 
     vector origin, forward, right, up;
     scene_camera_get_basis(camera, &origin, &forward, &right, &up);
@@ -1587,20 +1752,21 @@ static void opengl_render(rt_renderer *r,
     glUniform3f(d->u_cam_right,   right.x,   right.y,   right.z);
     glUniform3f(d->u_cam_up,      up.x,      up.y,      up.z);
     glUniform1f(d->u_fov,         viewport->fov);
-    glUniform1f(d->u_ambient,     scene->ambient);
-    glUniform1i(d->u_sphere_count,      scene->sphere_count);
-    glUniform1i(d->u_plane_count,       scene->plane_count);
-    glUniform1i(d->u_disc_count,        scene->disc_count);
-    glUniform1i(d->u_cylinder_count,    scene->cylinder_count);
+    glUniform1f(d->u_ambient,     scn->ambient);
+    glUniform1i(d->u_sphere_count,      scn->sphere_count);
+    glUniform1i(d->u_plane_count,       scn->plane_count);
+    glUniform1i(d->u_disc_count,        scn->disc_count);
+    glUniform1i(d->u_cylinder_count,    scn->cylinder_count);
     /* The triangle SSBO still holds explicit + mesh triangles, but only
      * explicit ones are scanned linearly here; mesh triangles are reached
      * through the per-mesh BVH traversal below. */
-    glUniform1i(d->u_triangle_count,    scene->triangle_count);
-    glUniform1i(d->u_mesh_count,        scene->mesh_count);
-    glUniform1i(d->u_box_count,         scene->box_count);
-    glUniform1i(d->u_sprite_count,      scene->sprite_count);
-    glUniform1i(d->u_heightfield_count, scene->heightfield_count);
-    glUniform1i(d->u_light_count,       scene->light_count);
+    glUniform1i(d->u_triangle_count,    scn->triangle_count);
+    glUniform1i(d->u_mesh_count,        scn->mesh_count);
+    glUniform1i(d->u_box_count,         scn->box_count);
+    glUniform1i(d->u_sprite_count,      scn->sprite_count);
+    glUniform1i(d->u_heightfield_count, scn->heightfield_count);
+    glUniform1i(d->u_light_count,       scn->light_count);
+    glUniform1i(d->u_material_count,    scn->material_count);
 
     glDispatchCompute((GLuint)((w + 15) / 16), (GLuint)((h + 15) / 16), 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |

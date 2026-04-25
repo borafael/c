@@ -403,7 +403,8 @@ static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
 
 static void usage(const char *argv0) {
     fprintf(stderr,
-            "Usage: %s [--load-fbx <path>]\n"
+            "Usage: %s [-G|--gpu] [--load-fbx <path>]\n"
+            "  -G, --gpu          Start with the OpenGL backend (TAB toggles).\n"
             "  --load-fbx <path>  Load and play the first animation from an FBX\n"
             "                     file. Both rigid and skinned meshes are\n"
             "                     supported and animated.\n",
@@ -412,9 +413,12 @@ static void usage(const char *argv0) {
 
 int main(int argc, char **argv) {
     const char *fbx_path = NULL;
+    rt_backend preferred = RT_BACKEND_CPU;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--load-fbx") == 0 && i + 1 < argc) {
             fbx_path = argv[++i];
+        } else if (strcmp(argv[i], "-G") == 0 || strcmp(argv[i], "--gpu") == 0) {
+            preferred = RT_BACKEND_OPENGL;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -444,8 +448,19 @@ int main(int argc, char **argv) {
     if (!gl_ctx) { fprintf(stderr, "gl ctx: %s\n", SDL_GetError()); SDL_Quit(); return 1; }
     SDL_GL_SetSwapInterval(1);
 
-    rt_renderer *rnd = rt_renderer_create(RT_BACKEND_CPU);
-    if (!rnd) { fprintf(stderr, "no CPU backend\n"); return 1; }
+    rt_renderer *cpu_rnd = rt_renderer_available(RT_BACKEND_CPU)
+                         ? rt_renderer_create(RT_BACKEND_CPU)    : NULL;
+    rt_renderer *gpu_rnd = rt_renderer_available(RT_BACKEND_OPENGL)
+                         ? rt_renderer_create(RT_BACKEND_OPENGL) : NULL;
+    if (!cpu_rnd && !gpu_rnd) {
+        fprintf(stderr, "no raytrace backend available\n");
+        return 1;
+    }
+    rt_renderer *rnd = (preferred == RT_BACKEND_OPENGL && gpu_rnd) ? gpu_rnd
+                     : (cpu_rnd ? cpu_rnd : gpu_rnd);
+    fprintf(stderr, "anim: active backend = %s%s\n",
+            rt_renderer_name(rnd),
+            (cpu_rnd && gpu_rnd) ? " (TAB toggles)" : "");
 
     scene *s = NULL;
     if (fbx_path) {
@@ -490,7 +505,7 @@ int main(int argc, char **argv) {
 
     fprintf(stderr,
             "anim: controls — left-drag orbit, right-drag pan, "
-            "scroll zoom, R reset, SPACE pause, ESC quit\n");
+            "scroll zoom, R reset, SPACE pause, TAB toggle backend, ESC quit\n");
 
     int render_w = window_w, render_h = window_h;
     uint32_t *pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
@@ -525,6 +540,10 @@ int main(int argc, char **argv) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
                 if (e.key.keysym.sym == SDLK_SPACE)  paused = !paused;
                 if (e.key.keysym.sym == SDLK_r)      orbit_reset(&cam_orbit);
+                if (e.key.keysym.sym == SDLK_TAB && cpu_rnd && gpu_rnd) {
+                    rnd = (rnd == cpu_rnd) ? gpu_rnd : cpu_rnd;
+                    fprintf(stderr, "anim: backend = %s\n", rt_renderer_name(rnd));
+                }
             }
             if (e.type == SDL_MOUSEMOTION) {
                 if (e.motion.state & SDL_BUTTON_LMASK) {
@@ -563,7 +582,8 @@ int main(int argc, char **argv) {
 
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
-    rt_renderer_destroy(rnd);
+    rt_renderer_destroy(cpu_rnd);
+    rt_renderer_destroy(gpu_rnd);
     free(pixels);
     scene_camera_destroy(cam);
     scene_destroy(s);
