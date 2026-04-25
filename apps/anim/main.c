@@ -273,7 +273,7 @@ static int build_scene_from_fbx(const char *path, scene **scene_out) {
     if (!s) return 0;
 
     int first_node = 0;
-    int n = scene_add_fbx(s, path, SCENE_FBX_ALLOW_SKINNED, &first_node);
+    int n = scene_add_fbx(s, path, SCENE_FBX_DEFAULT, &first_node);
     if (n < 0) {
         fprintf(stderr, "anim: failed to load FBX: %s\n", path);
         scene_destroy(s);
@@ -405,7 +405,8 @@ static void usage(const char *argv0) {
     fprintf(stderr,
             "Usage: %s [--load-fbx <path>]\n"
             "  --load-fbx <path>  Load and play the first animation from an FBX\n"
-            "                     file. Skinned meshes load in rest pose.\n",
+            "                     file. Both rigid and skinned meshes are\n"
+            "                     supported and animated.\n",
             argv0);
 }
 

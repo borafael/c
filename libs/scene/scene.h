@@ -174,11 +174,57 @@ typedef struct {
      * linear triangle scan." */
     void         *accel;
     int           accel_count;    /* renderer-defined units (e.g. BVH nodes) */
+    /* Skin index into scene->skins, or -1 for a rigid mesh (default). A
+     * skinned mesh has its `vertices` rewritten each frame by
+     * scene_apply_skinning from the skin's preserved rest pose. */
+    int           skin_index;
 } scene_mesh;
 
 /* Recompute bounds_center / bounds_radius from the current vertex positions.
  * Safe to call on an empty mesh (sets radius = 0). */
 void scene_mesh_compute_bounds(scene_mesh *mesh);
+
+/* ============================== Skinning =================================
+ *
+ * A skin deforms a single mesh's vertices each frame as a weighted blend
+ * of "bone" transforms. Bones are scene_nodes — the existing animation
+ * runtime drives them as usual (animation tracks → scene_node.transform).
+ *
+ * Coexists with rigid animation: meshes with skin_index >= 0 are
+ * deformed by scene_apply_skinning; meshes with skin_index < 0 follow
+ * the existing rigid path (mesh attached to a node, world transform
+ * applied at intersect time).
+ *
+ * Output convention: scene_apply_skinning writes vertex positions in
+ * MESH-LOCAL space (relative to the owning_node_index). The renderer
+ * then applies the owning node's world transform exactly once via the
+ * existing rigid path, so the mesh tracks any animation on the owning
+ * node (e.g., translating the whole character) without special-case
+ * handling. The cost is one mat4 inverse per skin per frame. */
+#define SCENE_SKIN_INFLUENCES_PER_VERTEX 4
+
+typedef struct {
+    int  bone_node_index;   /* into scene->nodes */
+    mat4 bind_inv;          /* ufbx_skin_cluster.geometry_to_bone, the bone's
+                             * bind-pose-relative transform from mesh geometry
+                             * into bone-local space. Per-frame skin matrix:
+                             *   owning_inv * node_world[bone] * bind_inv. */
+} scene_skin_bone;
+
+typedef struct {
+    int32_t bone[SCENE_SKIN_INFLUENCES_PER_VERTEX];   /* index into skin->bones; -1 = unused slot */
+    float   weight[SCENE_SKIN_INFLUENCES_PER_VERTEX]; /* renormalized to sum ~1 */
+} scene_skin_vertex;
+
+typedef struct {
+    scene_skin_bone   *bones;             /* owned */
+    int                bone_count;
+    scene_skin_vertex *influences;        /* owned, length == vertex_count */
+    int                vertex_count;      /* matches scene_mesh.vertex_count */
+    vector            *rest_positions;    /* owned, mesh-local rest pose */
+    vector            *rest_normals;      /* owned, mesh-local rest pose */
+    int                owning_node_index; /* node that carries the skinned mesh */
+} scene_skin;
 
 /* ============================== Lights =================================== */
 typedef struct {
@@ -297,6 +343,7 @@ typedef struct {
     scene_material    *materials;    int material_count,    material_capacity;
     scene_texture     *textures;     int texture_count,     texture_capacity;
     scene_mesh        *meshes;       int mesh_count,        mesh_capacity;
+    scene_skin        *skins;        int skin_count,        skin_capacity;
     scene_node        *nodes;        int node_count,        node_capacity;
     scene_animation   *animations;   int animation_count,   animation_capacity;
     float              ambient;
@@ -330,6 +377,10 @@ int scene_add_light(scene *s, scene_light light);
 int scene_add_material(scene *s, scene_material material);
 int scene_add_texture(scene *s, scene_texture texture);
 int scene_add_mesh(scene *s, scene_mesh mesh);
+/* Append a skin record. Takes ownership of all owned buffers (bones,
+ * influences, rest_positions, rest_normals) — they are freed by
+ * scene_destroy / scene_clear. */
+int scene_add_skin(scene *s, scene_skin skin);
 int scene_add_node(scene *s, scene_node node);
 
 /* Returns the index of the first node whose name matches `name`, or -1
@@ -358,6 +409,15 @@ void scene_anim_sample(scene *s, const scene_animation *anim,
  * Properly composes rotations as matrices, so chains rotating around
  * mixed axes are exact (unlike summing Euler angles channel-wise). */
 void scene_resolve_world_transforms(const scene *s, mat4 *out_world);
+
+/* For every mesh whose skin_index >= 0, deforms mesh->vertices[] from
+ * the skin's preserved rest pose using the resolved world transforms in
+ * `node_world` (typically produced by scene_resolve_world_transforms).
+ * Output positions / normals are in MESH-LOCAL space — the owning node's
+ * world transform is applied later by the renderer as for rigid meshes.
+ * Updates each touched mesh's bounds_center / bounds_radius. No-op for
+ * scenes without any skinned meshes. */
+void scene_apply_skinning(scene *s, const mat4 *node_world);
 
 void scene_set_ambient(scene *s, float ambient);
 

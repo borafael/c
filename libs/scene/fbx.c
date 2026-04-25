@@ -26,6 +26,17 @@ static scene_color color_from_ufbx(ufbx_vec3 c) {
  * the loader boundary. */
 #define UFBX_DEG_TO_RAD ((float)(M_PI / 180.0))
 
+/* ufbx stores 4x3 column-major affine matrices; our mat4 is row-major
+ * with an implied (0,0,0,1) bottom row. Plain repacking. */
+static mat4 mat4_from_ufbx(ufbx_matrix u) {
+    mat4 r;
+    r.m[ 0] = (float)u.m00; r.m[ 1] = (float)u.m01; r.m[ 2] = (float)u.m02; r.m[ 3] = (float)u.m03;
+    r.m[ 4] = (float)u.m10; r.m[ 5] = (float)u.m11; r.m[ 6] = (float)u.m12; r.m[ 7] = (float)u.m13;
+    r.m[ 8] = (float)u.m20; r.m[ 9] = (float)u.m21; r.m[10] = (float)u.m22; r.m[11] = (float)u.m23;
+    r.m[12] = 0.0f;         r.m[13] = 0.0f;         r.m[14] = 0.0f;         r.m[15] = 1.0f;
+    return r;
+}
+
 static scene_transform transform_from_ufbx(ufbx_transform t) {
     ufbx_vec3 e = ufbx_quat_to_euler(t.rotation, UFBX_ROTATION_ORDER_XYZ);
     scene_transform out;
@@ -69,6 +80,13 @@ void scene_fbx_result_free(scene_fbx_result *r) {
         free(r->meshes[i].accel);
     }
     free(r->meshes);
+    for (int i = 0; i < r->skin_count; i++) {
+        free(r->skins[i].bones);
+        free(r->skins[i].influences);
+        free(r->skins[i].rest_positions);
+        free(r->skins[i].rest_normals);
+    }
+    free(r->skins);
     free(r->nodes);
     free(r->materials);
     for (int i = 0; i < r->animation_count; i++) {
@@ -83,15 +101,141 @@ void scene_fbx_result_free(scene_fbx_result *r) {
 
 /* ============================ Mesh triangulation ========================= */
 
-/* Appends one scene_mesh per ufbx_mesh_part into `out->meshes`. Returns
- * the scene_mesh index of the FIRST part emitted (-1 if none), or -2 on
- * allocation failure. */
+/* Top-N influence picker: takes the cluster_index/weight pairs for one
+ * control point and writes the largest N (by weight) into `out_bone` /
+ * `out_weight`, renormalized so they sum to 1. Unused slots get bone=-1,
+ * weight=0. */
+static void pick_top_influences(const ufbx_skin_weight *wbeg, uint32_t wcount,
+                                int32_t out_bone[SCENE_SKIN_INFLUENCES_PER_VERTEX],
+                                float   out_weight[SCENE_SKIN_INFLUENCES_PER_VERTEX]) {
+    for (int k = 0; k < SCENE_SKIN_INFLUENCES_PER_VERTEX; k++) {
+        out_bone[k]   = -1;
+        out_weight[k] = 0.0f;
+    }
+    /* ufbx weights are sorted by decreasing weight already, so just take
+     * the first N. (Per ufbx_skin_vertex docstring.) */
+    int n = (int)wcount;
+    if (n > SCENE_SKIN_INFLUENCES_PER_VERTEX) n = SCENE_SKIN_INFLUENCES_PER_VERTEX;
+    float sum = 0.0f;
+    for (int k = 0; k < n; k++) {
+        out_bone[k]   = (int32_t)wbeg[k].cluster_index;
+        out_weight[k] = (float)wbeg[k].weight;
+        sum += out_weight[k];
+    }
+    if (sum > 0.0f) {
+        float inv = 1.0f / sum;
+        for (int k = 0; k < n; k++) out_weight[k] *= inv;
+    }
+}
+
+/* Build a scene_skin from a ufbx_skin_deformer for ONE material part.
+ * `cp_for_corner` maps emitted-vertex index → control point index (length
+ * vcount). Stashes per-bone ufbx_node* into `out_bone_nodes` (caller-
+ * allocated, length skin->clusters.count) for later resolution against
+ * the global node_map. Sets bone_node_index = -1 in every bone. Returns
+ * 1 on success, 0 on alloc failure (caller frees outputs). */
+static int build_skin_for_part(const ufbx_skin_deformer *sd,
+                               const uint32_t *cp_for_corner,
+                               int vcount,
+                               const ufbx_vec3 *rest_pos_buf,
+                               const ufbx_vec3 *rest_nrm_buf,
+                               int owning_node_index,
+                               scene_skin *out_skin,
+                               const ufbx_node **out_bone_nodes) {
+    memset(out_skin, 0, sizeof(*out_skin));
+    out_skin->owning_node_index = owning_node_index;
+
+    int bone_count = (int)sd->clusters.count;
+    if (bone_count <= 0) return 0;
+
+    out_skin->bones = calloc((size_t)bone_count, sizeof(scene_skin_bone));
+    if (!out_skin->bones) return 0;
+    out_skin->bone_count = bone_count;
+    for (int b = 0; b < bone_count; b++) {
+        const ufbx_skin_cluster *cl = sd->clusters.data[b];
+        out_skin->bones[b].bone_node_index = -1;          /* resolved later */
+        out_skin->bones[b].bind_inv = mat4_from_ufbx(cl->geometry_to_bone);
+        out_bone_nodes[b] = cl->bone_node;                /* may be NULL */
+    }
+
+    out_skin->vertex_count = vcount;
+    out_skin->influences     = malloc(sizeof(scene_skin_vertex) * (size_t)vcount);
+    out_skin->rest_positions = malloc(sizeof(vector) * (size_t)vcount);
+    out_skin->rest_normals   = malloc(sizeof(vector) * (size_t)vcount);
+    if (!out_skin->influences || !out_skin->rest_positions || !out_skin->rest_normals) {
+        return 0;
+    }
+
+    for (int i = 0; i < vcount; i++) {
+        out_skin->rest_positions[i] = vec3_from_ufbx(rest_pos_buf[i]);
+        out_skin->rest_normals[i]   = vec3_from_ufbx(rest_nrm_buf[i]);
+
+        uint32_t cp = cp_for_corner[i];
+        if (cp >= sd->vertices.count) {
+            out_skin->influences[i].bone[0] = -1;
+            out_skin->influences[i].weight[0] = 0.0f;
+            for (int k = 1; k < SCENE_SKIN_INFLUENCES_PER_VERTEX; k++) {
+                out_skin->influences[i].bone[k]   = -1;
+                out_skin->influences[i].weight[k] = 0.0f;
+            }
+            continue;
+        }
+        const ufbx_skin_vertex sv = sd->vertices.data[cp];
+        const ufbx_skin_weight *wbeg = (sv.num_weights > 0)
+            ? &sd->weights.data[sv.weight_begin] : NULL;
+        pick_top_influences(wbeg, sv.num_weights,
+                            out_skin->influences[i].bone,
+                            out_skin->influences[i].weight);
+    }
+    return 1;
+}
+
+/* Per-skin scratch held during scene_load_fbx so we can defer cluster→
+ * scene_node resolution until after the full DFS populates node_map. */
+typedef struct {
+    const ufbx_node **bone_nodes;   /* length == out->skins[skin_idx].bone_count */
+    int               bone_count;
+} skin_scratch_entry;
+
+/* Appends one scene_mesh per ufbx_mesh_part into `out->meshes`, and one
+ * paired scene_skin per emitted mesh when the source has a skin deformer.
+ * Returns the scene_mesh index of the FIRST part emitted (-1 if none),
+ * or -2 on allocation failure.
+ *
+ * `owning_node_base` is the scene_node index that will own the FIRST
+ * emitted material part (the parent node added right after this returns).
+ * Subsequent material parts are owned by child nodes inserted at
+ * owning_node_base + 1, +2, ... — we predict that arrangement here so
+ * each skin's owning_node_index lands on the right node without
+ * requiring a fixup pass.
+ *
+ * `scratch` and `*scratch_count` / `*scratch_capacity` track per-skin
+ * ufbx_node** lists for deferred bone resolution. Grown in lockstep
+ * with out->skins. */
 static int emit_meshes_for_part_set(const ufbx_mesh *mesh,
                                     const int *mat_map,
                                     int default_material_index,
+                                    int owning_node_base,
                                     scene_fbx_result *out,
-                                    int *out_mesh_capacity) {
+                                    int *out_mesh_capacity,
+                                    int *out_skin_capacity,
+                                    skin_scratch_entry **scratch,
+                                    int *scratch_capacity) {
+    /* First skin deformer wins; warn on extras. */
+    const ufbx_skin_deformer *sd = NULL;
+    if (mesh->skin_deformers.count > 0) {
+        sd = mesh->skin_deformers.data[0];
+        if (mesh->skin_deformers.count > 1) {
+            fprintf(stderr,
+                    "scene_load_fbx: mesh \"%.*s\" has %zu skin deformers; "
+                    "blending multiple skins is not supported, using the first.\n",
+                    (int)mesh->name.length, mesh->name.data,
+                    mesh->skin_deformers.count);
+        }
+    }
+
     int first_emitted = -1;
+    int part_emit_idx = 0;  /* index of THIS emitted part within this mesh */
     for (size_t p = 0; p < mesh->material_parts.count; p++) {
         const ufbx_mesh_part *part = &mesh->material_parts.data[p];
         if (part->num_triangles == 0) continue;
@@ -103,8 +247,20 @@ static int emit_meshes_for_part_set(const ufbx_mesh *mesh,
         size_t vcap = part->num_triangles * 3;
         scene_vertex *verts = malloc(sizeof(scene_vertex) * vcap);
         uint32_t     *inds  = malloc(sizeof(uint32_t)     * vcap);
-        if (!verts || !inds) {
+        /* Skin scratch parallels `verts` so we can record per-corner data
+         * for skin construction. Allocated only when the source mesh has
+         * a skin. */
+        uint32_t  *cp_for_corner = NULL;
+        ufbx_vec3 *rest_pos_buf  = NULL;
+        ufbx_vec3 *rest_nrm_buf  = NULL;
+        if (sd) {
+            cp_for_corner = malloc(sizeof(uint32_t)  * vcap);
+            rest_pos_buf  = malloc(sizeof(ufbx_vec3) * vcap);
+            rest_nrm_buf  = malloc(sizeof(ufbx_vec3) * vcap);
+        }
+        if (!verts || !inds || (sd && (!cp_for_corner || !rest_pos_buf || !rest_nrm_buf))) {
             free(tri_scratch); free(verts); free(inds);
+            free(cp_for_corner); free(rest_pos_buf); free(rest_nrm_buf);
             return -2;
         }
 
@@ -117,12 +273,16 @@ static int emit_meshes_for_part_set(const ufbx_mesh *mesh,
                 for (int k = 0; k < 3; k++) {
                     uint32_t vi = tri_scratch[t * 3 + k];
                     scene_vertex v;
-                    v.position = vec3_from_ufbx(
-                        ufbx_get_vertex_vec3(&mesh->vertex_position, vi));
+                    ufbx_vec3 raw_pos = ufbx_get_vertex_vec3(
+                        &mesh->vertex_position, vi);
+                    v.position = vec3_from_ufbx(raw_pos);
+                    ufbx_vec3 raw_nrm;
                     if (mesh->vertex_normal.exists) {
-                        v.normal = vec3_from_ufbx(
-                            ufbx_get_vertex_vec3(&mesh->vertex_normal, vi));
+                        raw_nrm = ufbx_get_vertex_vec3(
+                            &mesh->vertex_normal, vi);
+                        v.normal = vec3_from_ufbx(raw_nrm);
                     } else {
+                        raw_nrm = (ufbx_vec3){0, 1, 0};
                         v.normal = (vector){0, 1, 0};
                     }
                     if (mesh->vertex_uv.exists) {
@@ -134,6 +294,16 @@ static int emit_meshes_for_part_set(const ufbx_mesh *mesh,
                     }
                     verts[vcount] = v;
                     inds[icount++] = (uint32_t)vcount;
+                    if (sd) {
+                        /* mesh->vertex_indices maps per-corner index to
+                         * control point index; weights are indexed by CP. */
+                        uint32_t cp = (vi < mesh->vertex_indices.count)
+                            ? mesh->vertex_indices.data[vi]
+                            : 0;
+                        cp_for_corner[vcount] = cp;
+                        rest_pos_buf[vcount]  = raw_pos;
+                        rest_nrm_buf[vcount]  = raw_nrm;
+                    }
                     vcount++;
                 }
             }
@@ -142,6 +312,7 @@ static int emit_meshes_for_part_set(const ufbx_mesh *mesh,
 
         if (vcount == 0) {
             free(verts); free(inds);
+            free(cp_for_corner); free(rest_pos_buf); free(rest_nrm_buf);
             continue;
         }
 
@@ -159,7 +330,11 @@ static int emit_meshes_for_part_set(const ufbx_mesh *mesh,
         if (out->mesh_count >= *out_mesh_capacity) {
             int nc = *out_mesh_capacity ? *out_mesh_capacity * 2 : 8;
             scene_mesh *nm = realloc(out->meshes, sizeof(scene_mesh) * nc);
-            if (!nm) { free(verts); free(inds); return -2; }
+            if (!nm) {
+                free(verts); free(inds);
+                free(cp_for_corner); free(rest_pos_buf); free(rest_nrm_buf);
+                return -2;
+            }
             out->meshes = nm;
             *out_mesh_capacity = nc;
         }
@@ -171,10 +346,68 @@ static int emit_meshes_for_part_set(const ufbx_mesh *mesh,
         sm.indices        = inds;
         sm.index_count    = icount;
         sm.material_index = matidx;
+        sm.skin_index     = -1;
         scene_mesh_compute_bounds(&sm);
+
+        /* If the source has a skin, build one scene_skin per emitted
+         * scene_mesh. Each part shares the cluster set but has its own
+         * rest pose / per-vertex influences. owning_node_index is
+         * predicted from the DFS layout: parent at owning_node_base,
+         * extras at owning_node_base + 1, +2, ... */
+        if (sd) {
+            if (out->skin_count >= *out_skin_capacity) {
+                int nc = *out_skin_capacity ? *out_skin_capacity * 2 : 4;
+                scene_skin *ns = realloc(out->skins, sizeof(scene_skin) * nc);
+                skin_scratch_entry *nsc = realloc(*scratch,
+                                                  sizeof(skin_scratch_entry) * nc);
+                if (!ns || !nsc) {
+                    free(ns); free(nsc);
+                    free(verts); free(inds);
+                    free(cp_for_corner); free(rest_pos_buf); free(rest_nrm_buf);
+                    return -2;
+                }
+                out->skins = ns;
+                *scratch = nsc;
+                *out_skin_capacity = nc;
+                *scratch_capacity = nc;
+            }
+
+            ufbx_node **bone_nodes_arr =
+                malloc(sizeof(ufbx_node*) * sd->clusters.count);
+            if (!bone_nodes_arr) {
+                free(verts); free(inds);
+                free(cp_for_corner); free(rest_pos_buf); free(rest_nrm_buf);
+                return -2;
+            }
+
+            scene_skin sk;
+            int ok = build_skin_for_part(sd, cp_for_corner, vcount,
+                                         rest_pos_buf, rest_nrm_buf,
+                                         owning_node_base + part_emit_idx,
+                                         &sk,
+                                         (const ufbx_node **)bone_nodes_arr);
+            if (!ok) {
+                free(sk.bones); free(sk.influences);
+                free(sk.rest_positions); free(sk.rest_normals);
+                free(bone_nodes_arr);
+                free(verts); free(inds);
+                free(cp_for_corner); free(rest_pos_buf); free(rest_nrm_buf);
+                return -2;
+            }
+
+            sm.skin_index = out->skin_count;
+            out->skins[out->skin_count] = sk;
+            (*scratch)[out->skin_count].bone_nodes =
+                (const ufbx_node **)bone_nodes_arr;
+            (*scratch)[out->skin_count].bone_count = sk.bone_count;
+            out->skin_count++;
+        }
+
+        free(cp_for_corner); free(rest_pos_buf); free(rest_nrm_buf);
 
         if (first_emitted < 0) first_emitted = out->mesh_count;
         out->meshes[out->mesh_count++] = sm;
+        part_emit_idx++;
     }
     return first_emitted;
 }
@@ -280,8 +513,9 @@ oom:
 
 /* ============================== Main loader ============================== */
 
-/* Load the FBX via ufbx and run the skinned-mesh gate. Returns a ufbx
- * scene on success, NULL on failure (with an error already printed). */
+/* Load the FBX via ufbx with our project-wide options. Returns a ufbx
+ * scene on success, NULL on failure (with an error already printed).
+ * Skinned meshes are loaded as scene_skin records — see scene_apply_skinning. */
 static ufbx_scene *load_and_gate(const char *path, scene_fbx_flags flags) {
     ufbx_load_opts opts;
     memset(&opts, 0, sizeof(opts));
@@ -298,23 +532,6 @@ static ufbx_scene *load_and_gate(const char *path, scene_fbx_flags flags) {
         ufbx_format_error(msg, sizeof(msg), &err);
         fprintf(stderr, "scene_load_fbx: %s\n", msg);
         return NULL;
-    }
-
-    /* Skinning gate only matters when meshes are being consumed. */
-    if (!(flags & (SCENE_FBX_ALLOW_SKINNED | SCENE_FBX_ANIMATION_ONLY))) {
-        for (size_t i = 0; i < u->meshes.count; i++) {
-            if (u->meshes.data[i]->skin_deformers.count > 0) {
-                fprintf(stderr,
-                    "scene_load_fbx: %s contains skinned mesh \"%.*s\"; "
-                    "re-export with rigid parenting or pass "
-                    "SCENE_FBX_ALLOW_SKINNED.\n",
-                    path,
-                    (int)u->meshes.data[i]->name.length,
-                    u->meshes.data[i]->name.data);
-                ufbx_free_scene(u);
-                return NULL;
-            }
-        }
     }
     return u;
 }
@@ -367,6 +584,9 @@ int scene_load_fbx(const char *path, scene_fbx_flags flags,
     if (!out->nodes) { free(node_map); goto oom; }
 
     int mesh_cap = 0;
+    int skin_cap = 0;
+    skin_scratch_entry *skin_scratch = NULL;
+    int skin_scratch_cap = 0;
 
     /* Iterative DFS using a stack of ufbx_node pointers. We skip the
      * root itself but visit its direct children as top-level nodes. */
@@ -383,14 +603,23 @@ int scene_load_fbx(const char *path, scene_fbx_flags flags,
             parent_idx = node_map[n->parent->typed_id];
         }
 
-        /* Emit meshes for this node (per material part). */
+        /* Emit meshes for this node (per material part). The owning_node
+         * for the first part is the parent node we're about to add at
+         * out->node_count; subsequent parts go to children at
+         * out->node_count + 1, +2, ... */
         int first_mesh = -1;
         if (n->mesh) {
+            int owning_node_base = out->node_count;
             first_mesh = emit_meshes_for_part_set(
                 n->mesh, mat_map, default_material_index,
-                out, &mesh_cap);
+                owning_node_base,
+                out, &mesh_cap, &skin_cap,
+                &skin_scratch, &skin_scratch_cap);
             if (first_mesh == -2) {
-                free(stack); free(node_map); goto oom;
+                free(stack); free(node_map);
+                for (int i = 0; i < out->skin_count; i++) free(skin_scratch[i].bone_nodes);
+                free(skin_scratch);
+                goto oom;
             }
         }
 
@@ -431,6 +660,24 @@ int scene_load_fbx(const char *path, scene_fbx_flags flags,
         }
     }
     free(stack);
+
+    /* Resolve skin cluster bone_node pointers to scene_node indices via
+     * node_map, now that the DFS is complete. Bones whose ufbx_node
+     * pointer is NULL or maps to -1 are kept with bone_node_index = -1;
+     * scene_apply_skinning treats those as identity transforms. */
+    for (int si = 0; si < out->skin_count; si++) {
+        scene_skin *sk = &out->skins[si];
+        const skin_scratch_entry *sc = &skin_scratch[si];
+        for (int b = 0; b < sk->bone_count && b < sc->bone_count; b++) {
+            const ufbx_node *bn = sc->bone_nodes[b];
+            if (bn && bn != u->root_node) {
+                int our = node_map[bn->typed_id];
+                sk->bones[b].bone_node_index = our;  /* may be -1 if unmapped */
+            }
+        }
+    }
+    for (int i = 0; i < out->skin_count; i++) free(skin_scratch[i].bone_nodes);
+    free(skin_scratch);
 
     /* Animations. */
     if (!(flags & SCENE_FBX_SKIP_ANIMATION) && u->anim_stacks.count > 0) {
@@ -535,6 +782,7 @@ int scene_add_fbx(scene *s, const char *path, scene_fbx_flags flags,
     if (!scene_load_fbx(path, flags, &r)) return -1;
 
     int mat_base  = s->material_count;
+    int skin_base = s->skin_count;
     int mesh_base = s->mesh_count;
     int node_base = s->node_count;
     if (first_node_index_out) *first_node_index_out = node_base;
@@ -543,10 +791,37 @@ int scene_add_fbx(scene *s, const char *path, scene_fbx_flags flags,
     for (int i = 0; i < r.material_count; i++) {
         if (scene_add_material(s, r.materials[i]) < 0) goto fail;
     }
-    /* Meshes (move ownership of vertices/indices). Rewrite material_index. */
+    /* Skins (move ownership of all owned buffers). Must be added BEFORE
+     * meshes so scene_add_mesh's skin_index range check accepts the
+     * mesh's rebased skin_index. Rebase bone/owning node indices to
+     * post-append scene_node space. */
+    for (int i = 0; i < r.skin_count; i++) {
+        scene_skin sk = r.skins[i];
+        if (sk.owning_node_index >= 0) sk.owning_node_index += node_base;
+        for (int b = 0; b < sk.bone_count; b++) {
+            if (sk.bones[b].bone_node_index >= 0) {
+                sk.bones[b].bone_node_index += node_base;
+            }
+        }
+        if (scene_add_skin(s, sk) < 0) {
+            free(sk.bones); free(sk.influences);
+            free(sk.rest_positions); free(sk.rest_normals);
+            goto fail;
+        }
+        /* Ownership transferred — zero the source so result_free is safe. */
+        r.skins[i].bones = NULL;
+        r.skins[i].influences = NULL;
+        r.skins[i].rest_positions = NULL;
+        r.skins[i].rest_normals = NULL;
+        r.skins[i].bone_count = 0;
+        r.skins[i].vertex_count = 0;
+    }
+    /* Meshes (move ownership of vertices/indices). Rewrite material_index
+     * and skin_index (the latter relative to r.skins; rebase to scene). */
     for (int i = 0; i < r.mesh_count; i++) {
         scene_mesh m = r.meshes[i];
         if (m.material_index >= 0) m.material_index += mat_base;
+        if (m.skin_index     >= 0) m.skin_index     += skin_base;
         if (scene_add_mesh(s, m) < 0) {
             /* If the add fails, the mesh's buffers weren't taken — free here. */
             free(m.vertices); free(m.indices); free(m.accel);

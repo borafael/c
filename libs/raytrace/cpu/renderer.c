@@ -2,6 +2,7 @@
 #include "render_chunk.h"
 #include "thread_pool.h"
 #include "matrix.h"
+#include "bvh.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -61,9 +62,15 @@ static void cpu_destroy(rt_renderer *r) {
 /* Compute per-mesh inverse-world matrices from the scene's node tree.
  * Meshes referenced by no node are left at identity (back-compat with
  * OBJ flows that store world-space vertices and add no nodes). Returns
- * NULL if the scene has no meshes or if scratch alloc fails. */
+ * NULL if the scene has no meshes or if scratch alloc fails.
+ *
+ * For skinned meshes, also runs scene_apply_skinning before resolving
+ * the inverse-world matrices, then refreshes their BVH (vertices have
+ * moved). Skinned meshes follow the same world-from-owning-node path as
+ * rigid ones — apply_skinning writes vertex positions in mesh-local
+ * space, so the renderer's contract is unchanged. */
 static const mat4 *resolve_mesh_world_inv(cpu_backend_data *d,
-                                          const scene *s) {
+                                          scene *s) {
     if (s->mesh_count <= 0) return NULL;
 
     if (d->mesh_world_inv_capacity < s->mesh_count) {
@@ -87,6 +94,18 @@ static const mat4 *resolve_mesh_world_inv(cpu_backend_data *d,
     }
     scene_resolve_world_transforms(s, d->node_world);
 
+    /* Skinning pass: deform skinned meshes from rest pose into mesh-local
+     * space, then rebuild each skinned mesh's BVH (vertices moved, the
+     * old BVH is now stale). Rigid meshes are untouched. */
+    if (s->skin_count > 0) {
+        scene_apply_skinning(s, d->node_world);
+        for (int mi = 0; mi < s->mesh_count; mi++) {
+            if (s->meshes[mi].skin_index >= 0) {
+                rt_bvh_build(&s->meshes[mi]);
+            }
+        }
+    }
+
     /* If multiple nodes reference the same mesh, the LAST one wins.
      * In practice each FBX-emitted mesh is owned by exactly one node. */
     for (int i = 0; i < s->node_count; i++) {
@@ -99,11 +118,15 @@ static const mat4 *resolve_mesh_world_inv(cpu_backend_data *d,
 }
 
 static void cpu_render(rt_renderer *r,
-                       const scene *scene,
+                       const scene *scene_in,
                        const scene_camera *camera,
                        const rt_viewport *viewport,
                        uint32_t *pixels) {
     cpu_backend_data *d = r->backend_data;
+    /* Skinning mutates mesh vertex buffers and BVHs; the rest of the
+     * render path treats the scene as read-only. The renderer interface
+     * passes a const pointer for the rigid contract — cast away locally. */
+    scene *scn = (scene *)(uintptr_t)scene_in;
 
     int rows_per = viewport->height / d->num_threads;
     if (rows_per < 1) rows_per = 1;
@@ -112,7 +135,7 @@ static void cpu_render(rt_renderer *r,
     if (n > d->num_threads) n = d->num_threads;
     if (n < 1) n = 1;
 
-    const mat4 *mesh_world_inv = resolve_mesh_world_inv(d, scene);
+    const mat4 *mesh_world_inv = resolve_mesh_world_inv(d, scn);
 
     for (int i = 0; i < n; i++) {
         d->tasks[i] = (cpu_render_task){
@@ -121,7 +144,7 @@ static void cpu_render(rt_renderer *r,
             .y_start        = i * rows_per,
             .y_end          = (i == n - 1) ? viewport->height : (i + 1) * rows_per,
             .camera         = camera,
-            .scene          = scene,
+            .scene          = scn,
             .mesh_world_inv = mesh_world_inv,
         };
         thread_pool_submit(d->pool, cpu_render_task_fn, &d->tasks[i]);

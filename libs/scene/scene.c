@@ -99,6 +99,7 @@ scene *scene_create(void) {
     s->material_capacity     = SCENE_DEFAULT_CAPACITY;
     s->texture_capacity      = SCENE_DEFAULT_CAPACITY;
     s->mesh_capacity         = SCENE_DEFAULT_CAPACITY;
+    s->skin_capacity         = SCENE_DEFAULT_CAPACITY;
     s->node_capacity         = SCENE_DEFAULT_CAPACITY;
     s->animation_capacity    = SCENE_DEFAULT_CAPACITY;
     s->ambient               = 0.15f;
@@ -115,13 +116,14 @@ scene *scene_create(void) {
     s->materials    = malloc(sizeof(scene_material)    * s->material_capacity);
     s->textures     = malloc(sizeof(scene_texture)     * s->texture_capacity);
     s->meshes       = malloc(sizeof(scene_mesh)        * s->mesh_capacity);
+    s->skins        = malloc(sizeof(scene_skin)        * s->skin_capacity);
     s->nodes        = malloc(sizeof(scene_node)        * s->node_capacity);
     s->animations   = malloc(sizeof(scene_animation)   * s->animation_capacity);
 
     if (!s->spheres || !s->planes || !s->discs || !s->cylinders ||
         !s->triangles || !s->boxes || !s->sprites || !s->heightfields ||
         !s->lights || !s->materials || !s->textures ||
-        !s->meshes || !s->nodes || !s->animations) {
+        !s->meshes || !s->skins || !s->nodes || !s->animations) {
         scene_destroy(s);
         return NULL;
     }
@@ -150,10 +152,27 @@ static void free_owned_animation_buffers(scene *s) {
     }
 }
 
+static void free_owned_skin_buffers(scene *s) {
+    for (int i = 0; i < s->skin_count; i++) {
+        scene_skin *sk = &s->skins[i];
+        free(sk->bones);
+        free(sk->influences);
+        free(sk->rest_positions);
+        free(sk->rest_normals);
+        sk->bones = NULL;
+        sk->influences = NULL;
+        sk->rest_positions = NULL;
+        sk->rest_normals = NULL;
+        sk->bone_count = 0;
+        sk->vertex_count = 0;
+    }
+}
+
 void scene_clear(scene *s) {
     if (!s) return;
     free_owned_mesh_buffers(s);
     free_owned_animation_buffers(s);
+    free_owned_skin_buffers(s);
     s->sphere_count      = 0;
     s->plane_count       = 0;
     s->disc_count        = 0;
@@ -166,6 +185,7 @@ void scene_clear(scene *s) {
     s->material_count    = 0;
     s->texture_count     = 0;
     s->mesh_count        = 0;
+    s->skin_count        = 0;
     s->node_count        = 0;
     s->animation_count   = 0;
 }
@@ -174,6 +194,7 @@ void scene_destroy(scene *s) {
     if (!s) return;
     free_owned_mesh_buffers(s);
     free_owned_animation_buffers(s);
+    free_owned_skin_buffers(s);
     free(s->spheres);
     free(s->planes);
     free(s->discs);
@@ -186,6 +207,7 @@ void scene_destroy(scene *s) {
     free(s->materials);
     free(s->textures);
     free(s->meshes);
+    free(s->skins);
     free(s->nodes);
     free(s->animations);
     free(s);
@@ -271,8 +293,21 @@ int scene_add_texture(scene *s, scene_texture texture) {
 
 int scene_add_mesh(scene *s, scene_mesh mesh) {
     GROW_IF_NEEDED(s->meshes, s->mesh_count, s->mesh_capacity, scene_mesh);
+    /* Normalize skin_index so zero-initialized callers (and any out-of-range
+     * value) default to "rigid mesh, no skin". Callers attaching a skin
+     * must add the skin first so skin_count covers their index. */
+    if (mesh.skin_index < 0 || mesh.skin_index >= s->skin_count) {
+        mesh.skin_index = -1;
+    }
     int idx = s->mesh_count;
     s->meshes[s->mesh_count++] = mesh;
+    return idx;
+}
+
+int scene_add_skin(scene *s, scene_skin skin) {
+    GROW_IF_NEEDED(s->skins, s->skin_count, s->skin_capacity, scene_skin);
+    int idx = s->skin_count;
+    s->skins[s->skin_count++] = skin;
     return idx;
 }
 
@@ -391,6 +426,107 @@ void scene_anim_sample(scene *s, const scene_animation *anim,
         float *slot = channel_slot(&s->nodes[tr->node_index].transform,
                                    tr->channel);
         if (slot) *slot = anim_sample_track(tr, t);
+    }
+}
+
+/* ============================== Skinning ================================= */
+
+/* Returns transform_dir applied with the upper-3x3 of `m`. Used for
+ * normal blending where we have already computed the normal-space
+ * matrix (transpose of inverse) — passing the matrix verbatim to
+ * mat4_transform_normal already does that, but we want raw upper-3x3
+ * here, so we pre-transpose externally. */
+static inline vector mat3_apply(const mat4 *m, vector v) {
+    return (vector){
+        m->m[0]*v.x + m->m[1]*v.y + m->m[ 2]*v.z,
+        m->m[4]*v.x + m->m[5]*v.y + m->m[ 6]*v.z,
+        m->m[8]*v.x + m->m[9]*v.y + m->m[10]*v.z,
+    };
+}
+
+void scene_apply_skinning(scene *s, const mat4 *node_world) {
+    if (!s || !node_world || s->skin_count <= 0) return;
+
+    /* Per-bone scratch — at most one mat4 per bone for the skin matrix
+     * and one for its inverse-transpose-3x3 (used for normals). Bone
+     * counts are small (typically <256), so a stack-or-malloc per skin
+     * is fine. */
+    for (int mi = 0; mi < s->mesh_count; mi++) {
+        scene_mesh *mesh = &s->meshes[mi];
+        if (mesh->skin_index < 0 || mesh->skin_index >= s->skin_count) continue;
+        const scene_skin *sk = &s->skins[mesh->skin_index];
+        if (sk->bone_count <= 0 || sk->vertex_count != mesh->vertex_count) continue;
+
+        mat4 *skin_mat   = malloc(sizeof(mat4) * (size_t)sk->bone_count);
+        mat4 *normal_mat = malloc(sizeof(mat4) * (size_t)sk->bone_count);
+        if (!skin_mat || !normal_mat) {
+            free(skin_mat); free(normal_mat);
+            continue;
+        }
+
+        /* Pull vertices into the owning node's local frame so the
+         * renderer's existing rigid path (apply owning_node world) places
+         * them in world space exactly once, even if the owning node is
+         * animated. */
+        mat4 owning_inv = mat4_identity();
+        if (sk->owning_node_index >= 0 && sk->owning_node_index < s->node_count) {
+            owning_inv = mat4_affine_inverse(node_world[sk->owning_node_index]);
+        }
+
+        for (int b = 0; b < sk->bone_count; b++) {
+            int ni = sk->bones[b].bone_node_index;
+            mat4 bone_world = (ni >= 0 && ni < s->node_count)
+                              ? node_world[ni]
+                              : mat4_identity();
+            skin_mat[b]   = mat4_mul(owning_inv,
+                                     mat4_mul(bone_world, sk->bones[b].bind_inv));
+            /* Normal matrix = inverse-transpose of upper 3x3. We pack it
+             * back into a mat4 (translation cleared) so we can reuse
+             * mat3_apply: stash transpose(inverse(M_3x3)) in the upper
+             * 3x3, with column-major in the row slots so mat3_apply does
+             * the right multiply. The shortcut mat4_transform_normal
+             * builds this on the fly from the affine inverse — we hoist
+             * that work to once-per-bone. */
+            mat4 inv = mat4_affine_inverse(skin_mat[b]);
+            mat4 nm  = mat4_identity();
+            nm.m[ 0] = inv.m[0]; nm.m[ 1] = inv.m[4]; nm.m[ 2] = inv.m[ 8];
+            nm.m[ 4] = inv.m[1]; nm.m[ 5] = inv.m[5]; nm.m[ 6] = inv.m[ 9];
+            nm.m[ 8] = inv.m[2]; nm.m[ 9] = inv.m[6]; nm.m[10] = inv.m[10];
+            normal_mat[b] = nm;
+        }
+
+        for (int v = 0; v < sk->vertex_count; v++) {
+            const scene_skin_vertex *iv = &sk->influences[v];
+            vector pos_rest = sk->rest_positions[v];
+            vector nrm_rest = sk->rest_normals[v];
+
+            vector pos = {0, 0, 0};
+            vector nrm = {0, 0, 0};
+            float total_w = 0.0f;
+            for (int k = 0; k < SCENE_SKIN_INFLUENCES_PER_VERTEX; k++) {
+                int32_t bi = iv->bone[k];
+                float   w  = iv->weight[k];
+                if (bi < 0 || w == 0.0f) continue;
+                if (bi >= sk->bone_count) continue;
+                vector bp = mat4_transform_point(skin_mat[bi], pos_rest);
+                vector bn = mat3_apply(&normal_mat[bi], nrm_rest);
+                pos.x += w * bp.x; pos.y += w * bp.y; pos.z += w * bp.z;
+                nrm.x += w * bn.x; nrm.y += w * bn.y; nrm.z += w * bn.z;
+                total_w += w;
+            }
+            if (total_w == 0.0f) {
+                /* Vertex with no influences: preserve rest pose. */
+                pos = pos_rest;
+                nrm = nrm_rest;
+            }
+            mesh->vertices[v].position = pos;
+            mesh->vertices[v].normal   = vector_normalize(nrm);
+        }
+
+        scene_mesh_compute_bounds(mesh);
+
+        free(skin_mat);
+        free(normal_mat);
     }
 }
 

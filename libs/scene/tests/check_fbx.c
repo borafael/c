@@ -307,6 +307,144 @@ START_TEST(test_scene_destroy_with_animation)
 }
 END_TEST
 
+/* ============================== Skinning ================================
+ *
+ * Synthetic two-vertex mesh fully bound to a single bone. At rest the
+ * vertex sits at (1,0,0); the bone (also at (1,0,0)) rotates 90° around
+ * Z, which should swing the vertex to (0,1,0) in world space — and to
+ * (0,1,0) in mesh-local since the owning node is identity.
+ * ----------------------------------------------------------------------- */
+static scene *build_single_bone_skin(void) {
+    scene *s = scene_create();
+
+    /* Owning mesh node at identity. */
+    scene_node mesh_node;
+    memset(&mesh_node, 0, sizeof(mesh_node));
+    mesh_node.transform = scene_transform_identity();
+    mesh_node.parent_index = -1;
+    mesh_node.mesh_index = -1;  /* fixed up below */
+    int owning_node = scene_add_node(s, mesh_node);
+
+    /* Bone node — sibling of mesh, also at identity (we'll rotate it
+     * via animation / direct write to test the rest pose vs rotated). */
+    scene_node bone_node;
+    memset(&bone_node, 0, sizeof(bone_node));
+    bone_node.transform = scene_transform_identity();
+    bone_node.parent_index = -1;
+    bone_node.mesh_index = -1;
+    int bone_idx = scene_add_node(s, bone_node);
+
+    /* Skin: one bone, geometry_to_bone = identity (bone is at the origin
+     * at bind time, so vertices stay where they are when bone is at
+     * rest). Two vertices, both fully weighted to bone 0. */
+    scene_skin sk;
+    memset(&sk, 0, sizeof(sk));
+    sk.owning_node_index = owning_node;
+    sk.bone_count = 1;
+    sk.bones = malloc(sizeof(scene_skin_bone));
+    sk.bones[0].bone_node_index = bone_idx;
+    sk.bones[0].bind_inv = mat4_identity();
+
+    sk.vertex_count = 2;
+    sk.influences = malloc(sizeof(scene_skin_vertex) * 2);
+    sk.rest_positions = malloc(sizeof(vector) * 2);
+    sk.rest_normals   = malloc(sizeof(vector) * 2);
+    sk.rest_positions[0] = (vector){1, 0, 0};
+    sk.rest_normals[0]   = (vector){0, 0, 1};
+    sk.rest_positions[1] = (vector){0, 0, 0};
+    sk.rest_normals[1]   = (vector){0, 0, 1};
+    for (int i = 0; i < 2; i++) {
+        sk.influences[i].bone[0]   = 0;
+        sk.influences[i].weight[0] = 1.0f;
+        for (int k = 1; k < SCENE_SKIN_INFLUENCES_PER_VERTEX; k++) {
+            sk.influences[i].bone[k]   = -1;
+            sk.influences[i].weight[k] = 0.0f;
+        }
+    }
+    int skin_idx = scene_add_skin(s, sk);
+
+    /* Mesh that the skin drives. */
+    scene_mesh m;
+    memset(&m, 0, sizeof(m));
+    m.vertex_count = 2;
+    m.vertices = malloc(sizeof(scene_vertex) * 2);
+    m.vertices[0].position = sk.rest_positions[0];
+    m.vertices[0].normal   = sk.rest_normals[0];
+    m.vertices[1].position = sk.rest_positions[1];
+    m.vertices[1].normal   = sk.rest_normals[1];
+    m.index_count = 0;
+    m.indices = NULL;
+    m.material_index = -1;
+    m.skin_index = skin_idx;
+    int mesh_idx = scene_add_mesh(s, m);
+    s->nodes[owning_node].mesh_index = mesh_idx;
+
+    return s;
+}
+
+/* --- At rest pose, scene_apply_skinning reproduces the rest vertex positions. */
+START_TEST(test_skin_rest_pose_identity)
+{
+    scene *s = build_single_bone_skin();
+    mat4 *node_world = malloc(sizeof(mat4) * s->node_count);
+    scene_resolve_world_transforms(s, node_world);
+    scene_apply_skinning(s, node_world);
+
+    ck_assert_float_eq_tol(s->meshes[0].vertices[0].position.x, 1.0f, 1e-5);
+    ck_assert_float_eq_tol(s->meshes[0].vertices[0].position.y, 0.0f, 1e-5);
+    ck_assert_float_eq_tol(s->meshes[0].vertices[0].position.z, 0.0f, 1e-5);
+    ck_assert_float_eq_tol(s->meshes[0].vertices[1].position.x, 0.0f, 1e-5);
+    ck_assert_float_eq_tol(s->meshes[0].vertices[1].position.y, 0.0f, 1e-5);
+    ck_assert_float_eq_tol(s->meshes[0].vertices[1].position.z, 0.0f, 1e-5);
+
+    free(node_world);
+    scene_destroy(s);
+}
+END_TEST
+
+/* --- Rotating the bone 90° around Z swings (1,0,0) to (0,1,0). */
+START_TEST(test_skin_bone_rotation)
+{
+    scene *s = build_single_bone_skin();
+    /* Bone is node index 1; rotate it +90° around Z. */
+    s->nodes[1].transform.rotation.z = (float)(M_PI * 0.5);
+
+    mat4 *node_world = malloc(sizeof(mat4) * s->node_count);
+    scene_resolve_world_transforms(s, node_world);
+    scene_apply_skinning(s, node_world);
+
+    /* Vertex 0 was at (1,0,0); a +90° Z rotation sends it to (0,1,0). */
+    ck_assert_float_eq_tol(s->meshes[0].vertices[0].position.x, 0.0f, 1e-5);
+    ck_assert_float_eq_tol(s->meshes[0].vertices[0].position.y, 1.0f, 1e-5);
+    ck_assert_float_eq_tol(s->meshes[0].vertices[0].position.z, 0.0f, 1e-5);
+    /* Vertex 1 was at the origin and stays there under any rotation. */
+    ck_assert_float_eq_tol(s->meshes[0].vertices[1].position.x, 0.0f, 1e-5);
+    ck_assert_float_eq_tol(s->meshes[0].vertices[1].position.y, 0.0f, 1e-5);
+
+    free(node_world);
+    scene_destroy(s);
+}
+END_TEST
+
+/* --- A scene with no skins must leave scene_apply_skinning a no-op. */
+START_TEST(test_skin_noop_without_skins)
+{
+    scene *s = scene_create();
+    scene_node n;
+    memset(&n, 0, sizeof(n));
+    n.transform = scene_transform_identity();
+    n.parent_index = -1;
+    n.mesh_index = -1;
+    scene_add_node(s, n);
+
+    mat4 nw = mat4_identity();
+    scene_apply_skinning(s, &nw);  /* must not crash */
+    ck_assert_int_eq(s->skin_count, 0);
+
+    scene_destroy(s);
+}
+END_TEST
+
 static Suite *fbx_suite(void) {
     Suite *suite = suite_create("fbx");
 
@@ -330,6 +468,12 @@ static Suite *fbx_suite(void) {
     tcase_add_test(tc_anim, test_anim_sample_leaves_untracked_channels);
     tcase_add_test(tc_anim, test_scene_destroy_with_animation);
     suite_add_tcase(suite, tc_anim);
+
+    TCase *tc_skin = tcase_create("skin");
+    tcase_add_test(tc_skin, test_skin_rest_pose_identity);
+    tcase_add_test(tc_skin, test_skin_bone_rotation);
+    tcase_add_test(tc_skin, test_skin_noop_without_skins);
+    suite_add_tcase(suite, tc_skin);
 
     return suite;
 }

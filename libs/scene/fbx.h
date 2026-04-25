@@ -12,12 +12,11 @@
  * writes into scene->nodes and scene->animations in addition to
  * ->meshes / ->materials.
  *
- * Rigid-only policy: the project uses a rigid node hierarchy (per-mesh
- * BVHs), not skeletal skinning. An FBX where a single mesh is bound to
- * multiple bones via skin weights is REJECTED by default — re-export
- * with one mesh per bone, parented to the armature bone in Blender.
- * Pass SCENE_FBX_ALLOW_SKINNED to load skinned meshes in rest pose only
- * (no deformation at joints; lossy).
+ * Skinning: meshes with a skin deformer are imported as scene_skin records
+ * alongside the mesh. The runtime then deforms those meshes per frame via
+ * scene_apply_skinning. Meshes without skin deformers follow the rigid
+ * path (one mesh per node, transform applied at intersect time). Both
+ * styles coexist in a single scene.
  *
  * Euler convention: ufbx stores rotation as a quaternion; we convert to
  * Euler XYZ at load time, with ufbx's degrees rescaled to radians (the
@@ -28,7 +27,6 @@
 
 typedef enum {
     SCENE_FBX_DEFAULT        = 0,
-    SCENE_FBX_ALLOW_SKINNED  = 1 << 0,  /* load skinned mesh rest pose */
     SCENE_FBX_SKIP_ANIMATION = 1 << 1,  /* drop all anim clips */
     /* Load only the anim_stacks from the FBX, not the node tree / meshes
      * / materials. Each baked track's node_index is resolved by looking
@@ -45,10 +43,14 @@ typedef enum {
 #define SCENE_FBX_BAKE_HZ 30
 
 /* Raw loader output. The caller owns the arrays and their nested buffers
- * (vertices/indices in each mesh, tracks+keys in each animation) and
- * must call scene_fbx_result_free. */
+ * (vertices/indices in each mesh, tracks+keys in each animation, bones/
+ * influences/rest pose in each skin) and must call scene_fbx_result_free.
+ *
+ * Skin indices in `meshes[i].skin_index` are RELATIVE to this result's
+ * `skins[]` array. scene_add_fbx rebases them when appending to a scene. */
 typedef struct {
     scene_mesh       *meshes;      int mesh_count;
+    scene_skin       *skins;       int skin_count;
     scene_node       *nodes;       int node_count;
     scene_material   *materials;   int material_count;
     scene_animation  *animations;  int animation_count;
