@@ -1,8 +1,6 @@
 #include "render.h"
 #include <SDL2/SDL.h>
-#define GL_GLEXT_PROTOTYPES 1
-#include <GL/gl.h>
-#include <GL/glext.h>
+#include "gl_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -45,6 +43,7 @@ int render_init(void) {
         return -1;
     }
     SDL_GL_SetSwapInterval(1);
+    gl_compat_init((gl_compat_loader_fn)SDL_GL_GetProcAddress);
 
     glGenFramebuffers(1, &display_fbo);
     return 0;

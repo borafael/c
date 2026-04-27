@@ -15,6 +15,7 @@ libscene_la_CPPFLAGS = -I$(top_srcdir)/libs/math \
                        -I$(top_srcdir)/libs/scene/vendor/ufbx
 libscene_la_LIBADD   = libufbx.la -lm
 
+if BUILD_TESTS
 check_PROGRAMS = tests/check_fbx
 tests_check_fbx_SOURCES = tests/check_fbx.c
 tests_check_fbx_CFLAGS  = $(CHECK_CFLAGS) \
@@ -22,5 +23,6 @@ tests_check_fbx_CFLAGS  = $(CHECK_CFLAGS) \
                           -I$(top_srcdir)/libs/math
 tests_check_fbx_LDADD   = libscene.la $(CHECK_LIBS)
 TESTS = tests/check_fbx
+endif
 
 EXTRA_DIST = tests/cube.fbx

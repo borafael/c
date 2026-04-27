@@ -9,8 +9,7 @@
 #include <SDL2/SDL.h>
 
 #define GL_GLEXT_PROTOTYPES 1
-#include <GL/gl.h>
-#include <GL/glext.h>
+#include "gl_compat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -169,6 +168,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     SDL_GL_SetSwapInterval(1);
+    gl_compat_init((gl_compat_loader_fn)SDL_GL_GetProcAddress);
 
     rt_renderer *cpu_rnd = rt_renderer_available(RT_BACKEND_CPU)
                          ? rt_renderer_create(RT_BACKEND_CPU) : NULL;

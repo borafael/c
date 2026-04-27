@@ -12,8 +12,7 @@
 #include <SDL2/SDL.h>
 
 #define GL_GLEXT_PROTOTYPES 1
-#include <GL/gl.h>
-#include <GL/glext.h>
+#include "gl_compat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -386,7 +385,8 @@ static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 }
 
-int main(void) {
+int main(int argc, char *argv[]) {
+    (void)argc; (void)argv;
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
         return 1;
@@ -417,6 +417,7 @@ int main(void) {
         return 1;
     }
     SDL_GL_SetSwapInterval(0);  /* no vsync — measure raw throughput */
+    gl_compat_init((gl_compat_loader_fn)SDL_GL_GetProcAddress);
 
     fprintf(stderr, "GL version: %s\n", (const char *)glGetString(GL_VERSION));
 

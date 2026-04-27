@@ -5,8 +5,7 @@
 #include "stb_image.h"    /* declarations only — implementation lives in slice.c */
 #include <SDL2/SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
-#include <GL/gl.h>
-#include <GL/glext.h>
+#include "gl_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -225,6 +224,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     SDL_GL_SetSwapInterval(0);
+    gl_compat_init((gl_compat_loader_fn)SDL_GL_GetProcAddress);
 
     GLuint display_tex, display_fbo;
     glGenTextures(1, &display_tex);

@@ -20,7 +20,7 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   ├── rtdemo/           # Raytracer demo with CPU/OpenGL backend toggle
 │   ├── mirrors/          # Hall-of-mirrors raytrace demo (reflections stress test)
 │   └── barrier/          # Game prototype using battleforge (ECS + sprites + maps)
-├── scripts/              # build-barrier-windows.sh (MinGW cross-compile), Blender sprite tools
+├── scripts/              # build-windows.sh (MinGW cross-compile, all apps), Blender sprite tools
 └── docs/                 # slice-sprite-guide.md, ideas/, plans/, superpowers/
 ```
 
@@ -30,13 +30,23 @@ GNU Autotools (autoconf, automake, libtool):
 
 ```bash
 autoreconf -i              # Generate configure script
-./configure                # Auto-detect OpenGL (use --disable-opengl to skip,
-                           # --enable-opengl to require it)
+./configure                # Auto-detect OpenGL compute backend (use
+                           # --disable-opengl to skip, --enable-opengl to require);
+                           # tests are auto-detected (CHECK), --disable-tests skips
 make                       # Build everything
 make check                 # Run unit tests (CHECK framework)
 ```
 
-Raytrace backends are gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`. CPU is always built; OpenGL requires GL 4.3+ (compute shaders).
+The compute backend is gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`. CPU is always built; the OpenGL compute backend requires GL 4.3+ (Linux only). Display GL (used by every app for the FBO blit) is always linked: `-lGL` on Linux, `-lopengl32` on Windows; on Windows the GL≥3.0 entry points are loaded at runtime via `libs/raytrace/gl_compat.h`.
+
+### Cross-compile to Windows
+
+```bash
+scripts/build-windows.sh             # produces build/win64/<app>/
+scripts/build-windows.sh --clean     # wipe build/win64-build first
+```
+
+Requires `gcc-mingw-w64-x86-64-posix` and `deps/SDL2-2.30.11/x86_64-w64-mingw32/`. Each app gets its own staged dir with the `.exe`, `SDL2.dll`, `libwinpthread-1.dll`, and any per-app asset directories. The script does an out-of-tree build under `build/win64-build/`, so an in-tree Linux build (if any) must be `make distclean`'d first.
 
 ## Running
 
