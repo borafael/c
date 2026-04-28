@@ -31,8 +31,16 @@
 static const char *RAYTRACE_SHADER_SOURCE =
 "#version 430\n"
 "layout(local_size_x = 16, local_size_y = 16) in;\n"
-"layout(rgba8, binding = 0) uniform writeonly image2D outputImage;\n"
+"layout(rgba8,   binding = 0) uniform writeonly image2D       outputImage;\n"
+"/* G-buffer images. The host only binds these and sets u_have_gbuf=1\n"
+" * when a caller actually wants the data; otherwise the shader skips\n"
+" * the writes (the bindings are still legal — an unbound image just\n"
+" * makes imageStore a no-op). */\n"
+"layout(r32ui,   binding = 1) uniform writeonly uimage2D      gObjectId;\n"
+"layout(r32f,    binding = 2) uniform writeonly image2D       gDepth;\n"
+"layout(rgba32f, binding = 3) uniform writeonly image2D       gNormal;\n"
 "\n"
+"uniform int   u_have_gbuf;\n"
 "uniform vec3  u_cam_origin;\n"
 "uniform vec3  u_cam_forward;\n"
 "uniform vec3  u_cam_right;\n"
@@ -689,6 +697,17 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "\n"
 "/* ---- Closest-hit + bounce loop -------------------------------------- */\n"
 "\n"
+"/* G-buffer object-id kinds (must match cpu/render_chunk.c). */\n"
+"const uint RT_OBJ_KIND_SPHERE      = 1u;\n"
+"const uint RT_OBJ_KIND_PLANE       = 2u;\n"
+"const uint RT_OBJ_KIND_DISC        = 3u;\n"
+"const uint RT_OBJ_KIND_CYLINDER    = 4u;\n"
+"const uint RT_OBJ_KIND_TRIANGLE    = 5u;\n"
+"const uint RT_OBJ_KIND_MESH        = 6u;\n"
+"const uint RT_OBJ_KIND_BOX         = 7u;\n"
+"const uint RT_OBJ_KIND_SPRITE      = 8u;\n"
+"const uint RT_OBJ_KIND_HEIGHTFIELD = 9u;\n"
+"\n"
 "struct HitInfo {\n"
 "    bool  hit;\n"
 "    bool  unlit;\n"
@@ -696,6 +715,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    vec3  normal;\n"
 "    vec3  albedo;\n"
 "    float reflectivity;\n"
+"    float distance;\n"
+"    uint  object_id;\n"
 "};\n"
 "\n"
 "HitInfo closest_hit(vec3 ro, vec3 rd) {\n"
@@ -706,6 +727,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    h.normal = vec3(0.0);\n"
 "    h.albedo = vec3(0.0);\n"
 "    h.reflectivity = 0.0;\n"
+"    h.distance = 0.0;\n"
+"    h.object_id = 0u;\n"
 "    float closest_t = 1e30;\n"
 "\n"
 "    for (int i = 0; i < u_sphere_count; i++) {\n"
@@ -721,6 +744,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            h.reflectivity = materials[midx].scale.y;\n"
 "            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
+"            h.distance = t;\n"
+"            h.object_id = (RT_OBJ_KIND_SPHERE << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_plane_count; i++) {\n"
@@ -736,6 +761,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            h.reflectivity = materials[midx].scale.y;\n"
 "            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
+"            h.distance = t;\n"
+"            h.object_id = (RT_OBJ_KIND_PLANE << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_disc_count; i++) {\n"
@@ -751,6 +778,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            h.reflectivity = materials[midx].scale.y;\n"
 "            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
+"            h.distance = t;\n"
+"            h.object_id = (RT_OBJ_KIND_DISC << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_cylinder_count; i++) {\n"
@@ -766,6 +795,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            h.reflectivity = materials[midx].scale.y;\n"
 "            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
+"            h.distance = t;\n"
+"            h.object_id = (RT_OBJ_KIND_CYLINDER << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_triangle_count; i++) {\n"
@@ -781,6 +812,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            h.reflectivity = materials[midx].scale.y;\n"
 "            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
+"            h.distance = t;\n"
+"            h.object_id = (RT_OBJ_KIND_TRIANGLE << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "        }\n"
 "    }\n"
 "    /* --- Mesh triangles via per-mesh BVH (mesh-local space) ----------- */\n"
@@ -900,6 +933,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                h.unlit = (materials[midx].kind.z != 0);\n"
 "            }\n"
 "            h.hit = true;\n"
+"            h.distance = best_t;\n"
+"            h.object_id = (RT_OBJ_KIND_MESH << 24) | (uint(mi) & 0x00FFFFFFu);\n"
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_box_count; i++) {\n"
@@ -915,6 +950,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            h.reflectivity = materials[midx].scale.y;\n"
 "            h.unlit = (materials[midx].kind.z != 0);\n"
 "            h.hit = true;\n"
+"            h.distance = t;\n"
+"            h.object_id = (RT_OBJ_KIND_BOX << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_sprite_count; i++) {\n"
@@ -931,6 +968,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                h.reflectivity = 0.0;\n"
 "                h.unlit = false;\n"
 "                h.hit = true;\n"
+"                h.distance = t;\n"
+"                h.object_id = (RT_OBJ_KIND_SPRITE << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "            }\n"
 "        }\n"
 "    }\n"
@@ -964,6 +1003,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                    h.unlit = false;\n"
 "                }\n"
 "                h.hit = true;\n"
+"                h.distance = t;\n"
+"                h.object_id = (RT_OBJ_KIND_HEIGHTFIELD << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "            }\n"
 "        }\n"
 "    }\n"
@@ -973,6 +1014,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "const int RT_MAX_BOUNCES = 4;\n"
 "\n"
 "/* ---- Main ------------------------------------------------------------ */\n"
+"\n"
+"const float RT_GBUF_MIRROR_THRESHOLD = 0.5;\n"
 "\n"
 "void main() {\n"
 "    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);\n"
@@ -989,9 +1032,34 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "\n"
 "    vec3 result     = vec3(0.0);\n"
 "    vec3 throughput = vec3(1.0);\n"
+"    bool  gbuf_done = false;\n"
+"    float gbuf_depth_acc = 0.0;\n"
 "\n"
 "    for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {\n"
 "        HitInfo h = closest_hit(ro, rd);\n"
+"\n"
+"        /* Match CPU: capture G-buffer at first non-mirror surface.\n"
+"         * Accumulate path length so the depth channel reflects how far\n"
+"         * the eye actually 'looked' through any mirror chain. */\n"
+"        if (u_have_gbuf != 0 && !gbuf_done) {\n"
+"            if (h.hit) gbuf_depth_acc += h.distance;\n"
+"            bool capture = (!h.hit) ||\n"
+"                           (h.reflectivity <= RT_GBUF_MIRROR_THRESHOLD);\n"
+"            if (capture) {\n"
+"                if (h.hit) {\n"
+"                    imageStore(gObjectId, pixel, uvec4(h.object_id, 0u, 0u, 0u));\n"
+"                    imageStore(gDepth,    pixel, vec4(gbuf_depth_acc, 0.0, 0.0, 0.0));\n"
+"                    imageStore(gNormal,   pixel, vec4(h.normal, 0.0));\n"
+"                } else {\n"
+"                    imageStore(gObjectId, pixel, uvec4(0u, 0u, 0u, 0u));\n"
+"                    /* 1e30 is the same 'sky' sentinel CPU uses (FLT_MAX). */\n"
+"                    imageStore(gDepth,    pixel, vec4(1e30, 0.0, 0.0, 0.0));\n"
+"                    imageStore(gNormal,   pixel, vec4(0.0, 0.0, 0.0, 0.0));\n"
+"                }\n"
+"                gbuf_done = true;\n"
+"            }\n"
+"        }\n"
+"\n"
 "        if (!h.hit) break;\n"
 "\n"
 "        float shade;\n"
@@ -1014,6 +1082,14 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "        throughput *= h.reflectivity;\n"
 "        rd = reflect(rd, h.normal);\n"
 "        ro = h.point + rd * 1e-4;\n"
+"    }\n"
+"\n"
+"    /* Bounce budget exhausted while still inside mirrors — treat as sky\n"
+"     * for the G-buffer so the edge filter has consistent miss values. */\n"
+"    if (u_have_gbuf != 0 && !gbuf_done) {\n"
+"        imageStore(gObjectId, pixel, uvec4(0u, 0u, 0u, 0u));\n"
+"        imageStore(gDepth,    pixel, vec4(1e30, 0.0, 0.0, 0.0));\n"
+"        imageStore(gNormal,   pixel, vec4(0.0, 0.0, 0.0, 0.0));\n"
 "    }\n"
 "\n"
 "    imageStore(outputImage, pixel, vec4(min(result, vec3(1.0)), 1.0));\n"
@@ -1072,6 +1148,14 @@ typedef struct {
     GLuint output_tex;
     int tex_w, tex_h;
 
+    /* G-buffer textures, lazily allocated to match output_tex. NULL when
+     * no caller has asked for a G-buffer this frame; otherwise sized to
+     * (tex_w, tex_h) with the formats below. */
+    GLuint g_id_tex;     /* r32ui */
+    GLuint g_depth_tex;  /* r32f */
+    GLuint g_normal_tex; /* rgba32f, .w unused */
+    int g_tex_w, g_tex_h;
+
     /* SSBOs */
     GLuint ssbo[17];
     /* bindings:
@@ -1095,6 +1179,7 @@ typedef struct {
     GLint u_triangle_count, u_box_count, u_sprite_count;
     GLint u_heightfield_count, u_light_count, u_mesh_count, u_material_count;
     GLint u_sprite_atlas, u_tex_atlas;
+    GLint u_have_gbuf;
 
     /* Per-frame node/mesh transform scratch (shared with CPU path). */
     rt_scene_accel accel;
@@ -1173,6 +1258,7 @@ static void cache_uniform_locs(opengl_backend_data *d) {
     d->u_material_count     = glGetUniformLocation(d->program, "u_material_count");
     d->u_sprite_atlas       = glGetUniformLocation(d->program, "u_sprite_atlas");
     d->u_tex_atlas          = glGetUniformLocation(d->program, "u_tex_atlas");
+    d->u_have_gbuf          = glGetUniformLocation(d->program, "u_have_gbuf");
 }
 
 static void ensure_output_tex(opengl_backend_data *d, int w, int h) {
@@ -1182,6 +1268,31 @@ static void ensure_output_tex(opengl_backend_data *d, int w, int h) {
     glBindTexture(GL_TEXTURE_2D, d->output_tex);
     glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, w, h);
     d->tex_w = w; d->tex_h = h;
+}
+
+/* Lazily allocate the three G-buffer textures sized to (w, h). The
+ * shader binds these at image units 1/2/3; the host reads them back
+ * with glGetTexImage after the dispatch. Resize in place when the
+ * render dimensions change. */
+static void ensure_gbuf_textures(opengl_backend_data *d, int w, int h) {
+    if (d->g_id_tex && d->g_tex_w == w && d->g_tex_h == h) return;
+    if (d->g_id_tex)     glDeleteTextures(1, &d->g_id_tex);
+    if (d->g_depth_tex)  glDeleteTextures(1, &d->g_depth_tex);
+    if (d->g_normal_tex) glDeleteTextures(1, &d->g_normal_tex);
+
+    glGenTextures(1, &d->g_id_tex);
+    glBindTexture(GL_TEXTURE_2D, d->g_id_tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, w, h);
+
+    glGenTextures(1, &d->g_depth_tex);
+    glBindTexture(GL_TEXTURE_2D, d->g_depth_tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32F, w, h);
+
+    glGenTextures(1, &d->g_normal_tex);
+    glBindTexture(GL_TEXTURE_2D, d->g_normal_tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, w, h);
+
+    d->g_tex_w = w; d->g_tex_h = h;
 }
 
 /* Upload a vector+scalar or vector+0 into a vec4 slot. */
@@ -1698,6 +1809,9 @@ static void opengl_destroy(rt_renderer *r) {
     if (d) {
         if (d->program)      glDeleteProgram(d->program);
         if (d->output_tex)   glDeleteTextures(1, &d->output_tex);
+        if (d->g_id_tex)     glDeleteTextures(1, &d->g_id_tex);
+        if (d->g_depth_tex)  glDeleteTextures(1, &d->g_depth_tex);
+        if (d->g_normal_tex) glDeleteTextures(1, &d->g_normal_tex);
         if (d->sprite_atlas) glDeleteTextures(1, &d->sprite_atlas);
         if (d->tex_atlas)    glDeleteTextures(1, &d->tex_atlas);
         for (int i = 0; i < 17; i++) {
@@ -1719,23 +1833,6 @@ static void opengl_render(rt_renderer *r,
     int w = viewport->width;
     int h = viewport->height;
 
-    /* G-buffer is CPU-only for now. Warn once, then zero the caller's
-     * buffers so they get well-defined "no data" content rather than
-     * random uninitialized memory if they didn't memset themselves. */
-    if (gbuf) {
-        static int warned = 0;
-        if (!warned) {
-            fprintf(stderr, "rt_renderer (OpenGL): G-buffer not yet "
-                            "implemented; channels will be zero. Use the "
-                            "CPU backend if you need a G-buffer.\n");
-            warned = 1;
-        }
-        int n = w * h;
-        if (gbuf->object_id) memset(gbuf->object_id, 0, (size_t)n * sizeof(uint32_t));
-        if (gbuf->depth)     for (int i = 0; i < n; i++) gbuf->depth[i] = 0.0f;
-        if (gbuf->normal)    memset(gbuf->normal, 0, (size_t)(3 * n) * sizeof(float));
-    }
-
     /* Skinning rewrites mesh vertex buffers and BVHs; rest of the path
      * treats the scene as read-only (matches the CPU contract). */
     scene *scn = (scene *)(uintptr_t)scene_in;
@@ -1745,9 +1842,16 @@ static void opengl_render(rt_renderer *r,
     }
 
     ensure_output_tex(d, w, h);
+    if (gbuf) ensure_gbuf_textures(d, w, h);
 
     glUseProgram(d->program);
     glBindImageTexture(0, d->output_tex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+    glUniform1i(d->u_have_gbuf, gbuf ? 1 : 0);
+    if (gbuf) {
+        glBindImageTexture(1, d->g_id_tex,     0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32UI);
+        glBindImageTexture(2, d->g_depth_tex,  0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+        glBindImageTexture(3, d->g_normal_tex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+    }
 
     upload_spheres(d, scn);
     upload_planes(d, scn);
@@ -1793,6 +1897,36 @@ static void opengl_render(rt_renderer *r,
     glBindTexture(GL_TEXTURE_2D, d->output_tex);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
     glGetTexImage(GL_TEXTURE_2D, 0, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+
+    if (gbuf) {
+        /* Read each G-buffer channel back to the host arrays the caller
+         * passed in. The normal texture is rgba32f because rgb32f isn't
+         * a legal image-binding format; we round-trip through a temp
+         * buffer and strip the unused .w. */
+        if (gbuf->object_id) {
+            glBindTexture(GL_TEXTURE_2D, d->g_id_tex);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_UNSIGNED_INT,
+                          gbuf->object_id);
+        }
+        if (gbuf->depth) {
+            glBindTexture(GL_TEXTURE_2D, d->g_depth_tex);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RED, GL_FLOAT, gbuf->depth);
+        }
+        if (gbuf->normal) {
+            int n = w * h;
+            float *tmp = malloc((size_t)n * 4 * sizeof(float));
+            if (tmp) {
+                glBindTexture(GL_TEXTURE_2D, d->g_normal_tex);
+                glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, tmp);
+                for (int i = 0; i < n; i++) {
+                    gbuf->normal[i*3+0] = tmp[i*4+0];
+                    gbuf->normal[i*3+1] = tmp[i*4+1];
+                    gbuf->normal[i*3+2] = tmp[i*4+2];
+                }
+                free(tmp);
+            }
+        }
+    }
 }
 
 static const char *opengl_name(const rt_renderer *r) {

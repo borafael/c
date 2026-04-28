@@ -6,10 +6,11 @@
  * normal crease (adjacent surfaces bending past a threshold). The three
  * sources catch different kinds of edges a comic artist would draw.
  *
- * Currently CPU-only — the OpenGL backend doesn't write a G-buffer yet.
+ * Both backends write the G-buffer.
  *
  * Controls:
  *   ESC       quit
+ *   TAB       toggle CPU / OpenGL backend
  *   F11       fullscreen
  *   1..4      resolution preset (same set as pixelart)
  *   I         toggle object-ID edges (silhouettes)
@@ -290,16 +291,21 @@ int main(int argc, char *argv[]) {
 
     fprintf(stderr, "GL version: %s\n", (const char *)glGetString(GL_VERSION));
 
-    /* CPU only: GPU backend doesn't write the G-buffer yet. */
-    if (!rt_renderer_available(RT_BACKEND_CPU)) {
-        fprintf(stderr, "CPU backend required for comic mode (G-buffer is "
-                        "CPU-only today)\n");
+    rt_renderer *cpu_rnd = rt_renderer_available(RT_BACKEND_CPU)
+                         ? rt_renderer_create(RT_BACKEND_CPU) : NULL;
+    rt_renderer *gpu_rnd = rt_renderer_available(RT_BACKEND_OPENGL)
+                         ? rt_renderer_create(RT_BACKEND_OPENGL) : NULL;
+    if (!cpu_rnd && !gpu_rnd) {
+        fprintf(stderr, "No renderers available\n");
         SDL_GL_DeleteContext(gl_ctx);
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
-    rt_renderer *cpu_rnd = rt_renderer_create(RT_BACKEND_CPU);
+    /* Both backends now write the G-buffer. Default to GPU since it's
+     * typically much faster; TAB to switch. */
+    rt_renderer *active = gpu_rnd ? gpu_rnd : cpu_rnd;
+    fprintf(stderr, "Active: %s (TAB to toggle)\n", rt_renderer_name(active));
 
     scene *scn;
     scene_camera *cam;
@@ -361,6 +367,11 @@ int main(int argc, char *argv[]) {
             if (e.type == SDL_KEYDOWN) {
                 SDL_Keycode k = e.key.keysym.sym;
                 if (k == SDLK_ESCAPE) running = 0;
+                if (k == SDLK_TAB) {
+                    if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
+                    else if (active == gpu_rnd && cpu_rnd) active = cpu_rnd;
+                    fprintf(stderr, "Active: %s\n", rt_renderer_name(active));
+                }
                 if (k == SDLK_o) {
                     outlines_on = !outlines_on;
                     fprintf(stderr, "Outlines: %s\n", outlines_on ? "on" : "off");
@@ -458,7 +469,7 @@ int main(int argc, char *argv[]) {
         scene_camera_place(cam, cam_pos, cam_dir_from_yaw_pitch(cam_yaw, cam_pitch));
 
         Uint32 r_start = SDL_GetTicks();
-        rt_renderer_render(cpu_rnd, scn, cam, &viewport, pixels,
+        rt_renderer_render(active, scn, cam, &viewport, pixels,
                            outlines_on ? &gbuf : NULL);
         Uint32 r_done = SDL_GetTicks();
         if (outlines_on) apply_edges(pixels, &gbuf, render_w, render_h, &edges);
@@ -476,13 +487,13 @@ int main(int argc, char *argv[]) {
             float avg_render = (fps_frames > 0) ? (float)render_ms_accum / (float)fps_frames : 0.0f;
             float avg_edge   = (fps_frames > 0) ? (float)edge_ms_accum   / (float)fps_frames : 0.0f;
             snprintf(title_buf, sizeof(title_buf),
-                     "Comic Raytrace - %s outlines=%s %d FPS (rt=%.1f ms, edge=%.1f ms)",
-                     PRESETS[preset].name,
+                     "Comic Raytrace - %s %s outlines=%s %d FPS (rt=%.1f ms, edge=%.1f ms)",
+                     rt_renderer_name(active), PRESETS[preset].name,
                      outlines_on ? "on" : "off",
                      fps_frames, avg_render, avg_edge);
             SDL_SetWindowTitle(window, title_buf);
-            fprintf(stderr, "[%s outlines=%d] %d FPS, rt=%.1f ms, edge=%.1f ms\n",
-                    PRESETS[preset].name, outlines_on,
+            fprintf(stderr, "[%s %s outlines=%d] %d FPS, rt=%.1f ms, edge=%.1f ms\n",
+                    rt_renderer_name(active), PRESETS[preset].name, outlines_on,
                     fps_frames, avg_render, avg_edge);
             fps_frames = 0;
             render_ms_accum = 0;
@@ -493,7 +504,8 @@ int main(int argc, char *argv[]) {
 
     glDeleteFramebuffers(1, &display_fbo);
     glDeleteTextures(1, &display_tex);
-    rt_renderer_destroy(cpu_rnd);
+    if (cpu_rnd) rt_renderer_destroy(cpu_rnd);
+    if (gpu_rnd) rt_renderer_destroy(gpu_rnd);
     free(pixels);
     free(gbuf.object_id);
     free(gbuf.depth);
