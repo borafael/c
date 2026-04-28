@@ -1713,10 +1713,28 @@ static void opengl_render(rt_renderer *r,
                           const scene *scene_in,
                           const scene_camera *camera,
                           const rt_viewport *viewport,
-                          uint32_t *pixels) {
+                          uint32_t *pixels,
+                          rt_gbuffer *gbuf) {
     opengl_backend_data *d = r->backend_data;
     int w = viewport->width;
     int h = viewport->height;
+
+    /* G-buffer is CPU-only for now. Warn once, then zero the caller's
+     * buffers so they get well-defined "no data" content rather than
+     * random uninitialized memory if they didn't memset themselves. */
+    if (gbuf) {
+        static int warned = 0;
+        if (!warned) {
+            fprintf(stderr, "rt_renderer (OpenGL): G-buffer not yet "
+                            "implemented; channels will be zero. Use the "
+                            "CPU backend if you need a G-buffer.\n");
+            warned = 1;
+        }
+        int n = w * h;
+        if (gbuf->object_id) memset(gbuf->object_id, 0, (size_t)n * sizeof(uint32_t));
+        if (gbuf->depth)     for (int i = 0; i < n; i++) gbuf->depth[i] = 0.0f;
+        if (gbuf->normal)    memset(gbuf->normal, 0, (size_t)(3 * n) * sizeof(float));
+    }
 
     /* Skinning rewrites mesh vertex buffers and BVHs; rest of the path
      * treats the scene as read-only (matches the CPU contract). */

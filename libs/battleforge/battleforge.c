@@ -969,7 +969,7 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
         }
     }
 
-    rt_renderer_render(e->renderer, e->scene, e->rt_cam, &e->viewport, pixel_buf);
+    rt_renderer_render(e->renderer, e->scene, e->rt_cam, &e->viewport, pixel_buf, NULL);
     free(all_frames);
 }
 

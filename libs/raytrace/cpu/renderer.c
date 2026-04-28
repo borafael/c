@@ -24,6 +24,7 @@ static int detect_cpu_count(void) {
 
 typedef struct {
     uint32_t *pixels;
+    rt_gbuffer *gbuf;          /* may be NULL */
     const rt_viewport *viewport;
     int y_start;
     int y_end;
@@ -41,7 +42,7 @@ typedef struct {
 
 static void cpu_render_task_fn(void *arg) {
     cpu_render_task *t = arg;
-    rt_render_chunk(t->pixels, t->viewport, t->y_start, t->y_end,
+    rt_render_chunk(t->pixels, t->gbuf, t->viewport, t->y_start, t->y_end,
                     t->camera, t->scene, t->mesh_world_inv);
 }
 
@@ -58,7 +59,8 @@ static void cpu_render(rt_renderer *r,
                        const scene *scene_in,
                        const scene_camera *camera,
                        const rt_viewport *viewport,
-                       uint32_t *pixels) {
+                       uint32_t *pixels,
+                       rt_gbuffer *gbuf) {
     cpu_backend_data *d = r->backend_data;
     /* Skinning mutates mesh vertex buffers and BVHs; the rest of the
      * render path treats the scene as read-only. The renderer interface
@@ -80,6 +82,7 @@ static void cpu_render(rt_renderer *r,
     for (int i = 0; i < n; i++) {
         d->tasks[i] = (cpu_render_task){
             .pixels         = pixels,
+            .gbuf           = gbuf,
             .viewport       = viewport,
             .y_start        = i * rows_per,
             .y_end          = (i == n - 1) ? viewport->height : (i + 1) * rows_per,

@@ -619,7 +619,7 @@ int main(int argc, char *argv[]) {
         scene_camera_place(cam, cam_pos, cam_dir_from_yaw_pitch(cam_yaw, cam_pitch));
 
         Uint32 r_start = SDL_GetTicks();
-        rt_renderer_render(active, scn, cam, &viewport, pixels);
+        rt_renderer_render(active, scn, cam, &viewport, pixels, NULL);
         if (posterize_on) posterize_buffer(pixels, render_w, render_h);
         if (palette_on) quantize_buffer(pixels, render_w, render_h,
                                         &PALETTES[palette_idx], dither_on);

@@ -375,7 +375,7 @@ int main(int argc, char *argv[]) {
         scene_camera_place(camera, cam_pos, cam_dir);
 
         Uint32 r_start = SDL_GetTicks();
-        rt_renderer_render(active, scene, camera, &viewport, pixels);
+        rt_renderer_render(active, scene, camera, &viewport, pixels, NULL);
         render_ms_accum += SDL_GetTicks() - r_start;
 
         display_pixels(display_tex, display_fbo, pixels,

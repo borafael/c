@@ -289,6 +289,24 @@ static inline scene_color material_sample(const scene_material *m,
 #define RT_MAX_BOUNCES 4
 #define RT_REFLECT_EPSILON 1e-4f
 
+/* G-buffer object-id encoding. The high byte is the primitive kind, the
+ * low 24 bits are the per-kind array index. 0 is reserved for "sky" so a
+ * miss can be detected with object_id == 0. Edge-detection in the comic
+ * pass only compares ids for inequality; no consumer should depend on
+ * the bit layout. */
+#define RT_OBJ_KIND_SKY         0
+#define RT_OBJ_KIND_SPHERE      1
+#define RT_OBJ_KIND_PLANE       2
+#define RT_OBJ_KIND_DISC        3
+#define RT_OBJ_KIND_CYLINDER    4
+#define RT_OBJ_KIND_TRIANGLE    5
+#define RT_OBJ_KIND_MESH        6
+#define RT_OBJ_KIND_BOX         7
+#define RT_OBJ_KIND_SPRITE      8
+#define RT_OBJ_KIND_HEIGHTFIELD 9
+#define RT_OBJ_ID(kind, index) \
+    (((uint32_t)(kind) << 24) | ((uint32_t)(index) & 0x00FFFFFFu))
+
 typedef struct {
     int hit;
     vector point;
@@ -296,6 +314,8 @@ typedef struct {
     scene_color albedo;
     float reflectivity;
     int unlit;
+    float distance;     /* closest_t at the primary hit; valid iff hit == 1 */
+    uint32_t object_id; /* RT_OBJ_ID(kind, index); 0 on miss */
 } hit_info;
 
 static hit_info closest_hit(vector ro, vector rd, const scene *scene,
@@ -318,6 +338,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
             h.hit = 1;
+            h.distance = t;
+            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_SPHERE, i);
         }
     }
 
@@ -335,6 +357,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
             h.hit = 1;
+            h.distance = t;
+            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_PLANE, i);
         }
     }
 
@@ -352,6 +376,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
             h.hit = 1;
+            h.distance = t;
+            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_DISC, i);
         }
     }
 
@@ -369,6 +395,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
             h.hit = 1;
+            h.distance = t;
+            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_CYLINDER, i);
         }
     }
 
@@ -386,6 +414,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
             h.hit = 1;
+            h.distance = t;
+            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_TRIANGLE, i);
         }
     }
 
@@ -410,6 +440,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                     h.unlit = m->unlit;
                 }
                 h.hit = 1;
+                h.distance = mh.t;
+                h.object_id = RT_OBJ_ID(RT_OBJ_KIND_MESH, i);
             }
         }
     }
@@ -428,6 +460,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
             h.hit = 1;
+            h.distance = t;
+            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_BOX, i);
         }
     }
 
@@ -453,6 +487,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.reflectivity = 0.0f;
             h.unlit = 0;
             h.hit = 1;
+            h.distance = t;
+            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_SPRITE, i);
         }
     }
 
@@ -488,6 +524,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                     h.unlit = 0;
                 }
                 h.hit = 1;
+                h.distance = t;
+                h.object_id = RT_OBJ_ID(RT_OBJ_KIND_HEIGHTFIELD, i);
             }
         }
     }
@@ -495,7 +533,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
     return h;
 }
 
-void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
+void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
+                     const rt_viewport *viewport,
                      int y_start, int y_end,
                      const scene_camera *camera, const scene *scene,
                      const mat4 *mesh_world_inv) {
@@ -526,6 +565,27 @@ void rt_render_chunk(uint32_t *pixel_buf, const rt_viewport *viewport,
             for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {
                 hit_info h = closest_hit(ro, rd, scene, mesh_world_inv,
                                          camera->origin);
+
+                /* Capture primary-hit geometry into the G-buffer. We do
+                 * this on the first bounce — even on a miss — so the
+                 * downstream edge filter sees consistent sky pixels. */
+                if (gbuf && bounce == 0) {
+                    int idx = y * width + x;
+                    if (h.hit) {
+                        gbuf->object_id[idx]   = h.object_id;
+                        gbuf->depth[idx]       = h.distance;
+                        gbuf->normal[idx*3+0]  = h.normal.x;
+                        gbuf->normal[idx*3+1]  = h.normal.y;
+                        gbuf->normal[idx*3+2]  = h.normal.z;
+                    } else {
+                        gbuf->object_id[idx]   = 0;
+                        gbuf->depth[idx]       = FLT_MAX;
+                        gbuf->normal[idx*3+0]  = 0.0f;
+                        gbuf->normal[idx*3+1]  = 0.0f;
+                        gbuf->normal[idx*3+2]  = 0.0f;
+                    }
+                }
+
                 if (!h.hit) break;
 
                 float shade;

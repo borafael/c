@@ -1,0 +1,507 @@
+/* Comic-style raytrace demo.
+ *
+ * Renders the scene, then in a screen-space post-process draws black
+ * outlines wherever the G-buffer says there's a silhouette (object_id
+ * change), a depth crease (depth jump exceeding a threshold), or a
+ * normal crease (adjacent surfaces bending past a threshold). The three
+ * sources catch different kinds of edges a comic artist would draw.
+ *
+ * Currently CPU-only — the OpenGL backend doesn't write a G-buffer yet.
+ *
+ * Controls:
+ *   ESC       quit
+ *   F11       fullscreen
+ *   1..4      resolution preset (same set as pixelart)
+ *   I         toggle object-ID edges (silhouettes)
+ *   D         toggle depth edges (folds in geometry)
+ *   N         toggle normal edges (creases like cube corners)
+ *   O         toggle outlines off entirely (raw render)
+ *   [ / ]     thinner / thicker outlines (compare 4-neighbour vs 8)
+ *   - / =     softer / stronger thresholds
+ *   WASD/space/shift  fly camera; arrows look around
+ */
+
+#include "renderer.h"
+#include "viewport.h"
+#include "scene.h"
+#include "sphere.h"
+#include "plane.h"
+#include "box.h"
+#include "cylinder.h"
+#include "obj.h"
+#include "mesh.h"
+#include <SDL2/SDL.h>
+
+#define GL_GLEXT_PROTOTYPES 1
+#include "gl_compat.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <float.h>
+
+#define INIT_WINDOW_W 960
+#define INIT_WINDOW_H 540
+#define FOV (M_PI / 3.0f)
+
+typedef struct { int w, h; const char *name; } pixel_preset;
+static const pixel_preset PRESETS[] = {
+    { 240, 135, "240x135" },
+    { 320, 180, "320x180" },
+    { 480, 270, "480x270" },
+    { 640, 360, "640x360" },
+};
+#define PRESET_COUNT ((int)(sizeof(PRESETS) / sizeof(PRESETS[0])))
+#define PRESET_DEFAULT 1
+
+/* Edge-detection thresholds. Tweak via -/= keys to taste. */
+typedef struct {
+    int    use_object_id;
+    int    use_depth;
+    int    use_normal;
+    int    eight_connected;   /* 1 = all 8 neighbours, 0 = 4-neighbour */
+    float  depth_threshold;   /* world-space distance jump */
+    float  normal_threshold;  /* dot-product floor, 1=identical, <1=different */
+} edge_settings;
+
+/* --- Valkyrie loader (same shape as the pixelart app) --------------- */
+
+static const char *VALKYRIE_OBJ_CANDIDATES[] = {
+    "apps/mech/assets/valkyrie.obj",
+    "../mech/assets/valkyrie.obj",
+    "./valkyrie.obj",
+};
+static const char *VALKYRIE_MTL_CANDIDATES[] = {
+    "apps/mech/assets/valkyrie.mtl",
+    "../mech/assets/valkyrie.mtl",
+    "./valkyrie.mtl",
+};
+
+static int try_load_valkyrie(scene *s, int default_mat,
+                             vector offset, float uniform_scale) {
+    int n = (int)(sizeof(VALKYRIE_OBJ_CANDIDATES) /
+                  sizeof(VALKYRIE_OBJ_CANDIDATES[0]));
+    for (int i = 0; i < n; i++) {
+        FILE *probe = fopen(VALKYRIE_OBJ_CANDIDATES[i], "rb");
+        if (!probe) continue;
+        fclose(probe);
+        scene_mtl_entry *mtl = NULL;
+        int mtl_n = scene_load_mtl(VALKYRIE_MTL_CANDIDATES[i], &mtl);
+        if (mtl_n < 0) { mtl_n = 0; mtl = NULL; }
+        int first = 0;
+        int added = scene_add_meshes_from_obj(s, VALKYRIE_OBJ_CANDIDATES[i],
+                                              mtl, mtl_n, default_mat, &first);
+        free(mtl);
+        if (added <= 0) return 0;
+        for (int k = 0; k < added; k++) {
+            scene_mesh *m = &s->meshes[first + k];
+            for (int v = 0; v < m->vertex_count; v++) {
+                m->vertices[v].position.x = m->vertices[v].position.x * uniform_scale + offset.x;
+                m->vertices[v].position.y = m->vertices[v].position.y * uniform_scale + offset.y;
+                m->vertices[v].position.z = m->vertices[v].position.z * uniform_scale + offset.z;
+            }
+            scene_mesh_compute_bounds(m);
+        }
+        fprintf(stderr, "Loaded Valkyrie from %s (%d mesh groups)\n",
+                VALKYRIE_OBJ_CANDIDATES[i], added);
+        return 1;
+    }
+    fprintf(stderr, "warning: valkyrie.obj not found in any candidate path\n");
+    return 0;
+}
+
+static void build_scene(scene **scn, scene_camera **cam) {
+    *scn = scene_create();
+
+    /* Materials chosen to read clearly with a chunky outline overlaid:
+     * mostly flat colour, no procedural noise (which would produce a
+     * mess of false edges in the colour buffer). */
+    int m_red    = scene_add_material(*scn, (scene_material){ .albedo = {220,  60,  60} });
+    int m_green  = scene_add_material(*scn, (scene_material){ .albedo = {120, 200,  80} });
+    int m_blue   = scene_add_material(*scn, (scene_material){ .albedo = { 60, 110, 200} });
+    int m_yellow = scene_add_material(*scn, (scene_material){ .albedo = {230, 200,  60} });
+    int m_floor  = scene_add_material(*scn, (scene_material){
+        .albedo  = {200, 200, 200},
+        .albedo2 = { 80,  80,  80},
+        .tex_kind = SCENE_TEX_CHECKER,
+        .tex_scale = 1.0f,
+    });
+    int m_mirror = scene_add_material(*scn, (scene_material){
+        .reflectivity = 0.6f,
+        .albedo  = {200, 200, 220},
+    });
+    int m_paint  = scene_add_material(*scn, (scene_material){
+        .albedo = {220, 220, 230},
+    });
+
+    scene_add_sphere(*scn, (scene_sphere){
+        .center = {0.0f, 1.0f, 0.0f}, .radius = 1.0f, .material = m_red });
+    scene_add_sphere(*scn, (scene_sphere){
+        .center = {-2.4f, 0.6f, -0.5f}, .radius = 0.6f, .material = m_green });
+    scene_add_sphere(*scn, (scene_sphere){
+        .center = {2.0f, 0.8f, -1.0f}, .radius = 0.8f, .material = m_blue });
+    scene_add_sphere(*scn, (scene_sphere){
+        .center = {0.0f, 2.4f, -1.5f}, .radius = 0.9f, .material = m_mirror });
+
+    scene_add_box(*scn, (scene_box){
+        .min = {-3.5f, -0.5f, 1.5f}, .max = {-2.5f, 0.8f, 2.5f},
+        .material = m_yellow });
+
+    scene_add_cylinder(*scn, (scene_cylinder){
+        .center = {2.5f, 0.5f, 2.0f}, .axis = {0.0f, 1.0f, 0.0f},
+        .radius = 0.45f, .half_height = 1.0f, .material = m_yellow });
+
+    scene_add_plane(*scn, (scene_plane){
+        .point = {0.0f, -0.5f, 0.0f}, .normal = {0.0f, 1.0f, 0.0f},
+        .material = m_floor });
+
+    try_load_valkyrie(*scn, m_paint,
+                      (vector){0.0f, 0.07f, -2.5f}, 3.0f);
+
+    scene_set_ambient(*scn, 0.25f);
+    scene_add_light(*scn, (scene_light){
+        .direction = {1.0f, 1.2f, -0.8f}, .intensity = 0.85f });
+
+    rt_scene_build_accel(*scn);
+
+    *cam = scene_camera_create(
+        (vector){4.5f, 2.5f, 5.0f},
+        (vector){-1.0f, -0.4f, -1.0f});
+}
+
+static vector cam_dir_from_yaw_pitch(float yaw, float pitch) {
+    return (vector){
+        cosf(pitch) * sinf(yaw),
+        sinf(pitch),
+        cosf(pitch) * cosf(yaw),
+    };
+}
+
+/* Edge filter. For each pixel, look at its neighbours: any large
+ * disagreement on object id (silhouette), depth (folds), or normal
+ * (creases) flags it as an edge and stamps it black. */
+static void apply_edges(uint32_t *pixels, const rt_gbuffer *g,
+                        int w, int h, const edge_settings *e) {
+    static const int N4_DX[] = { 1, -1,  0,  0 };
+    static const int N4_DY[] = { 0,  0,  1, -1 };
+    static const int N8_DX[] = { 1, -1,  0,  0,  1, -1,  1, -1 };
+    static const int N8_DY[] = { 0,  0,  1, -1,  1,  1, -1, -1 };
+    const int *DX = e->eight_connected ? N8_DX : N4_DX;
+    const int *DY = e->eight_connected ? N8_DY : N4_DY;
+    int neigh = e->eight_connected ? 8 : 4;
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int idx = y * w + x;
+            int is_edge = 0;
+
+            uint32_t self_id = e->use_object_id ? g->object_id[idx] : 0;
+            float    self_d  = e->use_depth     ? g->depth[idx]     : 0.0f;
+            float    self_nx = e->use_normal    ? g->normal[idx*3+0] : 0.0f;
+            float    self_ny = e->use_normal    ? g->normal[idx*3+1] : 0.0f;
+            float    self_nz = e->use_normal    ? g->normal[idx*3+2] : 0.0f;
+
+            for (int k = 0; k < neigh && !is_edge; k++) {
+                int nx = x + DX[k], ny = y + DY[k];
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                int nidx = ny * w + nx;
+
+                if (e->use_object_id && g->object_id[nidx] != self_id) {
+                    is_edge = 1;
+                    break;
+                }
+                if (e->use_depth) {
+                    float dd = self_d - g->depth[nidx];
+                    if (dd < 0) dd = -dd;
+                    /* depth jumps near the camera should be more
+                     * sensitive; scale threshold by depth so a 5cm gap
+                     * 50m away doesn't outline. */
+                    float scale = self_d * 0.05f + 0.05f;
+                    if (dd > e->depth_threshold * scale) {
+                        is_edge = 1;
+                        break;
+                    }
+                }
+                if (e->use_normal) {
+                    float dot = self_nx * g->normal[nidx*3+0]
+                              + self_ny * g->normal[nidx*3+1]
+                              + self_nz * g->normal[nidx*3+2];
+                    if (dot < e->normal_threshold) {
+                        is_edge = 1;
+                        break;
+                    }
+                }
+            }
+
+            if (is_edge) pixels[idx] = 0xFF000000u;
+        }
+    }
+}
+
+static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
+                           int render_w, int render_h,
+                           int window_w, int window_h) {
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, render_w, render_h,
+                    GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, render_w, render_h,
+                      0, window_h, window_w, 0,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+}
+
+int main(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+    int window_w = INIT_WINDOW_W;
+    int window_h = INIT_WINDOW_H;
+    int fullscreen = 0;
+    SDL_Window *window = SDL_CreateWindow("Comic Raytrace",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        window_w, window_h, SDL_WINDOW_OPENGL);
+    if (!window) {
+        fprintf(stderr, "Window creation failed: %s\n", SDL_GetError());
+        SDL_Quit();
+        return 1;
+    }
+    SDL_GLContext gl_ctx = SDL_GL_CreateContext(window);
+    if (!gl_ctx) {
+        fprintf(stderr, "GL context creation failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_GL_SetSwapInterval(0);
+    gl_compat_init((gl_compat_loader_fn)SDL_GL_GetProcAddress);
+
+    fprintf(stderr, "GL version: %s\n", (const char *)glGetString(GL_VERSION));
+
+    /* CPU only: GPU backend doesn't write the G-buffer yet. */
+    if (!rt_renderer_available(RT_BACKEND_CPU)) {
+        fprintf(stderr, "CPU backend required for comic mode (G-buffer is "
+                        "CPU-only today)\n");
+        SDL_GL_DeleteContext(gl_ctx);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    rt_renderer *cpu_rnd = rt_renderer_create(RT_BACKEND_CPU);
+
+    scene *scn;
+    scene_camera *cam;
+    build_scene(&scn, &cam);
+
+    int preset = PRESET_DEFAULT;
+    int render_w = PRESETS[preset].w;
+    int render_h = PRESETS[preset].h;
+    int outlines_on = 1;
+
+    edge_settings edges = {
+        .use_object_id    = 1,
+        .use_depth        = 1,
+        .use_normal       = 1,
+        .eight_connected  = 0,
+        .depth_threshold  = 1.0f,
+        .normal_threshold = 0.65f,
+    };
+
+    uint32_t *pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
+    rt_gbuffer gbuf = {
+        .object_id = calloc((size_t)(render_w * render_h), sizeof(uint32_t)),
+        .depth     = calloc((size_t)(render_w * render_h), sizeof(float)),
+        .normal    = calloc((size_t)(render_w * render_h * 3), sizeof(float)),
+    };
+    rt_viewport viewport = { render_w, render_h, FOV };
+
+    GLuint display_tex, display_fbo;
+    glGenTextures(1, &display_tex);
+    glBindTexture(GL_TEXTURE_2D, display_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, render_w, render_h, 0,
+                 GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &display_fbo);
+
+    vector cam_pos = {4.5f, 2.5f, 5.0f};
+    float cam_yaw = -2.356f;
+    float cam_pitch = -0.3f;
+    float move_speed = 5.0f;
+    float look_speed = 2.0f;
+    int running = 1;
+
+    Uint32 fps_last = SDL_GetTicks();
+    Uint32 frame_last = SDL_GetTicks();
+    int fps_frames = 0;
+    Uint32 render_ms_accum = 0;
+    Uint32 edge_ms_accum = 0;
+    char title_buf[200];
+
+    while (running) {
+        Uint32 frame_now = SDL_GetTicks();
+        float dt = (frame_now - frame_last) / 1000.0f;
+        frame_last = frame_now;
+
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) running = 0;
+            if (e.type == SDL_KEYDOWN) {
+                SDL_Keycode k = e.key.keysym.sym;
+                if (k == SDLK_ESCAPE) running = 0;
+                if (k == SDLK_o) {
+                    outlines_on = !outlines_on;
+                    fprintf(stderr, "Outlines: %s\n", outlines_on ? "on" : "off");
+                }
+                if (k == SDLK_i) {
+                    edges.use_object_id = !edges.use_object_id;
+                    fprintf(stderr, "ID edges: %d\n", edges.use_object_id);
+                }
+                if (k == SDLK_n) {
+                    edges.use_normal = !edges.use_normal;
+                    fprintf(stderr, "Normal edges: %d\n", edges.use_normal);
+                }
+                /* deliberately match pixelart's D=dither on the same key
+                 * idea: D toggles depth-edges here. */
+                if (k == SDLK_d && (SDL_GetModState() & KMOD_SHIFT) == 0) {
+                    /* WASD camera also uses D; require a tap (not held)
+                     * is acceptable since SDL_KEYDOWN repeats are off.
+                     * Just toggle. */
+                    edges.use_depth = !edges.use_depth;
+                    fprintf(stderr, "Depth edges: %d\n", edges.use_depth);
+                }
+                if (k == SDLK_LEFTBRACKET) {
+                    edges.eight_connected = 0;
+                    fprintf(stderr, "Outline thickness: 4-connected\n");
+                }
+                if (k == SDLK_RIGHTBRACKET) {
+                    edges.eight_connected = 1;
+                    fprintf(stderr, "Outline thickness: 8-connected\n");
+                }
+                if (k == SDLK_MINUS || k == SDLK_KP_MINUS) {
+                    edges.depth_threshold *= 1.25f;
+                    edges.normal_threshold = edges.normal_threshold > 0.05f
+                        ? edges.normal_threshold - 0.05f : 0.0f;
+                    fprintf(stderr, "Softer thresholds: depth=%.2f normal_dot>=%.2f\n",
+                            edges.depth_threshold, edges.normal_threshold);
+                }
+                if (k == SDLK_EQUALS || k == SDLK_KP_PLUS) {
+                    edges.depth_threshold *= 0.8f;
+                    edges.normal_threshold = edges.normal_threshold < 0.95f
+                        ? edges.normal_threshold + 0.05f : 0.99f;
+                    fprintf(stderr, "Harder thresholds: depth=%.2f normal_dot>=%.2f\n",
+                            edges.depth_threshold, edges.normal_threshold);
+                }
+                if (k >= SDLK_1 && k <= SDLK_4) {
+                    int idx = k - SDLK_1;
+                    if (idx < PRESET_COUNT) {
+                        preset = idx;
+                        goto recreate_buffers;
+                    }
+                }
+                if (k == SDLK_F11) {
+                    fullscreen = !fullscreen;
+                    SDL_SetWindowFullscreen(window,
+                        fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                    SDL_GetWindowSize(window, &window_w, &window_h);
+                }
+                continue;
+                recreate_buffers:
+                    render_w = PRESETS[preset].w;
+                    render_h = PRESETS[preset].h;
+                    free(pixels);
+                    free(gbuf.object_id);
+                    free(gbuf.depth);
+                    free(gbuf.normal);
+                    pixels         = calloc((size_t)(render_w * render_h),     sizeof(uint32_t));
+                    gbuf.object_id = calloc((size_t)(render_w * render_h),     sizeof(uint32_t));
+                    gbuf.depth     = calloc((size_t)(render_w * render_h),     sizeof(float));
+                    gbuf.normal    = calloc((size_t)(render_w * render_h * 3), sizeof(float));
+                    viewport = (rt_viewport){ render_w, render_h, FOV };
+                    glBindTexture(GL_TEXTURE_2D, display_tex);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, render_w, render_h, 0,
+                                 GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+                    fprintf(stderr, "Preset: %s (%dx%d)\n",
+                            PRESETS[preset].name, render_w, render_h);
+            }
+        }
+
+        const Uint8 *keys = SDL_GetKeyboardState(NULL);
+        if (keys[SDL_SCANCODE_LEFT])  cam_yaw   -= look_speed * dt;
+        if (keys[SDL_SCANCODE_RIGHT]) cam_yaw   += look_speed * dt;
+        if (keys[SDL_SCANCODE_UP])    cam_pitch += look_speed * dt;
+        if (keys[SDL_SCANCODE_DOWN])  cam_pitch -= look_speed * dt;
+        if (cam_pitch >  1.4f) cam_pitch =  1.4f;
+        if (cam_pitch < -1.4f) cam_pitch = -1.4f;
+
+        vector forward = { sinf(cam_yaw), 0.0f, cosf(cam_yaw) };
+        vector right   = { cosf(cam_yaw), 0.0f, -sinf(cam_yaw) };
+        if (keys[SDL_SCANCODE_W]) cam_pos = vector_add(cam_pos, vector_scale(forward,  move_speed * dt));
+        if (keys[SDL_SCANCODE_S]) cam_pos = vector_add(cam_pos, vector_scale(forward, -move_speed * dt));
+        if (keys[SDL_SCANCODE_D]) cam_pos = vector_add(cam_pos, vector_scale(right,    move_speed * dt));
+        if (keys[SDL_SCANCODE_A]) cam_pos = vector_add(cam_pos, vector_scale(right,   -move_speed * dt));
+        if (keys[SDL_SCANCODE_SPACE])  cam_pos.y += move_speed * dt;
+        if (keys[SDL_SCANCODE_LSHIFT]) cam_pos.y -= move_speed * dt;
+
+        scene_camera_place(cam, cam_pos, cam_dir_from_yaw_pitch(cam_yaw, cam_pitch));
+
+        Uint32 r_start = SDL_GetTicks();
+        rt_renderer_render(cpu_rnd, scn, cam, &viewport, pixels,
+                           outlines_on ? &gbuf : NULL);
+        Uint32 r_done = SDL_GetTicks();
+        if (outlines_on) apply_edges(pixels, &gbuf, render_w, render_h, &edges);
+        Uint32 e_done = SDL_GetTicks();
+        render_ms_accum += r_done - r_start;
+        edge_ms_accum   += e_done - r_done;
+
+        display_pixels(display_tex, display_fbo, pixels,
+                       render_w, render_h, window_w, window_h);
+        SDL_GL_SwapWindow(window);
+
+        fps_frames++;
+        Uint32 now = SDL_GetTicks();
+        if (now - fps_last >= 1000) {
+            float avg_render = (fps_frames > 0) ? (float)render_ms_accum / (float)fps_frames : 0.0f;
+            float avg_edge   = (fps_frames > 0) ? (float)edge_ms_accum   / (float)fps_frames : 0.0f;
+            snprintf(title_buf, sizeof(title_buf),
+                     "Comic Raytrace - %s outlines=%s %d FPS (rt=%.1f ms, edge=%.1f ms)",
+                     PRESETS[preset].name,
+                     outlines_on ? "on" : "off",
+                     fps_frames, avg_render, avg_edge);
+            SDL_SetWindowTitle(window, title_buf);
+            fprintf(stderr, "[%s outlines=%d] %d FPS, rt=%.1f ms, edge=%.1f ms\n",
+                    PRESETS[preset].name, outlines_on,
+                    fps_frames, avg_render, avg_edge);
+            fps_frames = 0;
+            render_ms_accum = 0;
+            edge_ms_accum = 0;
+            fps_last = now;
+        }
+    }
+
+    glDeleteFramebuffers(1, &display_fbo);
+    glDeleteTextures(1, &display_tex);
+    rt_renderer_destroy(cpu_rnd);
+    free(pixels);
+    free(gbuf.object_id);
+    free(gbuf.depth);
+    free(gbuf.normal);
+    scene_camera_destroy(cam);
+    scene_destroy(scn);
+    SDL_GL_DeleteContext(gl_ctx);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return 0;
+}

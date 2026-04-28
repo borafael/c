@@ -276,7 +276,7 @@ static void setup_lights(void) {
 }
 
 static void render_scene(const scene_camera *cam, const rt_viewport *vp) {
-    rt_renderer_render(rt_rnd, scene_ptr, cam, vp, pixel_buffer);
+    rt_renderer_render(rt_rnd, scene_ptr, cam, vp, pixel_buffer, NULL);
 
     render_clear();
     render_texture_update(sdl_texture, pixel_buffer, vp->width * (int)sizeof(uint32_t));

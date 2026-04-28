@@ -19,6 +19,32 @@ typedef enum {
 } rt_backend;
 
 /**
+ * Per-pixel geometric data captured at the primary ray hit. Pass a
+ * non-NULL pointer to rt_renderer_render to fill these alongside the
+ * usual colour buffer; pass NULL to skip the work entirely. Useful for
+ * post-process effects that need to reason about scene geometry —
+ * comic-style outlines, depth-of-field, screen-space AO, etc.
+ *
+ * Each buffer is width * height entries:
+ *   - object_id: 0 means "no hit" (sky). Otherwise an opaque per-primitive
+ *     id; equal ids mean the same surface, different ids mean a silhouette
+ *     boundary. Stable within a frame, not across frames or scene edits.
+ *   - depth: distance from the camera along the primary ray, in world
+ *     units. Infinity (or any large value) on miss; check via object_id == 0.
+ *   - normal: world-space surface normal, three floats (x,y,z) per pixel
+ *     stored interleaved. Zero vector on miss.
+ *
+ * Only the CPU backend writes the G-buffer today. Asking the OpenGL
+ * backend for one currently logs a warning and leaves the buffers as
+ * the caller passed them (typically zeroed).
+ */
+typedef struct {
+    uint32_t *object_id;
+    float    *depth;
+    float    *normal;  /* 3 * width * height — interleaved xyz */
+} rt_gbuffer;
+
+/**
  * Renderer vtable. Exposed in the public header so the dispatchers in
  * libs/raytrace/renderer.c can forward through the function pointers
  * without an extra translation-unit hop. Every field is private — do
@@ -36,7 +62,8 @@ struct rt_renderer {
                              const scene *scene,
                              const scene_camera *camera,
                              const rt_viewport *viewport,
-                             uint32_t *pixels);
+                             uint32_t *pixels,
+                             rt_gbuffer *gbuf);
     const char *(*name_fn)(const struct rt_renderer *r);
     void         *backend_data;
 };
@@ -72,6 +99,10 @@ void rt_renderer_destroy(rt_renderer *r);
  * after the frame is complete. pixels must point to at least
  * viewport->width * viewport->height uint32_t's in ARGB8888 format.
  *
+ * If gbuf is non-NULL, the backend additionally fills the G-buffer
+ * channels (object_id, depth, normal) for every pixel. Pass NULL to
+ * skip — most callers want NULL. See the rt_gbuffer doc above.
+ *
  * Scene/camera/viewport are passed by pointer and consumed read-only
  * during the call. The caller retains ownership; the renderer does not
  * keep references after the call returns.
@@ -80,7 +111,8 @@ void rt_renderer_render(rt_renderer *r,
                         const scene *scene,
                         const scene_camera *camera,
                         const rt_viewport *viewport,
-                        uint32_t *pixels);
+                        uint32_t *pixels,
+                        rt_gbuffer *gbuf);
 
 /**
  * Return a human-readable name for the renderer implementation

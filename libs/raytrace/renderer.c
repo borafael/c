@@ -38,8 +38,9 @@ void rt_renderer_render(rt_renderer *r,
                         const scene *scene,
                         const scene_camera *camera,
                         const rt_viewport *viewport,
-                        uint32_t *pixels) {
-    r->render_fn(r, scene, camera, viewport, pixels);
+                        uint32_t *pixels,
+                        rt_gbuffer *gbuf) {
+    r->render_fn(r, scene, camera, viewport, pixels, gbuf);
 }
 
 const char *rt_renderer_name(const rt_renderer *r) {

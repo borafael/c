@@ -567,7 +567,7 @@ int main(int argc, char **argv) {
          * mesh's world transform from the node hierarchy and transforms
          * the ray into mesh-local space at intersection time. No need
          * to push positions into anything here. */
-        rt_renderer_render(rnd, s, cam, &viewport, pixels);
+        rt_renderer_render(rnd, s, cam, &viewport, pixels, NULL);
         display_pixels(tex, fbo, pixels, render_w, render_h, window_w, window_h);
         SDL_GL_SwapWindow(window);
 
