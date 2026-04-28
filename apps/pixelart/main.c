@@ -26,6 +26,8 @@
 #include "plane.h"
 #include "box.h"
 #include "cylinder.h"
+#include "obj.h"
+#include "mesh.h"
 #include <SDL2/SDL.h>
 
 #define GL_GLEXT_PROTOTYPES 1
@@ -274,6 +276,65 @@ static void quantize_buffer(uint32_t *pixels, int w, int h,
     }
 }
 
+/* Try to find the Valkyrie OBJ + MTL relative to common run locations
+ * (repo root, the binary's own directory). Returns 1 on success, 0 if
+ * none of the candidate paths exist. The OBJ's usemtl groups split into
+ * one scene_mesh each; uniform scale and offset are baked into vertex
+ * positions in place. */
+static const char *VALKYRIE_OBJ_CANDIDATES[] = {
+    "apps/mech/assets/valkyrie.obj",
+    "../mech/assets/valkyrie.obj",
+    "./valkyrie.obj",
+};
+static const char *VALKYRIE_MTL_CANDIDATES[] = {
+    "apps/mech/assets/valkyrie.mtl",
+    "../mech/assets/valkyrie.mtl",
+    "./valkyrie.mtl",
+};
+
+static int try_load_valkyrie(scene *s, int default_mat,
+                             vector offset, float uniform_scale) {
+    int n_paths = (int)(sizeof(VALKYRIE_OBJ_CANDIDATES) /
+                        sizeof(VALKYRIE_OBJ_CANDIDATES[0]));
+    for (int i = 0; i < n_paths; i++) {
+        FILE *probe = fopen(VALKYRIE_OBJ_CANDIDATES[i], "rb");
+        if (!probe) continue;
+        fclose(probe);
+
+        scene_mtl_entry *mtl = NULL;
+        int mtl_n = scene_load_mtl(VALKYRIE_MTL_CANDIDATES[i], &mtl);
+        if (mtl_n < 0) { mtl_n = 0; mtl = NULL; }
+
+        int first = 0;
+        int added = scene_add_meshes_from_obj(s, VALKYRIE_OBJ_CANDIDATES[i],
+                                              mtl, mtl_n,
+                                              default_mat, &first);
+        free(mtl);
+        if (added <= 0) {
+            fprintf(stderr, "warning: valkyrie load failed at %s\n",
+                    VALKYRIE_OBJ_CANDIDATES[i]);
+            return 0;
+        }
+
+        for (int k = 0; k < added; k++) {
+            scene_mesh *m = &s->meshes[first + k];
+            for (int v = 0; v < m->vertex_count; v++) {
+                m->vertices[v].position.x = m->vertices[v].position.x * uniform_scale + offset.x;
+                m->vertices[v].position.y = m->vertices[v].position.y * uniform_scale + offset.y;
+                m->vertices[v].position.z = m->vertices[v].position.z * uniform_scale + offset.z;
+            }
+        }
+
+        fprintf(stderr, "Loaded Valkyrie from %s (%d mesh groups)\n",
+                VALKYRIE_OBJ_CANDIDATES[i], added);
+        return 1;
+    }
+    fprintf(stderr,
+            "warning: valkyrie.obj not found in any candidate path; "
+            "scene will render without it\n");
+    return 0;
+}
+
 static void build_scene(scene **scn, scene_camera **cam) {
     *scn = scene_create();
 
@@ -327,9 +388,28 @@ static void build_scene(scene **scn, scene_camera **cam) {
         .point = {0.0f, -0.5f, 0.0f}, .normal = {0.0f, 1.0f, 0.0f},
         .material = m_floor });
 
+    /* Fallback paint material for any usemtl group in the OBJ that the
+     * MTL doesn't cover. Slightly reflective so the panels catch the
+     * mirror sphere's backdrop. */
+    int m_paint = scene_add_material(*scn, (scene_material){
+        .albedo = {220, 220, 230},
+        .reflectivity = 0.08f,
+    });
+
+    /* Plant the Valkyrie behind the spheres so it both reads from the
+     * default camera angle and shows up in the mirror sphere's
+     * reflection. Feet on the floor (y=-0.5). */
+    try_load_valkyrie(*scn, m_paint,
+                      (vector){0.0f, -0.5f, -2.0f}, 1.6f);
+
     scene_set_ambient(*scn, 0.2f);
     scene_add_light(*scn, (scene_light){
         .direction = {1.0f, 1.2f, -0.8f}, .intensity = 0.9f });
+
+    /* Build per-mesh BVHs for the CPU ray-mesh test; GPU backend uses
+     * the same data via SSBOs. Must run after all meshes are added and
+     * transforms baked. */
+    rt_scene_build_accel(*scn);
 
     *cam = scene_camera_create(
         (vector){4.5f, 2.5f, 5.0f},
