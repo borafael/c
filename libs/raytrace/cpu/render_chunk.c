@@ -562,27 +562,41 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
             vector ro = camera->origin;
             vector rd = dir;
 
+            /* G-buffer capture follows reflection bounces: when the eye
+             * looks at a mostly-mirror surface, the colour we composite
+             * is dominated by the reflected scene, so the outline pass
+             * needs to see the reflected geometry too. We accumulate
+             * path length across mirror bounces and capture at the
+             * first hit whose reflectivity is below the mirror
+             * threshold (or on a sky miss). */
+            const float RT_GBUF_MIRROR_THRESHOLD = 0.5f;
+            int   gbuf_done = 0;
+            float gbuf_depth_acc = 0.0f;
+
             for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {
                 hit_info h = closest_hit(ro, rd, scene, mesh_world_inv,
                                          camera->origin);
 
-                /* Capture primary-hit geometry into the G-buffer. We do
-                 * this on the first bounce — even on a miss — so the
-                 * downstream edge filter sees consistent sky pixels. */
-                if (gbuf && bounce == 0) {
-                    int idx = y * width + x;
-                    if (h.hit) {
-                        gbuf->object_id[idx]   = h.object_id;
-                        gbuf->depth[idx]       = h.distance;
-                        gbuf->normal[idx*3+0]  = h.normal.x;
-                        gbuf->normal[idx*3+1]  = h.normal.y;
-                        gbuf->normal[idx*3+2]  = h.normal.z;
-                    } else {
-                        gbuf->object_id[idx]   = 0;
-                        gbuf->depth[idx]       = FLT_MAX;
-                        gbuf->normal[idx*3+0]  = 0.0f;
-                        gbuf->normal[idx*3+1]  = 0.0f;
-                        gbuf->normal[idx*3+2]  = 0.0f;
+                if (gbuf && !gbuf_done) {
+                    if (h.hit) gbuf_depth_acc += h.distance;
+                    int capture = !h.hit ||
+                                  h.reflectivity <= RT_GBUF_MIRROR_THRESHOLD;
+                    if (capture) {
+                        int idx = y * width + x;
+                        if (h.hit) {
+                            gbuf->object_id[idx]   = h.object_id;
+                            gbuf->depth[idx]       = gbuf_depth_acc;
+                            gbuf->normal[idx*3+0]  = h.normal.x;
+                            gbuf->normal[idx*3+1]  = h.normal.y;
+                            gbuf->normal[idx*3+2]  = h.normal.z;
+                        } else {
+                            gbuf->object_id[idx]   = 0;
+                            gbuf->depth[idx]       = FLT_MAX;
+                            gbuf->normal[idx*3+0]  = 0.0f;
+                            gbuf->normal[idx*3+1]  = 0.0f;
+                            gbuf->normal[idx*3+2]  = 0.0f;
+                        }
+                        gbuf_done = 1;
                     }
                 }
 
@@ -614,6 +628,19 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
                 float ndotrd = vector_dot(h.normal, rd);
                 rd = vector_normalize(vector_sub(rd, vector_scale(h.normal, 2.0f * ndotrd)));
                 ro = vector_add(h.point, vector_scale(rd, RT_REFLECT_EPSILON));
+            }
+
+            /* Edge case: the entire bounce budget was spent inside
+             * mirror chains and we never landed on a non-reflective
+             * surface. Treat as sky for the G-buffer so the edge filter
+             * has consistent miss values. */
+            if (gbuf && !gbuf_done) {
+                int idx = y * width + x;
+                gbuf->object_id[idx]   = 0;
+                gbuf->depth[idx]       = FLT_MAX;
+                gbuf->normal[idx*3+0]  = 0.0f;
+                gbuf->normal[idx*3+1]  = 0.0f;
+                gbuf->normal[idx*3+2]  = 0.0f;
             }
 
             uint8_t cr = result_r > 255.0f ? 255 : (result_r < 0.0f ? 0 : (uint8_t)result_r);
