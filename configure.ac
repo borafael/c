@@ -111,5 +111,6 @@ AC_CONFIG_FILES([
     apps/mech/Makefile
     apps/barrier/Makefile
     apps/anim/Makefile
+    apps/pixelart/Makefile
 ])
 AC_OUTPUT
