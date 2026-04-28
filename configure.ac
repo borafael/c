@@ -118,5 +118,6 @@ AC_CONFIG_FILES([
     apps/halftone/Makefile
     apps/toon/Makefile
     apps/crt/Makefile
+    apps/showcase/Makefile
 ])
 AC_OUTPUT

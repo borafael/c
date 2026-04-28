@@ -29,13 +29,14 @@ APPS=(
     "orb:"
     "pixelart:"
     "rtdemo:"
+    "showcase:"
     "toon:"
 )
 
 # Apps that load the Valkyrie via the OBJ loader's "./valkyrie.obj"
 # fallback. The OBJ + MTL live under apps/mech/assets/; copy them next
 # to the EXE so each stage dir is self-contained on Windows.
-SHARED_VALKYRIE_APPS=(bloom comic crt halftone pixelart toon)
+SHARED_VALKYRIE_APPS=(bloom comic crt halftone pixelart showcase toon)
 
 # --- Preflight ---------------------------------------------------------------
 

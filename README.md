@@ -38,6 +38,7 @@ c/
 │   ├── halftone/          # Halftone dot-screen post-process demo (MONO + CMYK)
 │   ├── toon/              # Cel-shading demo (lighting bands + comic outlines)
 │   ├── crt/               # CRT/VHS stack (scanlines + chromatic + vignette + grain)
+│   ├── showcase/          # One-stop tour: cycle through every postfx mode
 │   └── barrier/           # Game prototype using battleforge
 ├── scripts/               # Build + asset tooling
 ├── docs/                  # Guides, ideas, plans
@@ -213,6 +214,16 @@ CRT / VHS / film stack. Composes four small postfx passes — chromatic aberrati
 
 ```bash
 ./apps/crt/crt
+```
+
+### Showcase (`apps/showcase`)
+
+One scene, every postfx mode. Cycles through `raw`, `comic` (outlines only), `toon` (bands + outlines), `bloom`, `halftone` (MONO), `cmyk` (halftone-CMYK), `pixelart` (PICO-8 palette + Bayer dither), and `crt` (chromatic + scanlines + vignette + grain). The library reads as a cohesive collection in this app — useful for quick A/B compare and for picking a look for a new project.
+
+**Controls:** `TAB` backend toggle, `M` next mode, `N` previous mode, `1..8` jump directly to a mode, `F11` fullscreen, fly camera with `WASD` + arrows.
+
+```bash
+./apps/showcase/showcase
 ```
 
 ### Barrier (`apps/barrier`)

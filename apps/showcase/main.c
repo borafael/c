@@ -1,0 +1,484 @@
+/* PostFX showcase — one scene, every mode.
+ *
+ * Cycles through every postfx pipeline the library exposes, all on the
+ * same raytraced scene, so the library reads as a cohesive collection
+ * instead of a pile of disjoint demos. Press M to step forward, N to
+ * step back. The scene compromises slightly per mode (an unlit yellow
+ * sphere helps bloom but gets dimmed by toon banding, etc.) but works
+ * well enough across the board to make the comparison feel real.
+ *
+ * Modes:
+ *   0  raw         — no post-process
+ *   1  comic       — black outlines from G-buffer edges
+ *   2  toon        — quantized lighting bands + outlines
+ *   3  bloom       — bright-pass + downsampled Gaussian
+ *   4  halftone    — MONO black-on-paper dot screen
+ *   5  cmyk        — CMYK four-screen subtractive print
+ *   6  pixelart    — PICO-8 palette quantization with Bayer dither
+ *   7  crt         — chromatic + scanlines + vignette + grain
+ *
+ * Controls:
+ *   ESC          quit
+ *   TAB          toggle CPU / OpenGL backend
+ *   F11          fullscreen
+ *   M            next mode
+ *   N            previous mode
+ *   1..8         jump directly to mode 0..7
+ *   WASD/space/shift  fly camera; arrows look around
+ */
+
+#include "renderer.h"
+#include "viewport.h"
+#include "scene.h"
+#include "sphere.h"
+#include "plane.h"
+#include "box.h"
+#include "cylinder.h"
+#include "obj.h"
+#include "mesh.h"
+#include "postfx.h"
+#include <SDL2/SDL.h>
+
+#define GL_GLEXT_PROTOTYPES 1
+#include "gl_compat.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <float.h>
+
+#define INIT_WINDOW_W 960
+#define INIT_WINDOW_H 540
+#define FOV (M_PI / 3.0f)
+#define RENDER_W 480
+#define RENDER_H 270
+
+static const vector LIGHT_DIR = { 1.0f, 1.2f, -0.8f };
+
+typedef enum {
+    MODE_RAW       = 0,
+    MODE_COMIC     = 1,
+    MODE_TOON      = 2,
+    MODE_BLOOM     = 3,
+    MODE_HALF_MONO = 4,
+    MODE_HALF_CMYK = 5,
+    MODE_PIXELART  = 6,
+    MODE_CRT       = 7,
+    MODE_COUNT
+} fx_mode;
+
+static const char *MODE_NAMES[MODE_COUNT] = {
+    "raw", "comic", "toon", "bloom",
+    "halftone", "cmyk", "pixelart", "crt",
+};
+
+static const char *VALKYRIE_OBJ_CANDIDATES[] = {
+    "apps/mech/assets/valkyrie.obj",
+    "../mech/assets/valkyrie.obj",
+    "./valkyrie.obj",
+};
+static const char *VALKYRIE_MTL_CANDIDATES[] = {
+    "apps/mech/assets/valkyrie.mtl",
+    "../mech/assets/valkyrie.mtl",
+    "./valkyrie.mtl",
+};
+
+static int try_load_valkyrie(scene *s, int default_mat,
+                             vector offset, float uniform_scale) {
+    int n = (int)(sizeof(VALKYRIE_OBJ_CANDIDATES) /
+                  sizeof(VALKYRIE_OBJ_CANDIDATES[0]));
+    for (int i = 0; i < n; i++) {
+        FILE *probe = fopen(VALKYRIE_OBJ_CANDIDATES[i], "rb");
+        if (!probe) continue;
+        fclose(probe);
+        scene_mtl_entry *mtl = NULL;
+        int mtl_n = scene_load_mtl(VALKYRIE_MTL_CANDIDATES[i], &mtl);
+        if (mtl_n < 0) { mtl_n = 0; mtl = NULL; }
+        int first = 0;
+        int added = scene_add_meshes_from_obj(s, VALKYRIE_OBJ_CANDIDATES[i],
+                                              mtl, mtl_n, default_mat, &first);
+        free(mtl);
+        if (added <= 0) return 0;
+        for (int k = 0; k < added; k++) {
+            scene_mesh *m = &s->meshes[first + k];
+            for (int v = 0; v < m->vertex_count; v++) {
+                m->vertices[v].position.x = m->vertices[v].position.x * uniform_scale + offset.x;
+                m->vertices[v].position.y = m->vertices[v].position.y * uniform_scale + offset.y;
+                m->vertices[v].position.z = m->vertices[v].position.z * uniform_scale + offset.z;
+            }
+            scene_mesh_compute_bounds(m);
+        }
+        fprintf(stderr, "Loaded Valkyrie from %s (%d mesh groups)\n",
+                VALKYRIE_OBJ_CANDIDATES[i], added);
+        return 1;
+    }
+    fprintf(stderr, "warning: valkyrie.obj not found in any candidate path\n");
+    return 0;
+}
+
+static void build_scene(scene **scn, scene_camera **cam) {
+    *scn = scene_create();
+
+    /* Materials picked to compromise across all postfx modes:
+     *  - flat saturated diffuse → reads cleanly under toon, halftone,
+     *    palette quantization, and edges
+     *  - one unlit yellow → gives bloom an obvious hot spot without
+     *    derailing the rest (toon dims it but it stays brightest) */
+    int m_red    = scene_add_material(*scn, (scene_material){ .albedo = {220,  60,  60} });
+    int m_green  = scene_add_material(*scn, (scene_material){ .albedo = { 80, 180,  80} });
+    int m_blue   = scene_add_material(*scn, (scene_material){ .albedo = { 60, 110, 200} });
+    int m_yellow = scene_add_material(*scn, (scene_material){ .albedo = {230, 200,  60} });
+    int m_neon   = scene_add_material(*scn, (scene_material){
+        .albedo = {255, 220, 80}, .unlit = 1 });
+    int m_floor  = scene_add_material(*scn, (scene_material){
+        .albedo  = {180, 180, 200},
+        .albedo2 = {120, 120, 150},
+        .tex_kind = SCENE_TEX_CHECKER,
+        .tex_scale = 1.0f,
+    });
+    int m_paint  = scene_add_material(*scn, (scene_material){
+        .albedo = {200, 200, 215},
+    });
+
+    scene_add_sphere(*scn, (scene_sphere){
+        .center = {0.0f, 1.0f, 0.0f}, .radius = 1.0f, .material = m_red });
+    scene_add_sphere(*scn, (scene_sphere){
+        .center = {-2.4f, 0.6f, -0.5f}, .radius = 0.6f, .material = m_green });
+    scene_add_sphere(*scn, (scene_sphere){
+        .center = {2.0f, 0.8f, -1.0f}, .radius = 0.8f, .material = m_blue });
+    scene_add_sphere(*scn, (scene_sphere){
+        .center = {0.5f, 0.5f, 1.6f}, .radius = 0.4f, .material = m_neon });
+
+    scene_add_box(*scn, (scene_box){
+        .min = {-3.5f, -0.5f, 1.5f}, .max = {-2.5f, 0.8f, 2.5f},
+        .material = m_yellow });
+    scene_add_cylinder(*scn, (scene_cylinder){
+        .center = {2.5f, 0.5f, 2.0f}, .axis = {0.0f, 1.0f, 0.0f},
+        .radius = 0.45f, .half_height = 1.0f, .material = m_yellow });
+
+    scene_add_plane(*scn, (scene_plane){
+        .point = {0.0f, -0.5f, 0.0f}, .normal = {0.0f, 1.0f, 0.0f},
+        .material = m_floor });
+
+    try_load_valkyrie(*scn, m_paint,
+                      (vector){0.0f, 0.07f, -2.5f}, 3.0f);
+
+    scene_set_ambient(*scn, 0.25f);
+    scene_add_light(*scn, (scene_light){
+        .direction = LIGHT_DIR, .intensity = 0.85f });
+
+    rt_scene_build_accel(*scn);
+
+    *cam = scene_camera_create(
+        (vector){4.5f, 2.5f, 5.0f},
+        (vector){-1.0f, -0.4f, -1.0f});
+}
+
+static vector cam_dir_from_yaw_pitch(float yaw, float pitch) {
+    return (vector){
+        cosf(pitch) * sinf(yaw),
+        sinf(pitch),
+        cosf(pitch) * cosf(yaw),
+    };
+}
+
+static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
+                           int render_w, int render_h,
+                           int window_w, int window_h) {
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, render_w, render_h,
+                    GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, render_w, render_h,
+                      0, window_h, window_w, 0,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+}
+
+int main(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+    int window_w = INIT_WINDOW_W;
+    int window_h = INIT_WINDOW_H;
+    int fullscreen = 0;
+    SDL_Window *window = SDL_CreateWindow("PostFX Showcase",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        window_w, window_h, SDL_WINDOW_OPENGL);
+    if (!window) {
+        fprintf(stderr, "Window creation failed: %s\n", SDL_GetError());
+        SDL_Quit();
+        return 1;
+    }
+    SDL_GLContext gl_ctx = SDL_GL_CreateContext(window);
+    if (!gl_ctx) {
+        fprintf(stderr, "GL context creation failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_GL_SetSwapInterval(0);
+    gl_compat_init((gl_compat_loader_fn)SDL_GL_GetProcAddress);
+
+    fprintf(stderr, "GL version: %s\n", (const char *)glGetString(GL_VERSION));
+
+    rt_renderer *cpu_rnd = rt_renderer_available(RT_BACKEND_CPU)
+                         ? rt_renderer_create(RT_BACKEND_CPU) : NULL;
+    rt_renderer *gpu_rnd = rt_renderer_available(RT_BACKEND_OPENGL)
+                         ? rt_renderer_create(RT_BACKEND_OPENGL) : NULL;
+    if (!cpu_rnd && !gpu_rnd) {
+        fprintf(stderr, "No renderers available\n");
+        SDL_GL_DeleteContext(gl_ctx);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    rt_renderer *active = gpu_rnd ? gpu_rnd : cpu_rnd;
+    fprintf(stderr, "Active: %s (TAB to toggle)\n", rt_renderer_name(active));
+
+    scene *scn;
+    scene_camera *cam;
+    build_scene(&scn, &cam);
+
+    int render_w = RENDER_W;
+    int render_h = RENDER_H;
+
+    /* Tuned defaults — picked to look reasonable without per-mode
+     * configuration UI. Each demo app exposes finer knobs. */
+    postfx_edges     edges_cfg  = {
+        .use_object_id = 1, .use_depth = 1, .use_normal = 1,
+        .eight_connected = 0,
+        .depth_threshold = 1.0f, .normal_threshold = 0.65f,
+    };
+    postfx_toon      toon_cfg   = {
+        .enabled = 1, .bands = 3,
+        .light_x = LIGHT_DIR.x, .light_y = LIGHT_DIR.y, .light_z = LIGHT_DIR.z,
+        .ambient = 0.35f, .rim_strength = 0.0f,
+    };
+    postfx_bloom     bloom_cfg  = {
+        .enabled = 1, .threshold = 0.65f, .knee = 0.25f,
+        .intensity = 1.4f, .radius = 8, .iterations = 2,
+    };
+    postfx_halftone  ht_cfg     = {
+        .enabled = 1, .mode = POSTFX_HALFTONE_CMYK, .cell_size = 8,
+        .paper = { 245, 240, 230 }, .ink = { 20, 20, 25 },
+    };
+    postfx_scanlines scan_cfg   = { .enabled = 1, .period = 2, .strength = 0.35f };
+    postfx_chromatic chrom_cfg  = { .enabled = 1, .shift_pixels = 2 };
+    postfx_vignette  vig_cfg    = { .enabled = 1, .intensity = 0.55f, .softness = 0.4f };
+    postfx_grain     grain_cfg  = { .enabled = 1, .strength = 0.18f, .seed = 0 };
+
+    postfx_bloom_ctx     *bloom    = postfx_bloom_create(render_w, render_h);
+    postfx_halftone_ctx  *halftone = postfx_halftone_create(render_w, render_h);
+    postfx_chromatic_ctx *chrom    = postfx_chromatic_create(render_w, render_h);
+
+    /* PICO-8 palette for the pixelart mode — index lookup keyed off
+     * postfx_palette_at("pico8"); fall back to bw2 if it ever moves. */
+    const postfx_palette *pico8 = NULL;
+    for (int i = 0; i < postfx_palette_count(); i++) {
+        const postfx_palette *p = postfx_palette_at(i);
+        if (p && p->name && strcmp(p->name, "pico8") == 0) { pico8 = p; break; }
+    }
+    if (!pico8) pico8 = postfx_palette_at(0);
+
+    uint32_t *pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
+    rt_gbuffer gbuf = {
+        .object_id = calloc((size_t)(render_w * render_h),     sizeof(uint32_t)),
+        .depth     = calloc((size_t)(render_w * render_h),     sizeof(float)),
+        .normal    = calloc((size_t)(render_w * render_h * 3), sizeof(float)),
+    };
+    postfx_gbuffer pg = {
+        .object_id = gbuf.object_id,
+        .depth     = gbuf.depth,
+        .normal    = gbuf.normal,
+    };
+    rt_viewport viewport = { render_w, render_h, FOV };
+
+    GLuint display_tex, display_fbo;
+    glGenTextures(1, &display_tex);
+    glBindTexture(GL_TEXTURE_2D, display_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, render_w, render_h, 0,
+                 GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &display_fbo);
+
+    vector cam_pos = {4.5f, 2.5f, 5.0f};
+    float cam_yaw = -2.356f;
+    float cam_pitch = -0.3f;
+    float move_speed = 5.0f;
+    float look_speed = 2.0f;
+    int running = 1;
+
+    fx_mode mode = MODE_RAW;
+    fprintf(stderr, "Mode: %d %s\n", mode, MODE_NAMES[mode]);
+
+    Uint32 fps_last = SDL_GetTicks();
+    Uint32 frame_last = SDL_GetTicks();
+    int fps_frames = 0;
+    Uint32 render_ms_accum = 0;
+    Uint32 fx_ms_accum = 0;
+    char title_buf[200];
+
+    while (running) {
+        Uint32 frame_now = SDL_GetTicks();
+        float dt = (frame_now - frame_last) / 1000.0f;
+        frame_last = frame_now;
+
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) running = 0;
+            if (e.type == SDL_KEYDOWN) {
+                SDL_Keycode k = e.key.keysym.sym;
+                if (k == SDLK_ESCAPE) running = 0;
+                if (k == SDLK_TAB) {
+                    if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
+                    else if (active == gpu_rnd && cpu_rnd) active = cpu_rnd;
+                    fprintf(stderr, "Active: %s\n", rt_renderer_name(active));
+                }
+                if (k == SDLK_m) {
+                    mode = (fx_mode)(((int)mode + 1) % MODE_COUNT);
+                    fprintf(stderr, "Mode: %d %s\n", mode, MODE_NAMES[mode]);
+                }
+                if (k == SDLK_n) {
+                    mode = (fx_mode)(((int)mode + MODE_COUNT - 1) % MODE_COUNT);
+                    fprintf(stderr, "Mode: %d %s\n", mode, MODE_NAMES[mode]);
+                }
+                if (k >= SDLK_1 && k <= SDLK_8) {
+                    int idx = k - SDLK_1;
+                    if (idx < MODE_COUNT) {
+                        mode = (fx_mode)idx;
+                        fprintf(stderr, "Mode: %d %s\n", mode, MODE_NAMES[mode]);
+                    }
+                }
+                if (k == SDLK_F11) {
+                    fullscreen = !fullscreen;
+                    SDL_SetWindowFullscreen(window,
+                        fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                    SDL_GetWindowSize(window, &window_w, &window_h);
+                }
+            }
+        }
+
+        const Uint8 *keys = SDL_GetKeyboardState(NULL);
+        if (keys[SDL_SCANCODE_LEFT])  cam_yaw   -= look_speed * dt;
+        if (keys[SDL_SCANCODE_RIGHT]) cam_yaw   += look_speed * dt;
+        if (keys[SDL_SCANCODE_UP])    cam_pitch += look_speed * dt;
+        if (keys[SDL_SCANCODE_DOWN])  cam_pitch -= look_speed * dt;
+        if (cam_pitch >  1.4f) cam_pitch =  1.4f;
+        if (cam_pitch < -1.4f) cam_pitch = -1.4f;
+
+        vector forward = { sinf(cam_yaw), 0.0f, cosf(cam_yaw) };
+        vector right   = { cosf(cam_yaw), 0.0f, -sinf(cam_yaw) };
+        if (keys[SDL_SCANCODE_W]) cam_pos = vector_add(cam_pos, vector_scale(forward,  move_speed * dt));
+        if (keys[SDL_SCANCODE_S]) cam_pos = vector_add(cam_pos, vector_scale(forward, -move_speed * dt));
+        if (keys[SDL_SCANCODE_D]) cam_pos = vector_add(cam_pos, vector_scale(right,    move_speed * dt));
+        if (keys[SDL_SCANCODE_A]) cam_pos = vector_add(cam_pos, vector_scale(right,   -move_speed * dt));
+        if (keys[SDL_SCANCODE_SPACE])  cam_pos.y += move_speed * dt;
+        if (keys[SDL_SCANCODE_LSHIFT]) cam_pos.y -= move_speed * dt;
+
+        scene_camera_place(cam, cam_pos, cam_dir_from_yaw_pitch(cam_yaw, cam_pitch));
+
+        /* Only ask the renderer for a G-buffer when the active mode
+         * actually consumes one — saves a write pass everywhere else. */
+        int needs_gbuf = (mode == MODE_COMIC || mode == MODE_TOON);
+
+        Uint32 r_start = SDL_GetTicks();
+        rt_renderer_render(active, scn, cam, &viewport, pixels,
+                           needs_gbuf ? &gbuf : NULL);
+        Uint32 r_done = SDL_GetTicks();
+
+        switch (mode) {
+            case MODE_RAW:
+                break;
+            case MODE_COMIC:
+                postfx_apply_edges(pixels, &pg, render_w, render_h, &edges_cfg);
+                break;
+            case MODE_TOON:
+                postfx_toon_apply(pixels, &pg, render_w, render_h, &toon_cfg);
+                postfx_apply_edges(pixels, &pg, render_w, render_h, &edges_cfg);
+                break;
+            case MODE_BLOOM:
+                postfx_bloom_apply(bloom, pixels, render_w, render_h, &bloom_cfg);
+                break;
+            case MODE_HALF_MONO:
+                ht_cfg.mode = POSTFX_HALFTONE_MONO;
+                postfx_halftone_apply(halftone, pixels, render_w, render_h, &ht_cfg);
+                break;
+            case MODE_HALF_CMYK:
+                ht_cfg.mode = POSTFX_HALFTONE_CMYK;
+                postfx_halftone_apply(halftone, pixels, render_w, render_h, &ht_cfg);
+                break;
+            case MODE_PIXELART:
+                postfx_quantize(pixels, render_w, render_h, pico8, /*dither=*/1);
+                break;
+            case MODE_CRT:
+                postfx_chromatic_apply(chrom, pixels, render_w, render_h, &chrom_cfg);
+                postfx_scanlines_apply(pixels, render_w, render_h, &scan_cfg);
+                postfx_vignette_apply (pixels, render_w, render_h, &vig_cfg);
+                grain_cfg.seed = frame_now;
+                postfx_grain_apply    (pixels, render_w, render_h, &grain_cfg);
+                break;
+            case MODE_COUNT:
+                break;
+        }
+        Uint32 fx_done = SDL_GetTicks();
+
+        render_ms_accum += r_done  - r_start;
+        fx_ms_accum     += fx_done - r_done;
+
+        display_pixels(display_tex, display_fbo, pixels,
+                       render_w, render_h, window_w, window_h);
+        SDL_GL_SwapWindow(window);
+
+        fps_frames++;
+        Uint32 now = SDL_GetTicks();
+        if (now - fps_last >= 1000) {
+            float avg_render = (fps_frames > 0) ? (float)render_ms_accum / (float)fps_frames : 0.0f;
+            float avg_fx     = (fps_frames > 0) ? (float)fx_ms_accum     / (float)fps_frames : 0.0f;
+            snprintf(title_buf, sizeof(title_buf),
+                     "PostFX Showcase - %s [%d/%d %s] %d FPS (rt=%.1fms fx=%.1fms)  M/N to cycle",
+                     rt_renderer_name(active),
+                     (int)mode + 1, (int)MODE_COUNT, MODE_NAMES[mode],
+                     fps_frames, avg_render, avg_fx);
+            SDL_SetWindowTitle(window, title_buf);
+            fprintf(stderr, "[%s mode=%s] %d FPS, rt=%.1fms fx=%.1fms\n",
+                    rt_renderer_name(active), MODE_NAMES[mode],
+                    fps_frames, avg_render, avg_fx);
+            fps_frames = 0;
+            render_ms_accum = 0;
+            fx_ms_accum = 0;
+            fps_last = now;
+        }
+    }
+
+    glDeleteFramebuffers(1, &display_fbo);
+    glDeleteTextures(1, &display_tex);
+    if (cpu_rnd) rt_renderer_destroy(cpu_rnd);
+    if (gpu_rnd) rt_renderer_destroy(gpu_rnd);
+    postfx_bloom_destroy(bloom);
+    postfx_halftone_destroy(halftone);
+    postfx_chromatic_destroy(chrom);
+    free(pixels);
+    free(gbuf.object_id);
+    free(gbuf.depth);
+    free(gbuf.normal);
+    scene_camera_destroy(cam);
+    scene_destroy(scn);
+    SDL_GL_DeleteContext(gl_ctx);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return 0;
+}
