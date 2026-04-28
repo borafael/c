@@ -96,6 +96,8 @@ apps/mirrors/mirrors
 apps/orb/orb
 apps/mech/mech
 apps/anim/anim
+apps/comic/comic
+apps/pixelart/pixelart
 
 # Mesh assets are Wavefront OBJ (text geometry), not compiled object files
 # — exempt from the global *.obj ignore.
