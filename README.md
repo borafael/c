@@ -1,6 +1,6 @@
 # C Experiments
 
-A monorepo playground for C projects. Currently: a raytracer (with reflections, procedural textures, triangle meshes, and a comic/pixel-art post-FX pipeline), an FBX viewer with skeletal animation, several scene demos, a game prototype, and an N-Body simulation.
+A monorepo playground for C projects. Currently: a raytracer (with reflections, procedural textures, triangle meshes, and a comic / pixel-art / bloom post-FX pipeline), an FBX viewer with skeletal animation, several scene demos, a game prototype, and an N-Body simulation.
 
 Built with GNU Autotools and heavy assistance from [Claude Code](https://claude.ai/code).
 
@@ -21,7 +21,7 @@ c/
 │   ├── physics/           # Thread-pooled N-body physics (unit-tested)
 │   ├── scene/             # Renderer-agnostic scene + OBJ/FBX loaders (unit-tested)
 │   ├── raytrace/          # Pluggable CPU + OpenGL renderers, BVH, reflections, G-buffer
-│   ├── postfx/            # CPU post-processing: comic edges, palette quantize, posterize
+│   ├── postfx/            # CPU post-processing: comic edges, palette quantize, posterize, bloom
 │   ├── ini/               # INI config parser (unit-tested)
 │   ├── slice/             # Sprite-sheet loader (wraps stb_image)
 │   └── battleforge/       # Game framework built on raytrace + thread + slice
@@ -34,6 +34,7 @@ c/
 │   ├── anim/              # Skeleton/anim demo + FBX viewer
 │   ├── comic/             # Comic-outline post-process demo
 │   ├── pixelart/          # Low-res raytrace + palette quantization demo
+│   ├── bloom/             # Bloom post-process demo (neon spheres + mirrors)
 │   └── barrier/           # Game prototype using battleforge
 ├── scripts/               # Build + asset tooling
 ├── docs/                  # Guides, ideas, plans
@@ -49,7 +50,7 @@ c/
 - **`libs/physics`** — Thread-pooled N-body physics: pairwise gravity, entity merging, optional spherical boundary. Extracted from `nbody` so it can be reused and tested independently. Unit tested with CHECK.
 - **`libs/scene`** — Renderer-agnostic scene description: primitives (sphere, plane, disc, cylinder, triangle, box, sprite, heightfield), triangle meshes with bounding spheres, materials with image + procedural textures, node hierarchy, skeletal skins, animation tracks, lights, camera. Includes OBJ + MTL parsing and an FBX loader (via vendored [ufbx](https://github.com/ufbx/ufbx)). Unit tested with CHECK.
 - **`libs/raytrace`** — Renderers that consume `scene`. Two backends: CPU (always built, multithreaded) and OpenGL compute (requires GL 4.3+, auto-detected at configure time). Recursive reflections, per-mesh BVH on both backends, and an optional G-buffer (object_id / depth / normal) with parity across backends.
-- **`libs/postfx`** — CPU post-processing on a finished ARGB framebuffer: comic outlines from a G-buffer (silhouette / depth / normal edges, 4- or 8-connected), palette quantization with optional 4×4 Bayer dither, and luminance posterize. Comes with a curated palette table (bw2 → resurrect64).
+- **`libs/postfx`** — CPU post-processing on a finished ARGB framebuffer: comic outlines from a G-buffer (silhouette / depth / normal edges, 4- or 8-connected), palette quantization with optional 4×4 Bayer dither, luminance posterize, and bloom (downsampled bright-pass + separable Gaussian + bilinear additive composite). Comes with a curated palette table (bw2 → resurrect64).
 - **`libs/ini`** — Minimal INI config parser. Unit tested with CHECK.
 - **`libs/slice`** — Sprite-sheet slicer; wraps `stb_image.h` to decode PNGs and expose frames.
 - **`libs/battleforge`** — Game framework tying the above together (scenes, entities, rendering loop).
@@ -169,6 +170,16 @@ Low-resolution raytrace blitted up with `GL_NEAREST` so every traced pixel becom
 
 ```bash
 ./apps/pixelart/pixelart
+```
+
+### Bloom (`apps/bloom`)
+
+Bright-pass bloom on top of the raytracer. Three unlit "neon" spheres (pink, cyan, yellow) sit beside a mirror sphere; the post-process extracts pixels above a luminance threshold, blurs them at half resolution with a separable Gaussian, and adds the result back additively. The mirror picks up neon reflections, so the bloom kicks in through reflection bounces too.
+
+**Controls:** `TAB` backend toggle, `1..4` resolution preset, `B` toggle bloom, `;` / `'` threshold, `-` / `=` intensity, `[` / `]` blur radius, `T` cycle iterations (1..4), `F11` fullscreen, fly camera with `WASD` + arrows.
+
+```bash
+./apps/bloom/bloom
 ```
 
 ### Barrier (`apps/barrier`)

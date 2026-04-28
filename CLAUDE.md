@@ -20,7 +20,8 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   ├── postfx/           # CPU post-processing on a finished framebuffer:
 │   │                     #   comic outlines (G-buffer edges), palette
 │   │                     #   quantization (with Bayer dither), luminance
-│   │                     #   posterize
+│   │                     #   posterize, bloom (downsampled bright-pass +
+│   │                     #   separable Gaussian)
 │   ├── ini/              # INI config parser + CHECK unit tests
 │   ├── slice/            # Sprite-sheet loader (wraps stb_image)
 │   └── battleforge/      # Game framework built on raytrace + thread + slice
@@ -33,6 +34,7 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   ├── anim/             # Skeleton/animation demo; --load-fbx <path> to view FBX clips
 │   ├── comic/            # G-buffer-edge comic outlines on top of raytraced scene
 │   ├── pixelart/         # Low-res raytrace + palette quantization (PostFX showcase)
+│   ├── bloom/            # Bright-pass bloom on neon spheres + mirror reflections
 │   └── barrier/          # Game prototype using battleforge (ECS + sprites + maps)
 ├── scripts/              # build-windows.sh (MinGW cross-compile, all apps), Blender sprite tools
 └── docs/                 # slice-sprite-guide.md, ideas/, plans/, superpowers/
@@ -62,7 +64,7 @@ scripts/build-windows.sh             # produces build/win64/<app>/
 scripts/build-windows.sh --clean     # wipe build/win64-build first
 ```
 
-Builds every app in the `APPS` array (currently: `anim`, `barrier`, `comic`, `mech`, `mirrors`, `nbody`, `orb`, `pixelart`, `rtdemo`). Requires `gcc-mingw-w64-x86-64-posix` and `deps/SDL2-2.30.11/x86_64-w64-mingw32/`. Each app gets its own staged dir with the `.exe`, `SDL2.dll`, `libwinpthread-1.dll`, and any per-app asset directories. `comic` and `pixelart` are listed in `SHARED_VALKYRIE_APPS` so the script also copies `apps/mech/assets/valkyrie.{obj,mtl}` next to their EXEs. The script does an out-of-tree build under `build/win64-build/`, so an in-tree Linux build (if any) must be `make distclean`'d first.
+Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bloom`, `comic`, `mech`, `mirrors`, `nbody`, `orb`, `pixelart`, `rtdemo`). Requires `gcc-mingw-w64-x86-64-posix` and `deps/SDL2-2.30.11/x86_64-w64-mingw32/`. Each app gets its own staged dir with the `.exe`, `SDL2.dll`, `libwinpthread-1.dll`, and any per-app asset directories. `bloom`, `comic`, and `pixelart` are listed in `SHARED_VALKYRIE_APPS` so the script also copies `apps/mech/assets/valkyrie.{obj,mtl}` next to their EXEs. The script does an out-of-tree build under `build/win64-build/`, so an in-tree Linux build (if any) must be `make distclean`'d first.
 
 ## Running
 
@@ -75,6 +77,7 @@ Builds every app in the `APPS` array (currently: `anim`, `barrier`, `comic`, `me
 ./apps/anim/anim [--load-fbx <file>]     # Skeleton/anim demo or FBX viewer (orbit camera)
 ./apps/comic/comic                       # Comic outlines (I/Z/N/O toggles, [ ] thickness)
 ./apps/pixelart/pixelart                 # Low-res raytrace + palette quantize (P, [ ], H, O)
+./apps/bloom/bloom                       # Bloom on neon spheres (B toggle, ;/' threshold, [/] radius, T iters)
 ./apps/barrier/barrier                   # Game prototype
 ```
 
@@ -94,7 +97,7 @@ Builds every app in the `APPS` array (currently: `anim`, `barrier`, `comic`, `me
 - **Mesh acceleration**: `scene_mesh` carries vertex/index buffers plus an opaque `accel` slot. `rt_scene_build_accel` (CPU) builds a per-mesh BVH; the OpenGL backend builds GPU BVH descriptors. A bounding sphere (`bounds_center` / `bounds_radius`) gives an O(1) reject before BVH traversal.
 - **Node hierarchy + skinning**: `scene_node` forms a tree via `parent_index`. `scene_resolve_world_transforms` does one forward sweep to compute world matrices. Meshes with `skin_index >= 0` are deformed by `scene_apply_skinning` from a preserved rest pose; rigid meshes follow the existing path. FBX import lives in `libs/scene/fbx.c` (via vendored ufbx).
 - **Animation**: `scene_animation` is a bundle of per-node transform tracks (9 channels: pos/rot/scale × xyz). `scene_anim_sample` writes into `scene_node.transform`; renderers see only resolved node transforms.
-- **Post-processing**: `libs/postfx` runs CPU passes on a finished ARGB framebuffer, in place. Edge detection consumes a `postfx_gbuffer` view (renderer-agnostic — copy pointers from `rt_gbuffer` at the call site). Palette quantization, ordered dither, and luminance posterize are independent passes.
+- **Post-processing**: `libs/postfx` runs CPU passes on a finished ARGB framebuffer, in place. Edge detection consumes a `postfx_gbuffer` view (renderer-agnostic — copy pointers from `rt_gbuffer` at the call site). Palette quantization, ordered dither, and luminance posterize are independent passes. Bloom uses a `postfx_bloom_ctx` that owns half-resolution float scratch buffers and resizes itself when width/height change — avoids reallocating per frame.
 - **ECS-ish entity model**: Used in `barrier/` for entities with position/animation/behavior.
 - **Thread pool**: CPU raytrace backend parallelizes chunk rendering via `libs/thread/thread_pool`.
 - **Modular Autotools**: Each library has its own `Makefile.am`; root `Makefile.am` enforces build order (libs before apps).

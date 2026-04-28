@@ -95,4 +95,34 @@ void postfx_quantize(uint32_t *pixels, int width, int height,
  */
 void postfx_posterize(uint32_t *pixels, int width, int height);
 
+/* ===================================================================
+ *   Bloom (bright-pass + downsampled separable Gaussian)
+ * =================================================================== */
+
+/* Ctx owns the half-res scratch buffers. The pass downsamples once,
+ * blurs, then upsamples and adds back, so we keep the float scratch
+ * around between frames instead of reallocating every call. The
+ * apply function transparently resizes if width/height change. */
+typedef struct postfx_bloom_ctx postfx_bloom_ctx;
+
+postfx_bloom_ctx *postfx_bloom_create(int width, int height);
+void              postfx_bloom_destroy(postfx_bloom_ctx *ctx);
+
+/* threshold/knee are LDR luminance (0..1). intensity scales the
+ * additive bright contribution. radius is the Gaussian half-width in
+ * low-res pixels (clamped to 1..16). iterations applies the separable
+ * blur N times for a wider, softer falloff (clamped to 1..4). */
+typedef struct {
+    int   enabled;
+    float threshold;
+    float knee;
+    float intensity;
+    int   radius;
+    int   iterations;
+} postfx_bloom;
+
+void postfx_bloom_apply(postfx_bloom_ctx *ctx,
+                        uint32_t *pixels, int width, int height,
+                        const postfx_bloom *cfg);
+
 #endif /* POSTFX_H */

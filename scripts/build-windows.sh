@@ -19,6 +19,7 @@ PKGCONFIG_DIR="$BUILD_DIR/pkgconfig"
 APPS=(
     "anim:"
     "barrier:assets,maps,units"
+    "bloom:"
     "comic:"
     "mech:assets"
     "mirrors:"
@@ -31,7 +32,7 @@ APPS=(
 # Apps that load the Valkyrie via the OBJ loader's "./valkyrie.obj"
 # fallback. The OBJ + MTL live under apps/mech/assets/; copy them next
 # to the EXE so each stage dir is self-contained on Windows.
-SHARED_VALKYRIE_APPS=(comic pixelart)
+SHARED_VALKYRIE_APPS=(bloom comic pixelart)
 
 # --- Preflight ---------------------------------------------------------------
 

@@ -114,5 +114,6 @@ AC_CONFIG_FILES([
     apps/anim/Makefile
     apps/pixelart/Makefile
     apps/comic/Makefile
+    apps/bloom/Makefile
 ])
 AC_OUTPUT

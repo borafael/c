@@ -1,6 +1,8 @@
 #include "postfx.h"
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <math.h>
 
 /* ===================================================================
  *   Edge detection
@@ -300,4 +302,208 @@ static inline uint32_t posterize_pixel(uint32_t argb) {
 void postfx_posterize(uint32_t *pixels, int w, int h) {
     int n = w * h;
     for (int i = 0; i < n; i++) pixels[i] = posterize_pixel(pixels[i]);
+}
+
+/* ===================================================================
+ *   Bloom
+ * =================================================================== */
+
+#define BLOOM_MAX_RADIUS 16
+
+struct postfx_bloom_ctx {
+    int    input_w, input_h;
+    int    low_w, low_h;
+    float *bright_a;   /* low_w * low_h * 3, ping-pong A */
+    float *bright_b;   /* low_w * low_h * 3, ping-pong B */
+};
+
+static int bloom_realloc(postfx_bloom_ctx *c, int w, int h) {
+    int lw = w >> 1; if (lw < 1) lw = 1;
+    int lh = h >> 1; if (lh < 1) lh = 1;
+    size_t n = (size_t)lw * (size_t)lh * 3;
+    float *a = calloc(n, sizeof(float));
+    float *b = calloc(n, sizeof(float));
+    if (!a || !b) { free(a); free(b); return 0; }
+    free(c->bright_a);
+    free(c->bright_b);
+    c->bright_a = a;
+    c->bright_b = b;
+    c->input_w  = w;  c->input_h = h;
+    c->low_w    = lw; c->low_h   = lh;
+    return 1;
+}
+
+postfx_bloom_ctx *postfx_bloom_create(int w, int h) {
+    if (w <= 0 || h <= 0) return NULL;
+    postfx_bloom_ctx *c = calloc(1, sizeof(*c));
+    if (!c) return NULL;
+    if (!bloom_realloc(c, w, h)) { free(c); return NULL; }
+    return c;
+}
+
+void postfx_bloom_destroy(postfx_bloom_ctx *c) {
+    if (!c) return;
+    free(c->bright_a);
+    free(c->bright_b);
+    free(c);
+}
+
+/* Soft-knee bright pass: pixels well below threshold contribute zero,
+ * those near it ramp in smoothly, those above pass their excess through.
+ * Output is scaled-down RGB in [0, ~1] floats. */
+static inline void bright_pass_pixel(float r, float g, float b,
+                                     float thr, float knee,
+                                     float *out_r, float *out_g, float *out_b) {
+    float lum = 0.299f * r + 0.587f * g + 0.114f * b;
+    float soft = lum - thr + knee;
+    if (soft < 0) soft = 0;
+    if (soft > 2.0f * knee) soft = 2.0f * knee;
+    soft = (soft * soft) / (4.0f * knee + 1e-6f);
+    float hard = lum - thr;
+    if (hard < 0) hard = 0;
+    float contrib = soft > hard ? soft : hard;
+    float mul = lum > 1e-6f ? contrib / lum : 0.0f;
+    *out_r = r * mul;
+    *out_g = g * mul;
+    *out_b = b * mul;
+}
+
+void postfx_bloom_apply(postfx_bloom_ctx *c, uint32_t *pixels,
+                        int w, int h, const postfx_bloom *cfg) {
+    if (!c || !cfg || !cfg->enabled) return;
+    if (w != c->input_w || h != c->input_h) {
+        if (!bloom_realloc(c, w, h)) return;
+    }
+    int lw = c->low_w, lh = c->low_h;
+    float knee = cfg->knee > 1e-3f ? cfg->knee : 1e-3f;
+    float thr  = cfg->threshold;
+
+    /* 1. Bright pass + 2x downsample (average a 2x2 block). */
+    for (int y = 0; y < lh; y++) {
+        int sy0 = y * 2;
+        int sy1 = sy0 + 1; if (sy1 >= h) sy1 = sy0;
+        for (int x = 0; x < lw; x++) {
+            int sx0 = x * 2;
+            int sx1 = sx0 + 1; if (sx1 >= w) sx1 = sx0;
+            uint32_t p00 = pixels[sy0 * w + sx0];
+            uint32_t p10 = pixels[sy0 * w + sx1];
+            uint32_t p01 = pixels[sy1 * w + sx0];
+            uint32_t p11 = pixels[sy1 * w + sx1];
+            float r = (((p00>>16)&0xFF) + ((p10>>16)&0xFF) + ((p01>>16)&0xFF) + ((p11>>16)&0xFF)) * (1.0f / (4.0f * 255.0f));
+            float g = (((p00>> 8)&0xFF) + ((p10>> 8)&0xFF) + ((p01>> 8)&0xFF) + ((p11>> 8)&0xFF)) * (1.0f / (4.0f * 255.0f));
+            float b = (( p00     &0xFF) + ( p10     &0xFF) + ( p01     &0xFF) + ( p11     &0xFF)) * (1.0f / (4.0f * 255.0f));
+            float br, bg, bb;
+            bright_pass_pixel(r, g, b, thr, knee, &br, &bg, &bb);
+            float *dst = &c->bright_a[(y * lw + x) * 3];
+            dst[0] = br; dst[1] = bg; dst[2] = bb;
+        }
+    }
+
+    /* 2. Build the 1D Gaussian kernel once. */
+    int radius = cfg->radius;
+    if (radius < 1) radius = 1;
+    if (radius > BLOOM_MAX_RADIUS) radius = BLOOM_MAX_RADIUS;
+    float kernel[2 * BLOOM_MAX_RADIUS + 1];
+    float sigma = (float)radius * 0.5f;
+    float ksum = 0.0f;
+    for (int i = -radius; i <= radius; i++) {
+        float v = expf(-((float)(i * i)) / (2.0f * sigma * sigma));
+        kernel[i + radius] = v;
+        ksum += v;
+    }
+    float inv_ksum = 1.0f / ksum;
+    for (int i = 0; i < 2 * radius + 1; i++) kernel[i] *= inv_ksum;
+
+    int iters = cfg->iterations;
+    if (iters < 1) iters = 1;
+    if (iters > 4) iters = 4;
+
+    /* 3. Separable Gaussian blur, ping-ponging A↔B. */
+    for (int it = 0; it < iters; it++) {
+        /* Horizontal: A → B. */
+        for (int y = 0; y < lh; y++) {
+            const float *row = &c->bright_a[y * lw * 3];
+            float *out = &c->bright_b[y * lw * 3];
+            for (int x = 0; x < lw; x++) {
+                float r = 0, g = 0, b = 0;
+                for (int k = -radius; k <= radius; k++) {
+                    int xx = x + k;
+                    if (xx < 0)   xx = 0;
+                    if (xx >= lw) xx = lw - 1;
+                    float wk = kernel[k + radius];
+                    const float *p = &row[xx * 3];
+                    r += wk * p[0];
+                    g += wk * p[1];
+                    b += wk * p[2];
+                }
+                out[x * 3 + 0] = r;
+                out[x * 3 + 1] = g;
+                out[x * 3 + 2] = b;
+            }
+        }
+        /* Vertical: B → A. */
+        for (int y = 0; y < lh; y++) {
+            for (int x = 0; x < lw; x++) {
+                float r = 0, g = 0, b = 0;
+                for (int k = -radius; k <= radius; k++) {
+                    int yy = y + k;
+                    if (yy < 0)   yy = 0;
+                    if (yy >= lh) yy = lh - 1;
+                    float wk = kernel[k + radius];
+                    const float *p = &c->bright_b[(yy * lw + x) * 3];
+                    r += wk * p[0];
+                    g += wk * p[1];
+                    b += wk * p[2];
+                }
+                float *out = &c->bright_a[(y * lw + x) * 3];
+                out[0] = r;
+                out[1] = g;
+                out[2] = b;
+            }
+        }
+    }
+
+    /* 4. Bilinear upsample bright_a and add additively to pixels.
+     * Source coord maps the half-res texel centre to its full-res
+     * counterpart; clamp on the edge (no wrap). */
+    float intensity = cfg->intensity;
+    for (int y = 0; y < h; y++) {
+        float fy = ((float)y + 0.5f) * 0.5f - 0.5f;
+        int   y0 = (int)floorf(fy);
+        float ty = fy - (float)y0;
+        int   y1 = y0 + 1;
+        if (y0 < 0)  { y0 = 0; ty = 0.0f; }
+        if (y1 >= lh) y1 = lh - 1;
+        for (int x = 0; x < w; x++) {
+            float fx = ((float)x + 0.5f) * 0.5f - 0.5f;
+            int   x0 = (int)floorf(fx);
+            float tx = fx - (float)x0;
+            int   x1 = x0 + 1;
+            if (x0 < 0)  { x0 = 0; tx = 0.0f; }
+            if (x1 >= lw) x1 = lw - 1;
+
+            float w00 = (1.0f - tx) * (1.0f - ty);
+            float w10 = tx          * (1.0f - ty);
+            float w01 = (1.0f - tx) * ty;
+            float w11 = tx          * ty;
+
+            const float *p00 = &c->bright_a[(y0 * lw + x0) * 3];
+            const float *p10 = &c->bright_a[(y0 * lw + x1) * 3];
+            const float *p01 = &c->bright_a[(y1 * lw + x0) * 3];
+            const float *p11 = &c->bright_a[(y1 * lw + x1) * 3];
+
+            float br = w00 * p00[0] + w10 * p10[0] + w01 * p01[0] + w11 * p11[0];
+            float bg = w00 * p00[1] + w10 * p10[1] + w01 * p01[1] + w11 * p11[1];
+            float bb = w00 * p00[2] + w10 * p10[2] + w01 * p01[2] + w11 * p11[2];
+
+            uint32_t orig = pixels[y * w + x];
+            int ar = ((orig >> 16) & 0xFF) + (int)(intensity * br * 255.0f);
+            int ag = ((orig >>  8) & 0xFF) + (int)(intensity * bg * 255.0f);
+            int ab = ( orig        & 0xFF) + (int)(intensity * bb * 255.0f);
+            pixels[y * w + x] = 0xFF000000u
+                              | ((uint32_t)clampi(ar, 0, 255) << 16)
+                              | ((uint32_t)clampi(ag, 0, 255) <<  8)
+                              |  (uint32_t)clampi(ab, 0, 255);
+        }
+    }
 }
