@@ -10,6 +10,9 @@
  *   TAB       toggle CPU / OpenGL backend (if both available)
  *   1..4      resolution preset: 160x90 / 240x135 / 320x180 / 480x270
  *   P         toggle palette quantization
+ *   [ / ]     cycle palette (ega16 / sweetie16 / pico8 / edg32 / gb4 / bw2)
+ *   H         toggle ordered dither (4x4 Bayer)
+ *   O         toggle luminance posterize (cel-shading approximation)
  *   F11       fullscreen
  *   WASD/space/shift  fly camera; arrows look around
  */
@@ -45,39 +48,134 @@ static const pixel_preset PRESETS[] = {
 #define PRESET_COUNT ((int)(sizeof(PRESETS) / sizeof(PRESETS[0])))
 #define PRESET_DEFAULT 1  /* 240x135 */
 
-/* 16-colour palette. Loosely EGA-flavoured plus a couple of warm tones
- * to flatter the test scene. The quantizer just picks the nearest in
- * sRGB-space, which is crude but fine for prototype. */
-static const uint8_t PALETTE[][3] = {
+/* Curated palettes. The quantizer just picks nearest in sRGB-space —
+ * crude but fine for a prototype. PICO-8 and GameBoy values are the
+ * canonical published ones. EGA-ish is hand-rolled for the test scene. */
+typedef struct { uint8_t r, g, b; } rgb;
+typedef struct { const rgb *colors; int count; const char *name; } palette;
+
+static const rgb PAL_EGA16[] = {
     {  0,   0,   0}, { 30,  30,  30}, { 90,  90,  90}, {180, 180, 180},
     {255, 255, 255}, {120,  20,  20}, {220,  60,  60}, {255, 160, 100},
     { 60, 110,  40}, {120, 200,  80}, { 40,  80, 160}, {110, 170, 230},
     {200, 200,  60}, {220, 130,  40}, {120,  60, 140}, { 60,  35,  20},
 };
-#define PALETTE_COUNT ((int)(sizeof(PALETTE) / sizeof(PALETTE[0])))
+static const rgb PAL_PICO8[] = {
+    {  0,   0,   0}, { 29,  43,  83}, {126,  37,  83}, {  0, 135,  81},
+    {171,  82,  54}, { 95,  87,  79}, {194, 195, 199}, {255, 241, 232},
+    {255,   0,  77}, {255, 163,   0}, {255, 236,  39}, {  0, 228,  54},
+    { 41, 173, 255}, {131, 118, 156}, {255, 119, 168}, {255, 204, 170},
+};
+static const rgb PAL_GB4[] = {
+    { 15,  56,  15}, { 48,  98,  48}, {139, 172,  15}, {155, 188,  15},
+};
+static const rgb PAL_BW2[] = {
+    {  0,   0,   0}, {255, 255, 255},
+};
+/* Sweetie-16 by GrafxKid — a more balanced modern alternative to EGA. */
+static const rgb PAL_SWEETIE16[] = {
+    { 26,  28,  44}, { 93,  39,  93}, {177,  62,  83}, {239, 125,  87},
+    {255, 205, 117}, {167, 240, 112}, { 56, 183, 100}, { 37, 113, 121},
+    { 41,  54, 111}, { 59,  93, 201}, { 65, 166, 246}, {115, 239, 247},
+    {244, 244, 244}, {148, 176, 194}, { 86, 108, 134}, { 51,  60,  87},
+};
+/* Endesga-32 by Endesga — the modern indie pixel-art standard. 32
+ * colours give you full hue coverage with enough value steps to shade
+ * each hue cleanly. */
+static const rgb PAL_EDG32[] = {
+    {190,  74,  47}, {215, 118,  67}, {234, 212, 170}, {228, 166, 114},
+    {184, 111,  80}, {115,  62,  57}, { 62,  39,  49}, {162,  38,  51},
+    {228,  59,  68}, {247, 118,  34}, {254, 174,  52}, {254, 231,  97},
+    { 99, 199,  77}, { 62, 137,  72}, { 38,  92,  66}, { 25,  60,  62},
+    { 18,  78, 137}, {  0, 153, 219}, { 44, 232, 245}, {255, 255, 255},
+    {192, 203, 220}, {139, 155, 180}, { 90, 105, 136}, { 58,  68, 102},
+    { 38,  43,  68}, { 24,  20,  37}, {255,   0,  68}, {104,  56, 108},
+    {181,  80, 136}, {246, 117, 122}, {232, 183, 150}, {194, 133, 105},
+};
 
-static inline uint32_t palette_quantize(uint32_t argb) {
-    int r = (argb >> 16) & 0xFF;
-    int g = (argb >>  8) & 0xFF;
-    int b =  argb        & 0xFF;
+static const palette PALETTES[] = {
+    { PAL_EGA16,     (int)(sizeof(PAL_EGA16)    /sizeof(PAL_EGA16[0])),     "ega16"     },
+    { PAL_SWEETIE16, (int)(sizeof(PAL_SWEETIE16)/sizeof(PAL_SWEETIE16[0])), "sweetie16" },
+    { PAL_PICO8,     (int)(sizeof(PAL_PICO8)    /sizeof(PAL_PICO8[0])),     "pico8"     },
+    { PAL_EDG32,     (int)(sizeof(PAL_EDG32)    /sizeof(PAL_EDG32[0])),     "edg32"     },
+    { PAL_GB4,       (int)(sizeof(PAL_GB4)      /sizeof(PAL_GB4[0])),       "gb4"       },
+    { PAL_BW2,       (int)(sizeof(PAL_BW2)      /sizeof(PAL_BW2[0])),       "bw2"       },
+};
+#define PALETTE_COUNT ((int)(sizeof(PALETTES) / sizeof(PALETTES[0])))
+
+/* 4x4 Bayer matrix scaled to [-7.5, +7.5]; multiply by DITHER_SPREAD to
+ * shift each channel before nearest-palette lookup. The threshold
+ * ordering is the standard recursive Bayer pattern. */
+static const int BAYER4[16] = {
+     0,  8,  2, 10,
+    12,  4, 14,  6,
+     3, 11,  1,  9,
+    15,  7, 13,  5,
+};
+#define DITHER_SPREAD 28  /* tuned by eye against the EGA/PICO-8 palettes */
+
+static inline int clampi(int v, int lo, int hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static inline uint32_t palette_nearest(const palette *p, int r, int g, int b) {
     int best = 0;
     int best_d = 1 << 30;
-    for (int i = 0; i < PALETTE_COUNT; i++) {
-        int dr = r - PALETTE[i][0];
-        int dg = g - PALETTE[i][1];
-        int db = b - PALETTE[i][2];
+    for (int i = 0; i < p->count; i++) {
+        int dr = r - p->colors[i].r;
+        int dg = g - p->colors[i].g;
+        int db = b - p->colors[i].b;
         int d  = dr*dr + dg*dg + db*db;
         if (d < best_d) { best_d = d; best = i; }
     }
     return 0xFF000000u
-         | ((uint32_t)PALETTE[best][0] << 16)
-         | ((uint32_t)PALETTE[best][1] <<  8)
-         |  (uint32_t)PALETTE[best][2];
+         | ((uint32_t)p->colors[best].r << 16)
+         | ((uint32_t)p->colors[best].g <<  8)
+         |  (uint32_t)p->colors[best].b;
 }
 
-static void quantize_buffer(uint32_t *pixels, int count) {
-    for (int i = 0; i < count; i++)
-        pixels[i] = palette_quantize(pixels[i]);
+/* Snap luminance to N bands while preserving chroma — a cheap stand-in
+ * for true cel shading. We scale each channel by the ratio of snapped
+ * to actual luminance, which keeps hue stable and bands the brightness
+ * the way a comic colourist would. */
+#define POSTERIZE_BANDS 4
+static inline uint32_t posterize_pixel(uint32_t argb) {
+    int r = (argb >> 16) & 0xFF;
+    int g = (argb >>  8) & 0xFF;
+    int b =  argb        & 0xFF;
+    int lum = (77 * r + 150 * g + 29 * b) >> 8;  /* Rec.601, fixed-point */
+    if (lum <= 0) return argb;
+    int band = (lum * POSTERIZE_BANDS) / 256;     /* 0..BANDS-1 */
+    int snap = ((band + 1) * 255) / POSTERIZE_BANDS;
+    int nr = clampi((r * snap) / lum, 0, 255);
+    int ng = clampi((g * snap) / lum, 0, 255);
+    int nb = clampi((b * snap) / lum, 0, 255);
+    return 0xFF000000u | ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | (uint32_t)nb;
+}
+
+static void posterize_buffer(uint32_t *pixels, int w, int h) {
+    int n = w * h;
+    for (int i = 0; i < n; i++) pixels[i] = posterize_pixel(pixels[i]);
+}
+
+static void quantize_buffer(uint32_t *pixels, int w, int h,
+                            const palette *p, int dither) {
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            uint32_t c = pixels[y * w + x];
+            int r = (c >> 16) & 0xFF;
+            int g = (c >>  8) & 0xFF;
+            int b =  c        & 0xFF;
+            if (dither) {
+                int t = BAYER4[(y & 3) * 4 + (x & 3)];
+                int off = ((t * 2 - 15) * DITHER_SPREAD) / 15;  /* [-spread, +spread] */
+                r = clampi(r + off, 0, 255);
+                g = clampi(g + off, 0, 255);
+                b = clampi(b + off, 0, 255);
+            }
+            pixels[y * w + x] = palette_nearest(p, r, g, b);
+        }
+    }
 }
 
 static void build_scene(scene **scn, scene_camera **cam) {
@@ -227,6 +325,9 @@ int main(int argc, char *argv[]) {
     int render_w = PRESETS[preset].w;
     int render_h = PRESETS[preset].h;
     int palette_on = 1;
+    int palette_idx = 3;  /* edg32 — modern, lots of colours */
+    int dither_on = 1;
+    int posterize_on = 0;
     uint32_t *pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
     rt_viewport viewport = { render_w, render_h, FOV };
 
@@ -271,6 +372,22 @@ int main(int argc, char *argv[]) {
                 if (k == SDLK_p) {
                     palette_on = !palette_on;
                     fprintf(stderr, "Palette: %s\n", palette_on ? "on" : "off");
+                }
+                if (k == SDLK_LEFTBRACKET) {
+                    palette_idx = (palette_idx + PALETTE_COUNT - 1) % PALETTE_COUNT;
+                    fprintf(stderr, "Palette: %s\n", PALETTES[palette_idx].name);
+                }
+                if (k == SDLK_RIGHTBRACKET) {
+                    palette_idx = (palette_idx + 1) % PALETTE_COUNT;
+                    fprintf(stderr, "Palette: %s\n", PALETTES[palette_idx].name);
+                }
+                if (k == SDLK_h) {
+                    dither_on = !dither_on;
+                    fprintf(stderr, "Dither: %s\n", dither_on ? "on" : "off");
+                }
+                if (k == SDLK_o) {
+                    posterize_on = !posterize_on;
+                    fprintf(stderr, "Posterize: %s\n", posterize_on ? "on" : "off");
                 }
                 if (k >= SDLK_1 && k <= SDLK_4) {
                     int idx = k - SDLK_1;
@@ -321,7 +438,9 @@ int main(int argc, char *argv[]) {
 
         Uint32 r_start = SDL_GetTicks();
         rt_renderer_render(active, scn, cam, &viewport, pixels);
-        if (palette_on) quantize_buffer(pixels, render_w * render_h);
+        if (posterize_on) posterize_buffer(pixels, render_w, render_h);
+        if (palette_on) quantize_buffer(pixels, render_w, render_h,
+                                        &PALETTES[palette_idx], dither_on);
         render_ms_accum += SDL_GetTicks() - r_start;
 
         display_pixels(display_tex, display_fbo, pixels,
@@ -333,14 +452,17 @@ int main(int argc, char *argv[]) {
         if (now - fps_last >= 1000) {
             float avg_ms = (fps_frames > 0)
                 ? (float)render_ms_accum / (float)fps_frames : 0.0f;
+            const char *pal_label = palette_on ? PALETTES[palette_idx].name : "off";
             snprintf(title_buf, sizeof(title_buf),
-                     "Pixel-Art Raytrace - %s %s palette=%s %d FPS (%.2f ms)",
-                     rt_renderer_name(active), PRESETS[preset].name,
-                     palette_on ? "on" : "off", fps_frames, avg_ms);
+                     "Pixel-Art Raytrace - %s %s pal=%s%s%s %d FPS (%.2f ms)",
+                     rt_renderer_name(active), PRESETS[preset].name, pal_label,
+                     (palette_on && dither_on) ? "+dither" : "",
+                     posterize_on ? "+post" : "",
+                     fps_frames, avg_ms);
             SDL_SetWindowTitle(window, title_buf);
-            fprintf(stderr, "[%s %s pal=%d] %d FPS, %.2f ms\n",
-                    rt_renderer_name(active), PRESETS[preset].name,
-                    palette_on, fps_frames, avg_ms);
+            fprintf(stderr, "[%s %s pal=%s d=%d post=%d] %d FPS, %.2f ms\n",
+                    rt_renderer_name(active), PRESETS[preset].name, pal_label,
+                    dither_on, posterize_on, fps_frames, avg_ms);
             fps_frames = 0;
             render_ms_accum = 0;
             fps_last = now;
