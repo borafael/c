@@ -507,3 +507,191 @@ void postfx_bloom_apply(postfx_bloom_ctx *c, uint32_t *pixels,
         }
     }
 }
+
+/* ===================================================================
+ *   Halftone
+ * =================================================================== */
+
+#define HALFTONE_MIN_CELL 3
+#define HALFTONE_MAX_CELL 32
+
+struct postfx_halftone_ctx {
+    int    input_w, input_h;
+    int    cell_size;
+    int    cells_x, cells_y;
+    /* Per-cell averaged channels: r, g, b, count (count-as-float so the
+     * normalize step is one divide). */
+    float *cells;     /* cells_x * cells_y * 4 floats */
+};
+
+static int halftone_realloc(postfx_halftone_ctx *c, int w, int h, int csz) {
+    int cx = (w + csz - 1) / csz;
+    int cy = (h + csz - 1) / csz;
+    size_t n = (size_t)cx * (size_t)cy * 4;
+    float *cells = calloc(n, sizeof(float));
+    if (!cells) return 0;
+    free(c->cells);
+    c->cells     = cells;
+    c->input_w   = w;  c->input_h  = h;
+    c->cell_size = csz;
+    c->cells_x   = cx; c->cells_y  = cy;
+    return 1;
+}
+
+postfx_halftone_ctx *postfx_halftone_create(int w, int h) {
+    if (w <= 0 || h <= 0) return NULL;
+    postfx_halftone_ctx *c = calloc(1, sizeof(*c));
+    if (!c) return NULL;
+    if (!halftone_realloc(c, w, h, 8)) { free(c); return NULL; }
+    return c;
+}
+
+void postfx_halftone_destroy(postfx_halftone_ctx *c) {
+    if (!c) return;
+    free(c->cells);
+    free(c);
+}
+
+/* CMYK from sRGB (no gamma — same approximation we use for the bright
+ * pass; good enough for the stylized look). K = 1 - max(R,G,B); the
+ * remaining channels are the pure-CMY component left after K. */
+static inline void rgb_to_cmyk(float r, float g, float b,
+                               float *c, float *m, float *y, float *k) {
+    float mx = r > g ? r : g;
+    if (b > mx) mx = b;
+    float kk = 1.0f - mx;
+    if (kk >= 1.0f - 1e-6f) {
+        *c = *m = *y = 0.0f;
+        *k = 1.0f;
+        return;
+    }
+    float inv = 1.0f / (1.0f - kk);
+    *c = (1.0f - r - kk) * inv;
+    *m = (1.0f - g - kk) * inv;
+    *y = (1.0f - b - kk) * inv;
+    *k = kk;
+}
+
+void postfx_halftone_apply(postfx_halftone_ctx *c, uint32_t *pixels,
+                           int w, int h, const postfx_halftone *cfg) {
+    if (!c || !cfg || !cfg->enabled) return;
+    int csz = cfg->cell_size;
+    if (csz < HALFTONE_MIN_CELL) csz = HALFTONE_MIN_CELL;
+    if (csz > HALFTONE_MAX_CELL) csz = HALFTONE_MAX_CELL;
+
+    if (w != c->input_w || h != c->input_h || csz != c->cell_size) {
+        if (!halftone_realloc(c, w, h, csz)) return;
+    }
+    int cx = c->cells_x, cy = c->cells_y;
+
+    /* 1. Aggregate per-cell channel sums in one sweep through the
+     * input. Cells along the right/bottom edge may be partially
+     * filled, hence the per-cell count. */
+    size_t cells_n = (size_t)cx * (size_t)cy * 4;
+    for (size_t i = 0; i < cells_n; i++) c->cells[i] = 0.0f;
+
+    for (int y = 0; y < h; y++) {
+        int gy = y / csz; if (gy >= cy) gy = cy - 1;
+        for (int x = 0; x < w; x++) {
+            int gx = x / csz; if (gx >= cx) gx = cx - 1;
+            uint32_t p = pixels[y * w + x];
+            float *cell = &c->cells[(gy * cx + gx) * 4];
+            cell[0] += (float)((p >> 16) & 0xFF);
+            cell[1] += (float)((p >>  8) & 0xFF);
+            cell[2] += (float)( p        & 0xFF);
+            cell[3] += 1.0f;
+        }
+    }
+    for (int i = 0; i < cx * cy; i++) {
+        float n = c->cells[i * 4 + 3];
+        if (n > 0.0f) {
+            float inv = 1.0f / (n * 255.0f);
+            c->cells[i * 4 + 0] *= inv;
+            c->cells[i * 4 + 1] *= inv;
+            c->cells[i * 4 + 2] *= inv;
+        }
+    }
+
+    /* 2. Rebuild every pixel as either paper or one-or-more inks,
+     * depending on the dot pattern at its cell. Max dot radius equals
+     * the cell half-diagonal so a fully-saturated dot fully covers
+     * its cell. */
+    float max_r = (float)csz * 0.5f * 1.4142135f;
+
+    /* CMYK sub-dot offsets in cell-local coords. The four offsets are
+     * arranged in a square inside the cell so each ink's screen sits
+     * on a slightly different lattice — kills moire and recreates the
+     * registration look of real four-colour printing. */
+    float off = (float)csz * 0.18f;
+    float cmyk_off_x[4] = { -off, +off, +off, -off };  /* C, M, Y, K */
+    float cmyk_off_y[4] = { -off, -off, +off, +off };
+    /* CMYK sub-dot radius cap: each ink only gets ~half the cell so
+     * overlapping inks have room to read. */
+    float cmyk_max_r = max_r * 0.55f;
+
+    int paper_r = cfg->paper.r, paper_g = cfg->paper.g, paper_b = cfg->paper.b;
+    int ink_r   = cfg->ink.r,   ink_g   = cfg->ink.g,   ink_b   = cfg->ink.b;
+
+    for (int y = 0; y < h; y++) {
+        int gy = y / csz; if (gy >= cy) gy = cy - 1;
+        int center_y = gy * csz + csz / 2;
+        for (int x = 0; x < w; x++) {
+            int gx = x / csz; if (gx >= cx) gx = cx - 1;
+            int center_x = gx * csz + csz / 2;
+            const float *cell = &c->cells[(gy * cx + gx) * 4];
+            float r = cell[0], g = cell[1], b = cell[2];
+
+            if (cfg->mode == POSTFX_HALFTONE_MONO) {
+                float lum = 0.299f * r + 0.587f * g + 0.114f * b;
+                float dot_r = (1.0f - lum) * max_r;
+                float dx = (float)(x - center_x);
+                float dy = (float)(y - center_y);
+                int inside = (dx * dx + dy * dy) < (dot_r * dot_r);
+                if (inside) {
+                    pixels[y * w + x] = 0xFF000000u
+                                      | ((uint32_t)ink_r << 16)
+                                      | ((uint32_t)ink_g <<  8)
+                                      |  (uint32_t)ink_b;
+                } else {
+                    pixels[y * w + x] = 0xFF000000u
+                                      | ((uint32_t)paper_r << 16)
+                                      | ((uint32_t)paper_g <<  8)
+                                      |  (uint32_t)paper_b;
+                }
+            } else {
+                /* CMYK: start with paper, then for each ink whose
+                 * sub-dot covers this pixel, subtractively absorb the
+                 * matching channel. */
+                float cyan, magenta, yellow, black;
+                rgb_to_cmyk(r, g, b, &cyan, &magenta, &yellow, &black);
+                float ink_strength[4] = { cyan, magenta, yellow, black };
+
+                float pr = paper_r / 255.0f;
+                float pg = paper_g / 255.0f;
+                float pb = paper_b / 255.0f;
+
+                for (int k = 0; k < 4; k++) {
+                    float dx = (float)x - ((float)center_x + cmyk_off_x[k]);
+                    float dy = (float)y - ((float)center_y + cmyk_off_y[k]);
+                    float dot_r = ink_strength[k] * cmyk_max_r;
+                    if (dx * dx + dy * dy >= dot_r * dot_r) continue;
+                    /* Subtractive: each ink kills the channels it
+                     * absorbs. */
+                    switch (k) {
+                        case 0: pr = 0.0f; break;                       /* cyan    */
+                        case 1: pg = 0.0f; break;                       /* magenta */
+                        case 2: pb = 0.0f; break;                       /* yellow  */
+                        case 3: pr = pg = pb = 0.0f; break;             /* black   */
+                    }
+                }
+                int ar = (int)(pr * 255.0f + 0.5f);
+                int ag = (int)(pg * 255.0f + 0.5f);
+                int ab = (int)(pb * 255.0f + 0.5f);
+                pixels[y * w + x] = 0xFF000000u
+                                  | ((uint32_t)clampi(ar, 0, 255) << 16)
+                                  | ((uint32_t)clampi(ag, 0, 255) <<  8)
+                                  |  (uint32_t)clampi(ab, 0, 255);
+            }
+        }
+    }
+}

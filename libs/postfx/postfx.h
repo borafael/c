@@ -125,4 +125,39 @@ void postfx_bloom_apply(postfx_bloom_ctx *ctx,
                         uint32_t *pixels, int width, int height,
                         const postfx_bloom *cfg);
 
+/* ===================================================================
+ *   Halftone (newspaper / pop-art print)
+ * =================================================================== */
+
+/* MONO renders each cell as a single black-ink dot whose radius grows
+ * with darkness — bright cells get a small dot, dark cells get a large
+ * one that fills the cell.
+ *
+ * CMYK splits each cell into four sub-dots (one per ink) at small
+ * angular offsets. Sub-dot radii come from a CMYK conversion of the
+ * cell's average RGB; the overlay subtractively composites against
+ * paper (white by default), so overlapping inks produce secondary
+ * colours the way real four-colour printing does. */
+typedef enum {
+    POSTFX_HALFTONE_MONO = 0,
+    POSTFX_HALFTONE_CMYK = 1,
+} postfx_halftone_mode;
+
+typedef struct postfx_halftone_ctx postfx_halftone_ctx;
+
+postfx_halftone_ctx *postfx_halftone_create(int width, int height);
+void                 postfx_halftone_destroy(postfx_halftone_ctx *ctx);
+
+typedef struct {
+    int                  enabled;
+    postfx_halftone_mode mode;
+    int                  cell_size;   /* pixels per cell, clamped to 3..32 */
+    postfx_rgb           paper;       /* background; classic = {255,255,255} */
+    postfx_rgb           ink;         /* MONO ink colour; classic = {0,0,0} */
+} postfx_halftone;
+
+void postfx_halftone_apply(postfx_halftone_ctx *ctx,
+                           uint32_t *pixels, int width, int height,
+                           const postfx_halftone *cfg);
+
 #endif /* POSTFX_H */

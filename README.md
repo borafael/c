@@ -1,6 +1,6 @@
 # C Experiments
 
-A monorepo playground for C projects. Currently: a raytracer (with reflections, procedural textures, triangle meshes, and a comic / pixel-art / bloom post-FX pipeline), an FBX viewer with skeletal animation, several scene demos, a game prototype, and an N-Body simulation.
+A monorepo playground for C projects. Currently: a raytracer (with reflections, procedural textures, triangle meshes, and a comic / pixel-art / bloom / halftone post-FX pipeline), an FBX viewer with skeletal animation, several scene demos, a game prototype, and an N-Body simulation.
 
 Built with GNU Autotools and heavy assistance from [Claude Code](https://claude.ai/code).
 
@@ -21,7 +21,7 @@ c/
 │   ├── physics/           # Thread-pooled N-body physics (unit-tested)
 │   ├── scene/             # Renderer-agnostic scene + OBJ/FBX loaders (unit-tested)
 │   ├── raytrace/          # Pluggable CPU + OpenGL renderers, BVH, reflections, G-buffer
-│   ├── postfx/            # CPU post-processing: comic edges, palette quantize, posterize, bloom
+│   ├── postfx/            # CPU post-processing: comic edges, palette quantize, posterize, bloom, halftone
 │   ├── ini/               # INI config parser (unit-tested)
 │   ├── slice/             # Sprite-sheet loader (wraps stb_image)
 │   └── battleforge/       # Game framework built on raytrace + thread + slice
@@ -35,6 +35,7 @@ c/
 │   ├── comic/             # Comic-outline post-process demo
 │   ├── pixelart/          # Low-res raytrace + palette quantization demo
 │   ├── bloom/             # Bloom post-process demo (neon spheres + mirrors)
+│   ├── halftone/          # Halftone dot-screen post-process demo (MONO + CMYK)
 │   └── barrier/           # Game prototype using battleforge
 ├── scripts/               # Build + asset tooling
 ├── docs/                  # Guides, ideas, plans
@@ -50,7 +51,7 @@ c/
 - **`libs/physics`** — Thread-pooled N-body physics: pairwise gravity, entity merging, optional spherical boundary. Extracted from `nbody` so it can be reused and tested independently. Unit tested with CHECK.
 - **`libs/scene`** — Renderer-agnostic scene description: primitives (sphere, plane, disc, cylinder, triangle, box, sprite, heightfield), triangle meshes with bounding spheres, materials with image + procedural textures, node hierarchy, skeletal skins, animation tracks, lights, camera. Includes OBJ + MTL parsing and an FBX loader (via vendored [ufbx](https://github.com/ufbx/ufbx)). Unit tested with CHECK.
 - **`libs/raytrace`** — Renderers that consume `scene`. Two backends: CPU (always built, multithreaded) and OpenGL compute (requires GL 4.3+, auto-detected at configure time). Recursive reflections, per-mesh BVH on both backends, and an optional G-buffer (object_id / depth / normal) with parity across backends.
-- **`libs/postfx`** — CPU post-processing on a finished ARGB framebuffer: comic outlines from a G-buffer (silhouette / depth / normal edges, 4- or 8-connected), palette quantization with optional 4×4 Bayer dither, luminance posterize, and bloom (downsampled bright-pass + separable Gaussian + bilinear additive composite). Comes with a curated palette table (bw2 → resurrect64).
+- **`libs/postfx`** — CPU post-processing on a finished ARGB framebuffer: comic outlines from a G-buffer (silhouette / depth / normal edges, 4- or 8-connected), palette quantization with optional 4×4 Bayer dither, luminance posterize, bloom (downsampled bright-pass + separable Gaussian + bilinear additive composite), and halftone (MONO black-on-paper or CMYK four-screen subtractive). Comes with a curated palette table (bw2 → resurrect64).
 - **`libs/ini`** — Minimal INI config parser. Unit tested with CHECK.
 - **`libs/slice`** — Sprite-sheet slicer; wraps `stb_image.h` to decode PNGs and expose frames.
 - **`libs/battleforge`** — Game framework tying the above together (scenes, entities, rendering loop).
@@ -180,6 +181,16 @@ Bright-pass bloom on top of the raytracer. Three unlit "neon" spheres (pink, cya
 
 ```bash
 ./apps/bloom/bloom
+```
+
+### Halftone (`apps/halftone`)
+
+Newspaper / pop-art halftone post-process. Two modes: MONO renders each cell as a single black ink dot whose radius grows with darkness; CMYK splits each cell into four sub-dots (cyan / magenta / yellow / black at small angular offsets), each sized by its channel intensity, subtractively composited against paper so overlapping inks make secondary colours.
+
+**Controls:** `TAB` backend toggle, `1..4` resolution preset, `H` toggle halftone, `M` cycle MONO / CMYK, `-` / `=` smaller / larger cell size, `I` invert MONO ink/paper, `F11` fullscreen, fly camera with `WASD` + arrows.
+
+```bash
+./apps/halftone/halftone
 ```
 
 ### Barrier (`apps/barrier`)
