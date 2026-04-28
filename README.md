@@ -1,8 +1,15 @@
 # C Experiments
 
-A monorepo playground for C projects. Currently: a raytracer (with reflections, procedural textures, triangle meshes, and a comic / pixel-art / bloom / halftone / toon / CRT post-FX pipeline), an FBX viewer with skeletal animation, several scene demos, a game prototype, and an N-Body simulation.
+A monorepo playground for C projects. The centrepiece is a **stylized rendering pipeline**: a CPU-or-GPU raytracer (recursive reflections, BVH-accelerated meshes, optional G-buffer) feeding a library of CPU post-process passes — comic outlines, palette quantization, bloom, halftone (MONO + CMYK), toon banding, and a CRT family (scanlines + chromatic aberration + vignette + grain). Also includes an FBX viewer with skeletal animation, an N-body gravitational simulation, and an early game prototype.
 
 Built with GNU Autotools and heavy assistance from [Claude Code](https://claude.ai/code).
+
+## Try it first
+
+```bash
+autoreconf -i && ./configure && make
+./apps/showcase/showcase     # cycles every postfx mode on one scene; M / N to step, 1..8 jumps
+```
 
 ## Goals
 
@@ -54,7 +61,14 @@ c/
 - **`libs/physics`** — Thread-pooled N-body physics: pairwise gravity, entity merging, optional spherical boundary. Extracted from `nbody` so it can be reused and tested independently. Unit tested with CHECK.
 - **`libs/scene`** — Renderer-agnostic scene description: primitives (sphere, plane, disc, cylinder, triangle, box, sprite, heightfield), triangle meshes with bounding spheres, materials with image + procedural textures, node hierarchy, skeletal skins, animation tracks, lights, camera. Includes OBJ + MTL parsing and an FBX loader (via vendored [ufbx](https://github.com/ufbx/ufbx)). Unit tested with CHECK.
 - **`libs/raytrace`** — Renderers that consume `scene`. Two backends: CPU (always built, multithreaded) and OpenGL compute (requires GL 4.3+, auto-detected at configure time). Recursive reflections, per-mesh BVH on both backends, and an optional G-buffer (object_id / depth / normal) with parity across backends.
-- **`libs/postfx`** — CPU post-processing on a finished ARGB framebuffer: comic outlines from a G-buffer (silhouette / depth / normal edges, 4- or 8-connected), palette quantization with optional 4×4 Bayer dither, luminance posterize, bloom (downsampled bright-pass + separable Gaussian + bilinear additive composite), halftone (MONO black-on-paper or CMYK four-screen subtractive), toon (G-buffer normal-driven lighting bands with optional rim), and the CRT family — scanlines, horizontal chromatic aberration, radial vignette, and per-pixel film grain. Comes with a curated palette table (bw2 → resurrect64).
+- **`libs/postfx`** — CPU post-processing on a finished ARGB framebuffer:
+    - **Edges** — comic outlines from a G-buffer (silhouette / depth / normal, 4- or 8-connected)
+    - **Palette quantize** + optional 4×4 Bayer dither, with a curated palette table (13 palettes from `bw2` → `resurrect64`)
+    - **Posterize** — luminance-banded approximation of cel shading
+    - **Bloom** — soft-knee bright-pass + half-resolution separable Gaussian + bilinear additive composite
+    - **Halftone** — MONO black-on-paper or CMYK four-screen subtractive (overlapping inks make secondary colours)
+    - **Toon** — G-buffer normal-driven lighting bands with optional rim term
+    - **CRT family** — scanlines, horizontal chromatic aberration, radial vignette with quadratic falloff, animated per-pixel grain
 - **`libs/ini`** — Minimal INI config parser. Unit tested with CHECK.
 - **`libs/slice`** — Sprite-sheet slicer; wraps `stb_image.h` to decode PNGs and expose frames.
 - **`libs/battleforge`** — Game framework tying the above together (scenes, entities, rendering loop).
@@ -95,25 +109,85 @@ make check
 
 `scripts/build-windows.sh` cross-compiles every app with MinGW using a vendored SDL2 under `deps/SDL2-2.30.11/x86_64-w64-mingw32/`. Each app is staged into its own self-contained `build/win64/<app>/` directory with the EXE, `SDL2.dll`, `libwinpthread-1.dll`, and any per-app assets. Pass `--clean` to wipe the out-of-tree build dir first.
 
-## Current Projects
+## Apps
 
-### N-Body Simulation (`apps/nbody`)
+The apps fall into three groups: **stylized rendering** (the post-FX showcase), **engine demos** (each exercises a specific renderer or scene feature), and **other** (the N-body simulation and a game prototype).
 
-A visual gravitational simulation featuring:
-- 2000 particles with mutual gravitational attraction
-- Entity merging on collision
-- Mass-based rendering (size and color vary with mass)
-- Boundary collision with bounce
+### Stylized rendering
 
-Not a physically accurate simulation — tuned for visual entertainment.
+#### Showcase (`apps/showcase`)
 
-**Controls:** `ESC` quit, `R` reset.
+One scene, every postfx mode. Cycles through `raw`, `comic` (outlines), `toon` (bands + outlines), `bloom`, `halftone` (MONO), `cmyk`, `pixelart` (PICO-8 + Bayer dither), and `crt` (chromatic + scanlines + vignette + grain). Run this first — it presents the post-FX library as a cohesive collection rather than a pile of separate demos.
+
+**Controls:** `TAB` backend toggle, `M` next mode, `N` previous, `1..8` jump directly to a mode, `F11` fullscreen, fly camera with `WASD` + arrows.
 
 ```bash
-./apps/nbody/nbody
+./apps/showcase/showcase
 ```
 
-### Raytracer Demo (`apps/rtdemo`)
+#### Comic (`apps/comic`)
+
+Comic-style raytrace. Renders the scene plus a G-buffer, then draws black outlines wherever the G-buffer signals an edge — silhouettes from object-ID changes, depth creases from depth jumps, normal creases from adjacent surfaces bending past a threshold. Each edge source toggles independently.
+
+**Controls:** `TAB` CPU/OpenGL toggle, `1..4` resolution preset, `I` silhouettes, `Z` depth edges, `N` normal edges, `O` outlines off, `[` / `]` thinner/thicker, `-` / `=` thresholds, `F11` fullscreen, fly camera with `WASD` + arrows.
+
+```bash
+./apps/comic/comic
+```
+
+#### Pixelart (`apps/pixelart`)
+
+Low-resolution raytrace blitted up with `GL_NEAREST` so every traced pixel becomes a chunky on-screen pixel. Optional palette quantization snaps the output to a fixed palette (13 included, `bw2` up to `resurrect64`); ordered Bayer dither and luminance posterize are independent toggles.
+
+**Controls:** `TAB` backend toggle, `1..4` resolution preset, `P` quantize, `[` / `]` cycle palette, `H` dither, `O` posterize, `F11` fullscreen, fly camera with `WASD` + arrows.
+
+```bash
+./apps/pixelart/pixelart
+```
+
+#### Bloom (`apps/bloom`)
+
+Bright-pass bloom on top of the raytracer. Three unlit "neon" spheres (pink, cyan, yellow) sit beside a mirror sphere; the post-process extracts pixels above a luminance threshold, blurs them at half resolution with a separable Gaussian, and adds the result back additively. The mirror picks up neon reflections, so bloom kicks in through reflection bounces too.
+
+**Controls:** `TAB` backend toggle, `1..4` resolution preset, `B` toggle bloom, `;` / `'` threshold, `-` / `=` intensity, `[` / `]` blur radius, `T` cycle iterations (1..4), `F11` fullscreen, fly camera with `WASD` + arrows.
+
+```bash
+./apps/bloom/bloom
+```
+
+#### Halftone (`apps/halftone`)
+
+Newspaper / pop-art halftone post-process. Two modes: MONO renders each cell as a single black ink dot whose radius grows with darkness; CMYK splits each cell into four sub-dots (cyan / magenta / yellow / black at small angular offsets), each sized by its channel intensity, subtractively composited against paper so overlapping inks make secondary colours.
+
+**Controls:** `TAB` backend toggle, `1..4` resolution preset, `H` toggle halftone, `M` cycle MONO / CMYK, `-` / `=` smaller / larger cell size, `I` invert MONO ink/paper, `F11` fullscreen, fly camera with `WASD` + arrows.
+
+```bash
+./apps/halftone/halftone
+```
+
+#### Toon (`apps/toon`)
+
+Cel-shading demo. Stacks two postfx passes on top of the raytracer: `postfx_toon` quantizes per-pixel `n·l` against a fixed light direction (using the G-buffer's normals) into 2..6 discrete bands, then `postfx_apply_edges` paints black outlines for the full Borderlands / Wind Waker look. The toon light direction is wired to the same vector as the scene's key light so the bands line up with the geometric shading.
+
+**Controls:** `TAB` backend toggle, `1..4` resolution preset, `T` toggle toon banding, `O` toggle outlines, `-` / `=` fewer / more bands, `[` / `]` 4-vs-8-connected outlines, `R` toggle rim light, `F11` fullscreen, fly camera with `WASD` + arrows.
+
+```bash
+./apps/toon/toon
+```
+
+#### CRT (`apps/crt`)
+
+CRT / VHS / film stack. Composes four small postfx passes — chromatic aberration (horizontal R/B shift), scanlines (alternating-row dim), vignette (radial corner darkening), and animated grain (per-pixel hash) — into the classic vintage-monitor look. Each pass is independently toggleable so you can A/B which one is doing what.
+
+**Controls:** `TAB` backend toggle, `1..4` resolution preset, `S` scanlines, `C` chromatic, `V` vignette, `G` grain, `-` / `=` chromatic shift, `[` / `]` scanline period, `N` freeze grain (static vs animated), `F11` fullscreen, fly camera with `WASD` + arrows.
+
+```bash
+./apps/crt/crt
+```
+
+### Engine demos
+
+#### Raytracer (`apps/rtdemo`)
 
 Exercises the `libs/raytrace` library. Renders a scene of primitives (spheres, planes, boxes, billboarded sprites, heightfields) via SDL2, with runtime switching between the CPU and OpenGL backends (whichever are compiled in). Showcases the material/texture system and reflections.
 
@@ -121,7 +195,7 @@ Exercises the `libs/raytrace` library. Renders a scene of primitives (spheres, p
 ./apps/rtdemo/rtdemo
 ```
 
-### Hall of Mirrors (`apps/mirrors`)
+#### Hall of Mirrors (`apps/mirrors`)
 
 Two parallel mirror walls, a reflective checker floor, and a ring of colored orbs orbiting a chrome central sphere. A stress-test of the recursive reflection path — opposing mirrors produce the receding corridor of reflected copies.
 
@@ -129,7 +203,7 @@ Two parallel mirror walls, a reflective checker floor, and a ring of colored orb
 ./apps/mirrors/mirrors
 ```
 
-### Orb (`apps/orb`)
+#### Orb (`apps/orb`)
 
 A textured inner sphere wrapped inside a larger mirror sphere. The camera orbits inside the mirror, so every ray bounces and the inner orb smears across the curved reflections.
 
@@ -137,7 +211,7 @@ A textured inner sphere wrapped inside a larger mirror sphere. The camera orbits
 ./apps/orb/orb
 ```
 
-### Mech (`apps/mech`)
+#### Mech (`apps/mech`)
 
 Raytraced scene loaded entirely from a plain-text INI file — no recompile to swap geometry, materials, or camera. Defaults to `apps/mech/assets/scene.ini`; pass any other path on the command line. Materials, planes, spheres, and OBJ meshes (with offset / Euler rotation / scale baked at load time) are all referenced by section name.
 
@@ -145,7 +219,7 @@ Raytraced scene loaded entirely from a plain-text INI file — no recompile to s
 ./apps/mech/mech [path/to/scene.ini]
 ```
 
-### Anim (`apps/anim`)
+#### Anim (`apps/anim`)
 
 End-to-end test of the scene's node hierarchy + animation runtime. The default mode builds a three-segment "arm" (shoulder → elbow → wrist) and animates it through node-tree transforms. Pass `--load-fbx <file>` to swap in any FBX; the first animation clip in the file plays on a loop. Skinned meshes load in rest pose by default.
 
@@ -156,77 +230,19 @@ End-to-end test of the scene's node hierarchy + animation runtime. The default m
 ./apps/anim/anim --load-fbx path/to/clip.fbx
 ```
 
-### Comic (`apps/comic`)
+### Other
 
-Comic-style raytrace showcase. Renders the scene plus a G-buffer, then draws black outlines wherever the G-buffer signals an edge — silhouettes from object-ID changes, depth creases from depth jumps, normal creases from adjacent surfaces bending past a threshold. Each edge source toggles independently.
+#### N-Body Simulation (`apps/nbody`)
 
-**Controls:** `TAB` CPU/OpenGL toggle, `1..4` resolution preset, `I` silhouettes, `Z` depth edges, `N` normal edges, `O` outlines off, `[` / `]` thinner/thicker, `-` / `=` thresholds, `F11` fullscreen, fly camera with `WASD` + arrows.
+A visual gravitational simulation: 2000 particles with mutual gravitational attraction, entity merging on collision, mass-based rendering (size + colour vary with mass), and boundary bouncing. Tuned for visual entertainment, not physical accuracy.
 
-```bash
-./apps/comic/comic
-```
-
-### Pixelart (`apps/pixelart`)
-
-Low-resolution raytrace blitted up with `GL_NEAREST` so every traced pixel becomes a chunky on-screen pixel. Optional palette quantization snaps the output to a fixed palette (13 included, from 2-color black-and-white up to Resurrect64); ordered Bayer dither and luminance posterize are independent toggles.
-
-**Controls:** `TAB` backend toggle, `1..4` resolution preset, `P` quantize, `[` / `]` cycle palette, `H` dither, `O` posterize, `F11` fullscreen, fly camera with `WASD` + arrows.
+**Controls:** `ESC` quit, `R` reset.
 
 ```bash
-./apps/pixelart/pixelart
+./apps/nbody/nbody
 ```
 
-### Bloom (`apps/bloom`)
-
-Bright-pass bloom on top of the raytracer. Three unlit "neon" spheres (pink, cyan, yellow) sit beside a mirror sphere; the post-process extracts pixels above a luminance threshold, blurs them at half resolution with a separable Gaussian, and adds the result back additively. The mirror picks up neon reflections, so the bloom kicks in through reflection bounces too.
-
-**Controls:** `TAB` backend toggle, `1..4` resolution preset, `B` toggle bloom, `;` / `'` threshold, `-` / `=` intensity, `[` / `]` blur radius, `T` cycle iterations (1..4), `F11` fullscreen, fly camera with `WASD` + arrows.
-
-```bash
-./apps/bloom/bloom
-```
-
-### Halftone (`apps/halftone`)
-
-Newspaper / pop-art halftone post-process. Two modes: MONO renders each cell as a single black ink dot whose radius grows with darkness; CMYK splits each cell into four sub-dots (cyan / magenta / yellow / black at small angular offsets), each sized by its channel intensity, subtractively composited against paper so overlapping inks make secondary colours.
-
-**Controls:** `TAB` backend toggle, `1..4` resolution preset, `H` toggle halftone, `M` cycle MONO / CMYK, `-` / `=` smaller / larger cell size, `I` invert MONO ink/paper, `F11` fullscreen, fly camera with `WASD` + arrows.
-
-```bash
-./apps/halftone/halftone
-```
-
-### Toon (`apps/toon`)
-
-Cel-shading demo. Stacks two postfx passes on top of the raytracer: `postfx_toon` quantizes per-pixel `n·l` against a fixed light direction (using the G-buffer's normals) into 2..6 discrete bands, then `postfx_apply_edges` paints black outlines for the full Borderlands / Wind Waker look. The toon light direction is wired to the same vector as the scene's key light so the bands line up with the geometric shading.
-
-**Controls:** `TAB` backend toggle, `1..4` resolution preset, `T` toggle toon banding, `O` toggle outlines, `-` / `=` fewer / more bands, `[` / `]` 4-vs-8-connected outlines, `R` toggle rim light, `F11` fullscreen, fly camera with `WASD` + arrows.
-
-```bash
-./apps/toon/toon
-```
-
-### CRT (`apps/crt`)
-
-CRT / VHS / film stack. Composes four small postfx passes — chromatic aberration (horizontal R/B shift), scanlines (alternating-row dim), vignette (radial corner darkening), and animated grain (per-pixel hash) — into the classic vintage-monitor look. Each pass is independently toggleable so you can A/B which one is doing what.
-
-**Controls:** `TAB` backend toggle, `1..4` resolution preset, `S` scanlines, `C` chromatic, `V` vignette, `G` grain, `-` / `=` chromatic shift, `[` / `]` scanline period, `N` freeze grain (static vs animated), `F11` fullscreen, fly camera with `WASD` + arrows.
-
-```bash
-./apps/crt/crt
-```
-
-### Showcase (`apps/showcase`)
-
-One scene, every postfx mode. Cycles through `raw`, `comic` (outlines only), `toon` (bands + outlines), `bloom`, `halftone` (MONO), `cmyk` (halftone-CMYK), `pixelart` (PICO-8 palette + Bayer dither), and `crt` (chromatic + scanlines + vignette + grain). The library reads as a cohesive collection in this app — useful for quick A/B compare and for picking a look for a new project.
-
-**Controls:** `TAB` backend toggle, `M` next mode, `N` previous mode, `1..8` jump directly to a mode, `F11` fullscreen, fly camera with `WASD` + arrows.
-
-```bash
-./apps/showcase/showcase
-```
-
-### Barrier (`apps/barrier`)
+#### Barrier (`apps/barrier`)
 
 Game prototype built on `libs/battleforge`. Uses the raytracer for scene rendering, sprite sheets for characters, and INI files for map/unit configuration (see `apps/barrier/maps/`, `apps/barrier/units/`, `apps/barrier/assets/`).
 

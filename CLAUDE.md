@@ -75,20 +75,28 @@ Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bloom`, `co
 
 ## Running
 
+The natural entry point is `apps/showcase` — it cycles through every postfx mode on a single scene (`M` next, `N` previous, `1..8` jump). The other apps each isolate one effect for finer-grained tuning.
+
 ```bash
-./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
-./apps/rtdemo/rtdemo                     # Raytracer demo — toggle CPU/OpenGL
-./apps/mirrors/mirrors                   # Hall-of-mirrors — recursive reflections
-./apps/orb/orb                           # Textured orb inside a mirror sphere
-./apps/mech/mech [scene.ini]             # INI-driven scene; defaults to apps/mech/assets/scene.ini
-./apps/anim/anim [--load-fbx <file>]     # Skeleton/anim demo or FBX viewer (orbit camera)
+./apps/showcase/showcase                 # All postfx modes on one scene (M/N cycle, 1..8 jump)
+
+# Stylized rendering (each isolates one effect with finer knobs)
 ./apps/comic/comic                       # Comic outlines (I/Z/N/O toggles, [ ] thickness)
 ./apps/pixelart/pixelart                 # Low-res raytrace + palette quantize (P, [ ], H, O)
 ./apps/bloom/bloom                       # Bloom on neon spheres (B toggle, ;/' threshold, [/] radius, T iters)
 ./apps/halftone/halftone                 # Halftone dot screen (H toggle, M MONO/CMYK, -/= cell size, I invert)
 ./apps/toon/toon                         # Cel shading: bands + outlines (T/O toggles, -/= bands, R rim)
 ./apps/crt/crt                           # CRT stack (S/C/V/G toggles, -/= shift, [/] period, N freeze grain)
-./apps/showcase/showcase                 # All postfx modes on one scene (M/N cycle, 1..8 jump)
+
+# Engine demos
+./apps/rtdemo/rtdemo                     # Raytracer demo — toggle CPU/OpenGL
+./apps/mirrors/mirrors                   # Hall-of-mirrors — recursive reflections
+./apps/orb/orb                           # Textured orb inside a mirror sphere
+./apps/mech/mech [scene.ini]             # INI-driven scene; defaults to apps/mech/assets/scene.ini
+./apps/anim/anim [--load-fbx <file>]     # Skeleton/anim demo or FBX viewer (orbit camera)
+
+# Other
+./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
 ./apps/barrier/barrier                   # Game prototype
 ```
 
@@ -108,7 +116,13 @@ Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bloom`, `co
 - **Mesh acceleration**: `scene_mesh` carries vertex/index buffers plus an opaque `accel` slot. `rt_scene_build_accel` (CPU) builds a per-mesh BVH; the OpenGL backend builds GPU BVH descriptors. A bounding sphere (`bounds_center` / `bounds_radius`) gives an O(1) reject before BVH traversal.
 - **Node hierarchy + skinning**: `scene_node` forms a tree via `parent_index`. `scene_resolve_world_transforms` does one forward sweep to compute world matrices. Meshes with `skin_index >= 0` are deformed by `scene_apply_skinning` from a preserved rest pose; rigid meshes follow the existing path. FBX import lives in `libs/scene/fbx.c` (via vendored ufbx).
 - **Animation**: `scene_animation` is a bundle of per-node transform tracks (9 channels: pos/rot/scale × xyz). `scene_anim_sample` writes into `scene_node.transform`; renderers see only resolved node transforms.
-- **Post-processing**: `libs/postfx` runs CPU passes on a finished ARGB framebuffer, in place. Edge detection consumes a `postfx_gbuffer` view (renderer-agnostic — copy pointers from `rt_gbuffer` at the call site). Palette quantization, ordered dither, and luminance posterize are independent passes. Bloom uses a `postfx_bloom_ctx` that owns half-resolution float scratch buffers and resizes itself when width/height change — avoids reallocating per frame. Halftone uses a `postfx_halftone_ctx` that owns a per-cell averages array (cells_x × cells_y × 4 floats) — far smaller than a full pixel scratch since the cell grid is much coarser than the framebuffer. Toon is stateless: it consumes the same `postfx_gbuffer` view as the edge pass and quantizes n·l against a configurable light direction; for the full Borderlands look, run toon then edges. The CRT family — scanlines, chromatic aberration (needs a `postfx_chromatic_ctx` for shift-source scratch), vignette, and grain (per-pixel hash, animatable seed) — composes naturally with itself; `apps/crt` runs all four in order chromatic → scanlines → vignette → grain.
+- **Post-processing**: `libs/postfx` runs CPU passes on a finished ARGB framebuffer, in place. Edge and toon passes consume a `postfx_gbuffer` view — renderer-agnostic; copy pointers from `rt_gbuffer` at the call site. Stack passes by call order; `apps/showcase` and `apps/crt` show two real wirings.
+    - **Stateless passes** (no per-frame allocation): edges, palette quantize, posterize, scanlines, vignette, grain, toon.
+    - **Stateful passes** auto-resize their scratch when width/height change:
+        - `postfx_bloom_ctx` — half-resolution float ping-pong buffers for the separable Gaussian.
+        - `postfx_halftone_ctx` — per-cell averages array (`cells_x × cells_y × 4` floats), much smaller than a full pixel scratch since the cell grid is coarser than the framebuffer.
+        - `postfx_chromatic_ctx` — full-resolution snapshot so the shifted reads see clean source data.
+    - **Toon + edges** is the cel-shading recipe: run toon to band the lighting, then edges to outline the silhouettes.
 - **ECS-ish entity model**: Used in `barrier/` for entities with position/animation/behavior.
 - **Thread pool**: CPU raytrace backend parallelizes chunk rendering via `libs/thread/thread_pool`.
 - **Modular Autotools**: Each library has its own `Makefile.am`; root `Makefile.am` enforces build order (libs before apps).
