@@ -323,6 +323,10 @@ static int try_load_valkyrie(scene *s, int default_mat,
                 m->vertices[v].position.y = m->vertices[v].position.y * uniform_scale + offset.y;
                 m->vertices[v].position.z = m->vertices[v].position.z * uniform_scale + offset.z;
             }
+            /* OBJ loader sets bounds from the unscaled vertices — recompute
+             * after baking the transform or the renderer's bounding-sphere
+             * cull will hit a "ghost" sphere where the mesh used to be. */
+            scene_mesh_compute_bounds(m);
         }
 
         fprintf(stderr, "Loaded Valkyrie from %s (%d mesh groups)\n",
@@ -398,9 +402,11 @@ static void build_scene(scene **scn, scene_camera **cam) {
 
     /* Plant the Valkyrie behind the spheres so it both reads from the
      * default camera angle and shows up in the mirror sphere's
-     * reflection. Feet on the floor (y=-0.5). */
+     * reflection. The OBJ is centred near the origin with y_min ~= -0.19,
+     * so offset.y of 0.07 lifts its belly to the floor (y=-0.5) at this
+     * scale. Scale matches the mech app's framing. */
     try_load_valkyrie(*scn, m_paint,
-                      (vector){0.0f, -0.5f, -2.0f}, 1.6f);
+                      (vector){0.0f, 0.07f, -2.5f}, 3.0f);
 
     scene_set_ambient(*scn, 0.2f);
     scene_add_light(*scn, (scene_light){
