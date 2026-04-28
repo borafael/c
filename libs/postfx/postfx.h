@@ -160,4 +160,36 @@ void postfx_halftone_apply(postfx_halftone_ctx *ctx,
                            uint32_t *pixels, int width, int height,
                            const postfx_halftone *cfg);
 
+/* ===================================================================
+ *   Toon (cel-shading from G-buffer normals)
+ * =================================================================== */
+
+/* Re-bands lighting using the G-buffer's per-pixel normal against a
+ * fixed light direction: compute n·l, quantize to `bands` discrete
+ * levels, multiply pixel RGB by the band's brightness. Stack with
+ * postfx_apply_edges for the full Borderlands / Wind Waker look.
+ *
+ * The pass assumes the renderer's existing lighting is roughly
+ * Lambertian; specular highlights and reflections survive but get
+ * darkened by the band multiplier, which is fine on diffuse scenes
+ * and intentional on stylised ones. Stateless (no ctx).
+ *
+ * light_dir does NOT need to be normalised; the implementation
+ * handles that. Pass the same light direction the scene uses to keep
+ * the bands aligned with the geometric shading. */
+typedef struct {
+    int   enabled;
+    int   bands;          /* discrete brightness levels, clamped to 2..6 */
+    float light_x;
+    float light_y;
+    float light_z;
+    float ambient;        /* floor brightness 0..1 (band 0 multiplier) */
+    float rim_strength;   /* 0 = off; brightens pixels at grazing angles */
+} postfx_toon;
+
+void postfx_toon_apply(uint32_t *pixels,
+                       const postfx_gbuffer *gbuf,
+                       int width, int height,
+                       const postfx_toon *cfg);
+
 #endif /* POSTFX_H */

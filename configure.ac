@@ -116,5 +116,6 @@ AC_CONFIG_FILES([
     apps/comic/Makefile
     apps/bloom/Makefile
     apps/halftone/Makefile
+    apps/toon/Makefile
 ])
 AC_OUTPUT

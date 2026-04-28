@@ -1,6 +1,6 @@
 # C Experiments
 
-A monorepo playground for C projects. Currently: a raytracer (with reflections, procedural textures, triangle meshes, and a comic / pixel-art / bloom / halftone post-FX pipeline), an FBX viewer with skeletal animation, several scene demos, a game prototype, and an N-Body simulation.
+A monorepo playground for C projects. Currently: a raytracer (with reflections, procedural textures, triangle meshes, and a comic / pixel-art / bloom / halftone / toon post-FX pipeline), an FBX viewer with skeletal animation, several scene demos, a game prototype, and an N-Body simulation.
 
 Built with GNU Autotools and heavy assistance from [Claude Code](https://claude.ai/code).
 
@@ -21,7 +21,7 @@ c/
 │   ├── physics/           # Thread-pooled N-body physics (unit-tested)
 │   ├── scene/             # Renderer-agnostic scene + OBJ/FBX loaders (unit-tested)
 │   ├── raytrace/          # Pluggable CPU + OpenGL renderers, BVH, reflections, G-buffer
-│   ├── postfx/            # CPU post-processing: comic edges, palette quantize, posterize, bloom, halftone
+│   ├── postfx/            # CPU post-processing: comic edges, palette quantize, posterize, bloom, halftone, toon
 │   ├── ini/               # INI config parser (unit-tested)
 │   ├── slice/             # Sprite-sheet loader (wraps stb_image)
 │   └── battleforge/       # Game framework built on raytrace + thread + slice
@@ -36,6 +36,7 @@ c/
 │   ├── pixelart/          # Low-res raytrace + palette quantization demo
 │   ├── bloom/             # Bloom post-process demo (neon spheres + mirrors)
 │   ├── halftone/          # Halftone dot-screen post-process demo (MONO + CMYK)
+│   ├── toon/              # Cel-shading demo (lighting bands + comic outlines)
 │   └── barrier/           # Game prototype using battleforge
 ├── scripts/               # Build + asset tooling
 ├── docs/                  # Guides, ideas, plans
@@ -51,7 +52,7 @@ c/
 - **`libs/physics`** — Thread-pooled N-body physics: pairwise gravity, entity merging, optional spherical boundary. Extracted from `nbody` so it can be reused and tested independently. Unit tested with CHECK.
 - **`libs/scene`** — Renderer-agnostic scene description: primitives (sphere, plane, disc, cylinder, triangle, box, sprite, heightfield), triangle meshes with bounding spheres, materials with image + procedural textures, node hierarchy, skeletal skins, animation tracks, lights, camera. Includes OBJ + MTL parsing and an FBX loader (via vendored [ufbx](https://github.com/ufbx/ufbx)). Unit tested with CHECK.
 - **`libs/raytrace`** — Renderers that consume `scene`. Two backends: CPU (always built, multithreaded) and OpenGL compute (requires GL 4.3+, auto-detected at configure time). Recursive reflections, per-mesh BVH on both backends, and an optional G-buffer (object_id / depth / normal) with parity across backends.
-- **`libs/postfx`** — CPU post-processing on a finished ARGB framebuffer: comic outlines from a G-buffer (silhouette / depth / normal edges, 4- or 8-connected), palette quantization with optional 4×4 Bayer dither, luminance posterize, bloom (downsampled bright-pass + separable Gaussian + bilinear additive composite), and halftone (MONO black-on-paper or CMYK four-screen subtractive). Comes with a curated palette table (bw2 → resurrect64).
+- **`libs/postfx`** — CPU post-processing on a finished ARGB framebuffer: comic outlines from a G-buffer (silhouette / depth / normal edges, 4- or 8-connected), palette quantization with optional 4×4 Bayer dither, luminance posterize, bloom (downsampled bright-pass + separable Gaussian + bilinear additive composite), halftone (MONO black-on-paper or CMYK four-screen subtractive), and toon (G-buffer normal-driven lighting bands with optional rim). Comes with a curated palette table (bw2 → resurrect64).
 - **`libs/ini`** — Minimal INI config parser. Unit tested with CHECK.
 - **`libs/slice`** — Sprite-sheet slicer; wraps `stb_image.h` to decode PNGs and expose frames.
 - **`libs/battleforge`** — Game framework tying the above together (scenes, entities, rendering loop).
@@ -191,6 +192,16 @@ Newspaper / pop-art halftone post-process. Two modes: MONO renders each cell as 
 
 ```bash
 ./apps/halftone/halftone
+```
+
+### Toon (`apps/toon`)
+
+Cel-shading demo. Stacks two postfx passes on top of the raytracer: `postfx_toon` quantizes per-pixel `n·l` against a fixed light direction (using the G-buffer's normals) into 2..6 discrete bands, then `postfx_apply_edges` paints black outlines for the full Borderlands / Wind Waker look. The toon light direction is wired to the same vector as the scene's key light so the bands line up with the geometric shading.
+
+**Controls:** `TAB` backend toggle, `1..4` resolution preset, `T` toggle toon banding, `O` toggle outlines, `-` / `=` fewer / more bands, `[` / `]` 4-vs-8-connected outlines, `R` toggle rim light, `F11` fullscreen, fly camera with `WASD` + arrows.
+
+```bash
+./apps/toon/toon
 ```
 
 ### Barrier (`apps/barrier`)

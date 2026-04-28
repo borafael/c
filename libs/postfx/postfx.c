@@ -695,3 +695,76 @@ void postfx_halftone_apply(postfx_halftone_ctx *c, uint32_t *pixels,
         }
     }
 }
+
+/* ===================================================================
+ *   Toon
+ * =================================================================== */
+
+void postfx_toon_apply(uint32_t *pixels,
+                       const postfx_gbuffer *g,
+                       int w, int h,
+                       const postfx_toon *cfg) {
+    if (!cfg || !cfg->enabled || !g || !g->normal) return;
+    int bands = cfg->bands;
+    if (bands < 2) bands = 2;
+    if (bands > 6) bands = 6;
+
+    /* Normalise the light direction once. Caller can pass any
+     * non-zero vector. */
+    float lx = cfg->light_x, ly = cfg->light_y, lz = cfg->light_z;
+    float llen = sqrtf(lx * lx + ly * ly + lz * lz);
+    if (llen < 1e-6f) return;
+    float inv_l = 1.0f / llen;
+    lx *= inv_l; ly *= inv_l; lz *= inv_l;
+
+    float ambient = cfg->ambient;
+    if (ambient < 0.0f) ambient = 0.0f;
+    if (ambient > 1.0f) ambient = 1.0f;
+    float rim = cfg->rim_strength;
+    if (rim < 0.0f) rim = 0.0f;
+
+    /* Per-band brightness: band 0 = ambient, band (bands-1) = 1.0,
+     * with linear steps in between. */
+    float band_step = (1.0f - ambient) / (float)(bands - 1);
+
+    int n = w * h;
+    for (int i = 0; i < n; i++) {
+        float nx = g->normal[i * 3 + 0];
+        float ny = g->normal[i * 3 + 1];
+        float nz = g->normal[i * 3 + 2];
+        /* Background (no geometry hit) has zero-length normal; skip
+         * those pixels so the sky stays at full brightness. */
+        float nlen2 = nx * nx + ny * ny + nz * nz;
+        if (nlen2 < 1e-4f) continue;
+
+        float ndl = nx * lx + ny * ly + nz * lz;
+        if (ndl < 0.0f) ndl = 0.0f;
+
+        /* Quantize n·l to a band index in [0, bands-1]. Multiplying
+         * by `bands` and flooring gives bands+1 buckets (0..bands);
+         * clamping to bands-1 collapses the top sliver into the
+         * brightest band. */
+        int   band_idx = (int)(ndl * (float)bands);
+        if (band_idx >= bands) band_idx = bands - 1;
+        float mult = ambient + (float)band_idx * band_step;
+
+        /* Rim: brightens pixels whose normal faces away from the
+         * light, e.g. silhouettes in profile. Adds a soft fringe
+         * that reads like backlight. */
+        if (rim > 0.0f) {
+            float rim_t = 1.0f - ndl;
+            rim_t *= rim_t;  /* sharpen the edge */
+            mult += rim * rim_t;
+        }
+        if (mult > 1.5f) mult = 1.5f;
+
+        uint32_t p = pixels[i];
+        int r = (int)(((p >> 16) & 0xFF) * mult + 0.5f);
+        int gC = (int)(((p >>  8) & 0xFF) * mult + 0.5f);
+        int b = (int)(( p        & 0xFF) * mult + 0.5f);
+        pixels[i] = 0xFF000000u
+                  | ((uint32_t)clampi(r,  0, 255) << 16)
+                  | ((uint32_t)clampi(gC, 0, 255) <<  8)
+                  |  (uint32_t)clampi(b,  0, 255);
+    }
+}
