@@ -14,7 +14,7 @@
  *   F11       fullscreen
  *   1..4      resolution preset (same set as pixelart)
  *   I         toggle object-ID edges (silhouettes)
- *   D         toggle depth edges (folds in geometry)
+ *   Z         toggle depth edges (folds in geometry — z-axis mnemonic)
  *   N         toggle normal edges (creases like cube corners)
  *   O         toggle outlines off entirely (raw render)
  *   [ / ]     thinner / thicker outlines (compare 4-neighbour vs 8)
@@ -384,12 +384,7 @@ int main(int argc, char *argv[]) {
                     edges.use_normal = !edges.use_normal;
                     fprintf(stderr, "Normal edges: %d\n", edges.use_normal);
                 }
-                /* deliberately match pixelart's D=dither on the same key
-                 * idea: D toggles depth-edges here. */
-                if (k == SDLK_d && (SDL_GetModState() & KMOD_SHIFT) == 0) {
-                    /* WASD camera also uses D; require a tap (not held)
-                     * is acceptable since SDL_KEYDOWN repeats are off.
-                     * Just toggle. */
+                if (k == SDLK_z) {
                     edges.use_depth = !edges.use_depth;
                     fprintf(stderr, "Depth edges: %d\n", edges.use_depth);
                 }

@@ -19,12 +19,19 @@ PKGCONFIG_DIR="$BUILD_DIR/pkgconfig"
 APPS=(
     "anim:"
     "barrier:assets,maps,units"
+    "comic:"
     "mech:assets"
     "mirrors:"
     "nbody:"
     "orb:"
+    "pixelart:"
     "rtdemo:"
 )
+
+# Apps that load the Valkyrie via the OBJ loader's "./valkyrie.obj"
+# fallback. The OBJ + MTL live under apps/mech/assets/; copy them next
+# to the EXE so each stage dir is self-contained on Windows.
+SHARED_VALKYRIE_APPS=(comic pixelart)
 
 # --- Preflight ---------------------------------------------------------------
 
@@ -129,6 +136,15 @@ for entry in "${APPS[@]}"; do
     fi
 
     echo "  $app -> $out/"
+done
+
+# Stage shared Valkyrie assets into the apps that need them.
+for app in "${SHARED_VALKYRIE_APPS[@]}"; do
+    out="$STAGE_DIR/$app"
+    if [ -d "$out" ]; then
+        cp "$ROOT/apps/mech/assets/valkyrie.obj" "$out/" 2>/dev/null || true
+        cp "$ROOT/apps/mech/assets/valkyrie.mtl" "$out/" 2>/dev/null || true
+    fi
 done
 
 echo ""
