@@ -31,6 +31,7 @@
 #include "cylinder.h"
 #include "obj.h"
 #include "mesh.h"
+#include "postfx.h"
 #include <SDL2/SDL.h>
 
 #define GL_GLEXT_PROTOTYPES 1
@@ -55,16 +56,6 @@ static const pixel_preset PRESETS[] = {
 };
 #define PRESET_COUNT ((int)(sizeof(PRESETS) / sizeof(PRESETS[0])))
 #define PRESET_DEFAULT 1
-
-/* Edge-detection thresholds. Tweak via -/= keys to taste. */
-typedef struct {
-    int    use_object_id;
-    int    use_depth;
-    int    use_normal;
-    int    eight_connected;   /* 1 = all 8 neighbours, 0 = 4-neighbour */
-    float  depth_threshold;   /* world-space distance jump */
-    float  normal_threshold;  /* dot-product floor, 1=identical, <1=different */
-} edge_settings;
 
 /* --- Valkyrie loader (same shape as the pixelart app) --------------- */
 
@@ -179,67 +170,6 @@ static vector cam_dir_from_yaw_pitch(float yaw, float pitch) {
     };
 }
 
-/* Edge filter. For each pixel, look at its neighbours: any large
- * disagreement on object id (silhouette), depth (folds), or normal
- * (creases) flags it as an edge and stamps it black. */
-static void apply_edges(uint32_t *pixels, const rt_gbuffer *g,
-                        int w, int h, const edge_settings *e) {
-    static const int N4_DX[] = { 1, -1,  0,  0 };
-    static const int N4_DY[] = { 0,  0,  1, -1 };
-    static const int N8_DX[] = { 1, -1,  0,  0,  1, -1,  1, -1 };
-    static const int N8_DY[] = { 0,  0,  1, -1,  1,  1, -1, -1 };
-    const int *DX = e->eight_connected ? N8_DX : N4_DX;
-    const int *DY = e->eight_connected ? N8_DY : N4_DY;
-    int neigh = e->eight_connected ? 8 : 4;
-
-    for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            int idx = y * w + x;
-            int is_edge = 0;
-
-            uint32_t self_id = e->use_object_id ? g->object_id[idx] : 0;
-            float    self_d  = e->use_depth     ? g->depth[idx]     : 0.0f;
-            float    self_nx = e->use_normal    ? g->normal[idx*3+0] : 0.0f;
-            float    self_ny = e->use_normal    ? g->normal[idx*3+1] : 0.0f;
-            float    self_nz = e->use_normal    ? g->normal[idx*3+2] : 0.0f;
-
-            for (int k = 0; k < neigh && !is_edge; k++) {
-                int nx = x + DX[k], ny = y + DY[k];
-                if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
-                int nidx = ny * w + nx;
-
-                if (e->use_object_id && g->object_id[nidx] != self_id) {
-                    is_edge = 1;
-                    break;
-                }
-                if (e->use_depth) {
-                    float dd = self_d - g->depth[nidx];
-                    if (dd < 0) dd = -dd;
-                    /* depth jumps near the camera should be more
-                     * sensitive; scale threshold by depth so a 5cm gap
-                     * 50m away doesn't outline. */
-                    float scale = self_d * 0.05f + 0.05f;
-                    if (dd > e->depth_threshold * scale) {
-                        is_edge = 1;
-                        break;
-                    }
-                }
-                if (e->use_normal) {
-                    float dot = self_nx * g->normal[nidx*3+0]
-                              + self_ny * g->normal[nidx*3+1]
-                              + self_nz * g->normal[nidx*3+2];
-                    if (dot < e->normal_threshold) {
-                        is_edge = 1;
-                        break;
-                    }
-                }
-            }
-
-            if (is_edge) pixels[idx] = 0xFF000000u;
-        }
-    }
-}
-
 static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
                            int render_w, int render_h,
                            int window_w, int window_h) {
@@ -316,7 +246,7 @@ int main(int argc, char *argv[]) {
     int render_h = PRESETS[preset].h;
     int outlines_on = 1;
 
-    edge_settings edges = {
+    postfx_edges edges = {
         .use_object_id    = 1,
         .use_depth        = 1,
         .use_normal       = 1,
@@ -467,7 +397,14 @@ int main(int argc, char *argv[]) {
         rt_renderer_render(active, scn, cam, &viewport, pixels,
                            outlines_on ? &gbuf : NULL);
         Uint32 r_done = SDL_GetTicks();
-        if (outlines_on) apply_edges(pixels, &gbuf, render_w, render_h, &edges);
+        if (outlines_on) {
+            postfx_gbuffer pg = {
+                .object_id = gbuf.object_id,
+                .depth     = gbuf.depth,
+                .normal    = gbuf.normal,
+            };
+            postfx_apply_edges(pixels, &pg, render_w, render_h, &edges);
+        }
         Uint32 e_done = SDL_GetTicks();
         render_ms_accum += r_done - r_start;
         edge_ms_accum   += e_done - r_done;

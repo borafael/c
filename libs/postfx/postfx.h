@@ -1,0 +1,98 @@
+#ifndef POSTFX_H
+#define POSTFX_H
+
+#include <stdint.h>
+
+/**
+ * CPU post-processing passes that operate on a finished colour buffer
+ * (and, for edge detection, an associated G-buffer). All passes mutate
+ * the pixel buffer in place; ARGB8888, row-major, width*height entries.
+ *
+ * These are intentionally renderer-agnostic — postfx_gbuffer is a thin
+ * view struct so callers can wire up any source of object/depth/normal
+ * data, not just rt_gbuffer. For raytrace clients, copy the pointers
+ * across at the call site; layouts already match.
+ */
+
+/* ===================================================================
+ *   Edge detection (comic outlines)
+ * =================================================================== */
+
+/**
+ * Per-pixel geometry buffer consumed by postfx_apply_edges. All three
+ * channels are width*height entries; normal is interleaved xyz so 3*N
+ * floats. NULL channels are tolerated as long as the matching use_*
+ * flag is off.
+ */
+typedef struct {
+    const uint32_t *object_id;
+    const float    *depth;
+    const float    *normal;
+} postfx_gbuffer;
+
+/**
+ * Edge-detection thresholds. Each use_* toggle independently enables
+ * one source of edges; combine for richer outlines. depth_threshold is
+ * in world units (the pass scales it by depth so a small gap far away
+ * does not outline). normal_threshold is the dot-product floor below
+ * which two adjacent normals count as a crease (1.0 = identical).
+ */
+typedef struct {
+    int   use_object_id;
+    int   use_depth;
+    int   use_normal;
+    int   eight_connected;   /* 1 = 8-neighbour, 0 = 4-neighbour */
+    float depth_threshold;
+    float normal_threshold;
+} postfx_edges;
+
+/**
+ * Stamp black wherever the G-buffer signals an edge. pixels is mutated
+ * in place; non-edge pixels are left untouched.
+ */
+void postfx_apply_edges(uint32_t *pixels,
+                        const postfx_gbuffer *gbuf,
+                        int width, int height,
+                        const postfx_edges *cfg);
+
+/* ===================================================================
+ *   Palette quantization (pixel-art look)
+ * =================================================================== */
+
+typedef struct { uint8_t r, g, b; } postfx_rgb;
+
+typedef struct {
+    const postfx_rgb *colors;
+    int               count;
+    const char       *name;
+} postfx_palette;
+
+/**
+ * Built-in curated palette table, ordered low to high colour count.
+ * Indices are stable across releases; use postfx_palette_count() to
+ * size loops. Names are stable lower-case identifiers ("bw2", "gb4",
+ * "edg32", ...).
+ */
+const postfx_palette *postfx_palette_at(int index);
+int                    postfx_palette_count(void);
+
+/**
+ * Quantize each pixel to its nearest palette entry in sRGB space. If
+ * dither is non-zero, applies a 4x4 Bayer offset before the lookup —
+ * worth turning on for small palettes (≤16) where banding is harsh.
+ */
+void postfx_quantize(uint32_t *pixels, int width, int height,
+                     const postfx_palette *pal, int dither);
+
+/* ===================================================================
+ *   Luminance posterize (cel-shading approximation)
+ * =================================================================== */
+
+/**
+ * Snap luminance to a fixed number of bands while preserving chroma.
+ * Cheap stand-in for true cel-shading — bands the brightness while
+ * keeping hue stable.
+ */
+void postfx_posterize(uint32_t *pixels, int width, int height);
+
+#endif /* POSTFX_H */

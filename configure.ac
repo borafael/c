@@ -101,6 +101,7 @@ AC_CONFIG_FILES([
     libs/physics/Makefile
     libs/scene/Makefile
     libs/raytrace/Makefile
+    libs/postfx/Makefile
     libs/ini/Makefile
     libs/slice/Makefile
     libs/battleforge/Makefile
