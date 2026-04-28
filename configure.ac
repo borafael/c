@@ -117,5 +117,6 @@ AC_CONFIG_FILES([
     apps/bloom/Makefile
     apps/halftone/Makefile
     apps/toon/Makefile
+    apps/crt/Makefile
 ])
 AC_OUTPUT

@@ -192,4 +192,62 @@ void postfx_toon_apply(uint32_t *pixels,
                        int width, int height,
                        const postfx_toon *cfg);
 
+/* ===================================================================
+ *   CRT family (scanlines + chromatic + vignette + grain)
+ * =================================================================== */
+
+/* Each of these is a small pass that composes naturally with the
+ * others to fake a CRT / VHS / film look. They're independent so
+ * callers can enable any subset, but the canonical "CRT" is all four
+ * together — see apps/crt for one wiring. */
+
+/* Dim every Nth row's brightness. period=2 with strength=0.3 is the
+ * classic 240p look; larger periods read as chunkier "RF cable" lines. */
+typedef struct {
+    int   enabled;
+    int   period;        /* pixels per scanline pair, clamped to 1..16 */
+    float strength;      /* 0..1 dim multiplier on the dark rows */
+} postfx_scanlines;
+
+void postfx_scanlines_apply(uint32_t *pixels, int width, int height,
+                            const postfx_scanlines *cfg);
+
+/* Horizontal R/B channel separation. Needs scratch because every
+ * pixel reads from offset coords; in-place would chase its own tail. */
+typedef struct postfx_chromatic_ctx postfx_chromatic_ctx;
+postfx_chromatic_ctx *postfx_chromatic_create(int width, int height);
+void                  postfx_chromatic_destroy(postfx_chromatic_ctx *ctx);
+
+typedef struct {
+    int   enabled;
+    int   shift_pixels;  /* horizontal offset; R sampled +shift, B sampled -shift */
+} postfx_chromatic;
+
+void postfx_chromatic_apply(postfx_chromatic_ctx *ctx,
+                            uint32_t *pixels, int width, int height,
+                            const postfx_chromatic *cfg);
+
+/* Radial darkening. The image stays full brightness inside `softness *
+ * half_diagonal`, then ramps to (1 - intensity) at the corners. */
+typedef struct {
+    int   enabled;
+    float intensity;     /* 0..1 darkening strength at the corners */
+    float softness;      /* 0..1 inner radius before darkening kicks in */
+} postfx_vignette;
+
+void postfx_vignette_apply(uint32_t *pixels, int width, int height,
+                           const postfx_vignette *cfg);
+
+/* Per-pixel monochrome grain. seed lets the caller animate noise frame
+ * to frame: pass SDL_GetTicks() (or any changing value) for live
+ * shimmer; pass a constant for static grain that doesn't crawl. */
+typedef struct {
+    int      enabled;
+    float    strength;   /* 0..1 grain amplitude */
+    uint32_t seed;
+} postfx_grain;
+
+void postfx_grain_apply(uint32_t *pixels, int width, int height,
+                        const postfx_grain *cfg);
+
 #endif /* POSTFX_H */

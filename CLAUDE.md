@@ -23,7 +23,8 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   posterize, bloom (downsampled bright-pass +
 │   │                     #   separable Gaussian), halftone (MONO/CMYK
 │   │                     #   dot screen), toon (G-buffer normal-driven
-│   │                     #   lighting bands)
+│   │                     #   lighting bands), CRT family (scanlines,
+│   │                     #   chromatic aberration, vignette, grain)
 │   ├── ini/              # INI config parser + CHECK unit tests
 │   ├── slice/            # Sprite-sheet loader (wraps stb_image)
 │   └── battleforge/      # Game framework built on raytrace + thread + slice
@@ -39,6 +40,7 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   ├── bloom/            # Bright-pass bloom on neon spheres + mirror reflections
 │   ├── halftone/         # Newspaper / pop-art dot screen (MONO + CMYK)
 │   ├── toon/             # Cel shading: lighting bands + comic outlines
+│   ├── crt/              # CRT/VHS look: scanlines + chromatic + vignette + grain
 │   └── barrier/          # Game prototype using battleforge (ECS + sprites + maps)
 ├── scripts/              # build-windows.sh (MinGW cross-compile, all apps), Blender sprite tools
 └── docs/                 # slice-sprite-guide.md, ideas/, plans/, superpowers/
@@ -68,7 +70,7 @@ scripts/build-windows.sh             # produces build/win64/<app>/
 scripts/build-windows.sh --clean     # wipe build/win64-build first
 ```
 
-Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bloom`, `comic`, `halftone`, `mech`, `mirrors`, `nbody`, `orb`, `pixelart`, `rtdemo`, `toon`). Requires `gcc-mingw-w64-x86-64-posix` and `deps/SDL2-2.30.11/x86_64-w64-mingw32/`. Each app gets its own staged dir with the `.exe`, `SDL2.dll`, `libwinpthread-1.dll`, and any per-app asset directories. `bloom`, `comic`, `halftone`, `pixelart`, and `toon` are listed in `SHARED_VALKYRIE_APPS` so the script also copies `apps/mech/assets/valkyrie.{obj,mtl}` next to their EXEs. The script does an out-of-tree build under `build/win64-build/`, so an in-tree Linux build (if any) must be `make distclean`'d first.
+Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bloom`, `comic`, `crt`, `halftone`, `mech`, `mirrors`, `nbody`, `orb`, `pixelart`, `rtdemo`, `toon`). Requires `gcc-mingw-w64-x86-64-posix` and `deps/SDL2-2.30.11/x86_64-w64-mingw32/`. Each app gets its own staged dir with the `.exe`, `SDL2.dll`, `libwinpthread-1.dll`, and any per-app asset directories. `bloom`, `comic`, `crt`, `halftone`, `pixelart`, and `toon` are listed in `SHARED_VALKYRIE_APPS` so the script also copies `apps/mech/assets/valkyrie.{obj,mtl}` next to their EXEs. The script does an out-of-tree build under `build/win64-build/`, so an in-tree Linux build (if any) must be `make distclean`'d first.
 
 ## Running
 
@@ -84,6 +86,7 @@ Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bloom`, `co
 ./apps/bloom/bloom                       # Bloom on neon spheres (B toggle, ;/' threshold, [/] radius, T iters)
 ./apps/halftone/halftone                 # Halftone dot screen (H toggle, M MONO/CMYK, -/= cell size, I invert)
 ./apps/toon/toon                         # Cel shading: bands + outlines (T/O toggles, -/= bands, R rim)
+./apps/crt/crt                           # CRT stack (S/C/V/G toggles, -/= shift, [/] period, N freeze grain)
 ./apps/barrier/barrier                   # Game prototype
 ```
 
@@ -103,7 +106,7 @@ Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bloom`, `co
 - **Mesh acceleration**: `scene_mesh` carries vertex/index buffers plus an opaque `accel` slot. `rt_scene_build_accel` (CPU) builds a per-mesh BVH; the OpenGL backend builds GPU BVH descriptors. A bounding sphere (`bounds_center` / `bounds_radius`) gives an O(1) reject before BVH traversal.
 - **Node hierarchy + skinning**: `scene_node` forms a tree via `parent_index`. `scene_resolve_world_transforms` does one forward sweep to compute world matrices. Meshes with `skin_index >= 0` are deformed by `scene_apply_skinning` from a preserved rest pose; rigid meshes follow the existing path. FBX import lives in `libs/scene/fbx.c` (via vendored ufbx).
 - **Animation**: `scene_animation` is a bundle of per-node transform tracks (9 channels: pos/rot/scale × xyz). `scene_anim_sample` writes into `scene_node.transform`; renderers see only resolved node transforms.
-- **Post-processing**: `libs/postfx` runs CPU passes on a finished ARGB framebuffer, in place. Edge detection consumes a `postfx_gbuffer` view (renderer-agnostic — copy pointers from `rt_gbuffer` at the call site). Palette quantization, ordered dither, and luminance posterize are independent passes. Bloom uses a `postfx_bloom_ctx` that owns half-resolution float scratch buffers and resizes itself when width/height change — avoids reallocating per frame. Halftone uses a `postfx_halftone_ctx` that owns a per-cell averages array (cells_x × cells_y × 4 floats) — far smaller than a full pixel scratch since the cell grid is much coarser than the framebuffer. Toon is stateless: it consumes the same `postfx_gbuffer` view as the edge pass and quantizes n·l against a configurable light direction; for the full Borderlands look, run toon then edges.
+- **Post-processing**: `libs/postfx` runs CPU passes on a finished ARGB framebuffer, in place. Edge detection consumes a `postfx_gbuffer` view (renderer-agnostic — copy pointers from `rt_gbuffer` at the call site). Palette quantization, ordered dither, and luminance posterize are independent passes. Bloom uses a `postfx_bloom_ctx` that owns half-resolution float scratch buffers and resizes itself when width/height change — avoids reallocating per frame. Halftone uses a `postfx_halftone_ctx` that owns a per-cell averages array (cells_x × cells_y × 4 floats) — far smaller than a full pixel scratch since the cell grid is much coarser than the framebuffer. Toon is stateless: it consumes the same `postfx_gbuffer` view as the edge pass and quantizes n·l against a configurable light direction; for the full Borderlands look, run toon then edges. The CRT family — scanlines, chromatic aberration (needs a `postfx_chromatic_ctx` for shift-source scratch), vignette, and grain (per-pixel hash, animatable seed) — composes naturally with itself; `apps/crt` runs all four in order chromatic → scanlines → vignette → grain.
 - **ECS-ish entity model**: Used in `barrier/` for entities with position/animation/behavior.
 - **Thread pool**: CPU raytrace backend parallelizes chunk rendering via `libs/thread/thread_pool`.
 - **Modular Autotools**: Each library has its own `Makefile.am`; root `Makefile.am` enforces build order (libs before apps).

@@ -768,3 +768,177 @@ void postfx_toon_apply(uint32_t *pixels,
                   |  (uint32_t)clampi(b,  0, 255);
     }
 }
+
+/* ===================================================================
+ *   Scanlines
+ * =================================================================== */
+
+void postfx_scanlines_apply(uint32_t *pixels, int w, int h,
+                            const postfx_scanlines *cfg) {
+    if (!cfg || !cfg->enabled) return;
+    int period = cfg->period;
+    if (period < 1)  period = 1;
+    if (period > 16) period = 16;
+    float strength = cfg->strength;
+    if (strength <= 0.0f) return;
+    if (strength > 1.0f) strength = 1.0f;
+    int dim_q8 = (int)((1.0f - strength) * 256.0f + 0.5f);  /* 0..256 */
+
+    for (int y = 0; y < h; y++) {
+        if (((y / period) & 1) == 0) continue;  /* bright row, untouched */
+        for (int x = 0; x < w; x++) {
+            uint32_t p = pixels[y * w + x];
+            int r = (((p >> 16) & 0xFF) * dim_q8) >> 8;
+            int g = (((p >>  8) & 0xFF) * dim_q8) >> 8;
+            int b = (( p        & 0xFF) * dim_q8) >> 8;
+            pixels[y * w + x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+/* ===================================================================
+ *   Chromatic aberration
+ * =================================================================== */
+
+struct postfx_chromatic_ctx {
+    int       w, h;
+    uint32_t *scratch;
+};
+
+static int chromatic_realloc(postfx_chromatic_ctx *c, int w, int h) {
+    size_t n = (size_t)w * (size_t)h;
+    uint32_t *s = calloc(n, sizeof(uint32_t));
+    if (!s) return 0;
+    free(c->scratch);
+    c->scratch = s;
+    c->w = w; c->h = h;
+    return 1;
+}
+
+postfx_chromatic_ctx *postfx_chromatic_create(int w, int h) {
+    if (w <= 0 || h <= 0) return NULL;
+    postfx_chromatic_ctx *c = calloc(1, sizeof(*c));
+    if (!c) return NULL;
+    if (!chromatic_realloc(c, w, h)) { free(c); return NULL; }
+    return c;
+}
+
+void postfx_chromatic_destroy(postfx_chromatic_ctx *c) {
+    if (!c) return;
+    free(c->scratch);
+    free(c);
+}
+
+void postfx_chromatic_apply(postfx_chromatic_ctx *c, uint32_t *pixels,
+                            int w, int h, const postfx_chromatic *cfg) {
+    if (!c || !cfg || !cfg->enabled) return;
+    if (cfg->shift_pixels == 0) return;
+    if (w != c->w || h != c->h) {
+        if (!chromatic_realloc(c, w, h)) return;
+    }
+    /* Snapshot the input so the per-pixel shifted reads see clean
+     * source data, not pixels we've already mangled. */
+    size_t n = (size_t)w * (size_t)h;
+    for (size_t i = 0; i < n; i++) c->scratch[i] = pixels[i];
+
+    int sh = cfg->shift_pixels;
+    for (int y = 0; y < h; y++) {
+        const uint32_t *row = &c->scratch[y * w];
+        uint32_t *out = &pixels[y * w];
+        for (int x = 0; x < w; x++) {
+            int xr = x + sh; if (xr < 0) xr = 0; else if (xr >= w) xr = w - 1;
+            int xb = x - sh; if (xb < 0) xb = 0; else if (xb >= w) xb = w - 1;
+            uint32_t pr = row[xr];
+            uint32_t pg = row[x];
+            uint32_t pb = row[xb];
+            int r = (pr >> 16) & 0xFF;
+            int g = (pg >>  8) & 0xFF;
+            int b =  pb        & 0xFF;
+            out[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+/* ===================================================================
+ *   Vignette
+ * =================================================================== */
+
+void postfx_vignette_apply(uint32_t *pixels, int w, int h,
+                           const postfx_vignette *cfg) {
+    if (!cfg || !cfg->enabled) return;
+    float intensity = cfg->intensity;
+    if (intensity <= 0.0f) return;
+    if (intensity > 1.0f) intensity = 1.0f;
+    float softness = cfg->softness;
+    if (softness < 0.0f) softness = 0.0f;
+    if (softness > 0.99f) softness = 0.99f;
+
+    float cx = (float)w * 0.5f;
+    float cy = (float)h * 0.5f;
+    float r_max = sqrtf(cx * cx + cy * cy);
+    float inv_r_max = 1.0f / r_max;
+    float inv_outer = 1.0f / (1.0f - softness);
+
+    for (int y = 0; y < h; y++) {
+        float dy = (float)y - cy;
+        for (int x = 0; x < w; x++) {
+            float dx = (float)x - cx;
+            float r = sqrtf(dx * dx + dy * dy) * inv_r_max;  /* 0..1 */
+            float t = (r - softness) * inv_outer;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            /* Quadratic falloff reads softer than linear at the
+             * corners — eyes notice the outer fringe most. */
+            float dim = 1.0f - intensity * t * t;
+            uint32_t p = pixels[y * w + x];
+            int r8 = (int)(((p >> 16) & 0xFF) * dim + 0.5f);
+            int g8 = (int)(((p >>  8) & 0xFF) * dim + 0.5f);
+            int b8 = (int)(( p        & 0xFF) * dim + 0.5f);
+            pixels[y * w + x] = 0xFF000000u
+                              | ((uint32_t)clampi(r8, 0, 255) << 16)
+                              | ((uint32_t)clampi(g8, 0, 255) <<  8)
+                              |  (uint32_t)clampi(b8, 0, 255);
+        }
+    }
+}
+
+/* ===================================================================
+ *   Grain
+ * =================================================================== */
+
+/* Cheap integer hash on (x, y, seed) — enough non-uniformity to read
+ * as film grain at a glance. Not cryptographic, intentionally so. */
+static inline uint32_t grain_hash(uint32_t x, uint32_t y, uint32_t seed) {
+    uint32_t h = x * 0x9E3779B1u + y * 0x85EBCA6Bu + seed * 0x27D4EB2Fu;
+    h ^= h >> 16; h *= 0x21F0AAADu;
+    h ^= h >> 15; h *= 0x735A2D97u;
+    h ^= h >> 15;
+    return h;
+}
+
+void postfx_grain_apply(uint32_t *pixels, int w, int h,
+                        const postfx_grain *cfg) {
+    if (!cfg || !cfg->enabled) return;
+    float strength = cfg->strength;
+    if (strength <= 0.0f) return;
+    if (strength > 1.0f) strength = 1.0f;
+    int amp = (int)(strength * 64.0f);  /* peak ±64 around midpoint */
+    if (amp <= 0) return;
+    uint32_t seed = cfg->seed;
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            uint32_t hh = grain_hash((uint32_t)x, (uint32_t)y, seed);
+            int n = (int)(hh & 0xFF) - 128;             /* -128..127 */
+            int delta = (n * amp) >> 7;                  /* scale to ±amp */
+            uint32_t p = pixels[y * w + x];
+            int r = ((p >> 16) & 0xFF) + delta;
+            int g = ((p >>  8) & 0xFF) + delta;
+            int b = ( p        & 0xFF) + delta;
+            pixels[y * w + x] = 0xFF000000u
+                              | ((uint32_t)clampi(r, 0, 255) << 16)
+                              | ((uint32_t)clampi(g, 0, 255) <<  8)
+                              |  (uint32_t)clampi(b, 0, 255);
+        }
+    }
+}

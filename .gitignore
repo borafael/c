@@ -101,6 +101,7 @@ apps/pixelart/pixelart
 apps/bloom/bloom
 apps/halftone/halftone
 apps/toon/toon
+apps/crt/crt
 
 # Mesh assets are Wavefront OBJ (text geometry), not compiled object files
 # — exempt from the global *.obj ignore.
