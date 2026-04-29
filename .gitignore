@@ -104,6 +104,7 @@ apps/toon/toon
 apps/crt/crt
 apps/showcase/showcase
 apps/tty3d/tty3d
+apps/ttycam/ttycam
 
 # Mesh assets are Wavefront OBJ (text geometry), not compiled object files
 # — exempt from the global *.obj ignore.
