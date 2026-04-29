@@ -5,5 +5,5 @@ ACLOCAL_AMFLAGS = -I m4
 SUBDIRS = libs/math libs/thread libs/physics libs/scene libs/raytrace libs/postfx libs/ini libs/slice libs/battleforge apps/nbody apps/rtdemo apps/mirrors apps/orb apps/mech apps/barrier apps/anim apps/pixelart apps/comic apps/bloom apps/halftone apps/toon apps/crt apps/showcase
 
 if BUILD_TERM
-SUBDIRS += libs/term apps/tty3d
+SUBDIRS += libs/term apps/tty3d apps/ttycam
 endif

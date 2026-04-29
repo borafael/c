@@ -130,6 +130,6 @@ AC_CONFIG_FILES([
     apps/showcase/Makefile
 ])
 if test "x$build_term" = "xyes"; then
-    AC_CONFIG_FILES([libs/term/Makefile apps/tty3d/Makefile])
+    AC_CONFIG_FILES([libs/term/Makefile apps/tty3d/Makefile apps/ttycam/Makefile])
 fi
 AC_OUTPUT

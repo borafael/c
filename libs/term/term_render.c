@@ -20,6 +20,18 @@
 #define HALFBLOCK_UTF8 "\xe2\x96\x80"           /* U+2580 UPPER HALF BLOCK */
 #define HALFBLOCK_UTF8_LEN 3
 
+/* Mono halfblock can't use SGR to paint each half, so we pick from four
+ * glyphs based on which of the two stacked pixels is "lit" (luminance
+ * over a threshold). Index bits: bit0 = top lit, bit1 = bottom lit. */
+static const char * const HALFBLOCK_MONO_GLYPHS[4] = {
+    " ",                /* 0b00 — both dark              */
+    "\xe2\x96\x80",     /* 0b01 — ▀ top lit              */
+    "\xe2\x96\x84",     /* 0b10 — ▄ bottom lit           */
+    "\xe2\x96\x88",     /* 0b11 — █ both lit             */
+};
+static const int HALFBLOCK_MONO_LENS[4] = { 1, 3, 3, 3 };
+#define MONO_LIT_THRESHOLD 96
+
 /* 10-step luminance ramp, dark → bright. Single byte per cell so the
  * ASCII modes work on any terminal that displays 7-bit text. */
 static const char ASCII_RAMP[] = " .:-=+*#%@";
@@ -125,7 +137,8 @@ static inline uint8_t luminance(uint8_t r, uint8_t g, uint8_t b) {
 
 static void build_cells_halfblock(term_render_ctx *ctx,
                                   const uint32_t *pixels, int fb_w, int fb_h,
-                                  int cells_w, int cells_h) {
+                                  int cells_w, int cells_h,
+                                  term_color_mode color) {
     (void)fb_h;
     for (int cy = 0; cy < cells_h; cy++) {
         const uint32_t *top_row = pixels + (size_t)(cy * 2)     * fb_w;
@@ -135,7 +148,13 @@ static void build_cells_halfblock(term_render_ctx *ctx,
             term_cell *c = row + cx;
             unpack_argb(top_row[cx], &c->top_r, &c->top_g, &c->top_b);
             unpack_argb(bot_row[cx], &c->bot_r, &c->bot_g, &c->bot_b);
-            c->glyph_index = 0;
+            if (color == TERM_COLOR_MONO) {
+                int top_lit = luminance(c->top_r, c->top_g, c->top_b) >= MONO_LIT_THRESHOLD;
+                int bot_lit = luminance(c->bot_r, c->bot_g, c->bot_b) >= MONO_LIT_THRESHOLD;
+                c->glyph_index = (uint8_t)((bot_lit << 1) | top_lit);
+            } else {
+                c->glyph_index = 0;
+            }
             c->valid = 1;
         }
     }
@@ -250,9 +269,14 @@ static void emit_sgr_palette256(term_render_ctx *ctx, emit_state *st,
 }
 
 static void emit_glyph(term_render_ctx *ctx, const term_cell *c,
-                       term_glyph_mode glyph) {
-    if (glyph == TERM_GLYPH_HALFBLOCK) {
-        out_append(ctx, HALFBLOCK_UTF8, HALFBLOCK_UTF8_LEN);
+                       const term_caps *caps) {
+    if (caps->glyph == TERM_GLYPH_HALFBLOCK) {
+        if (caps->color == TERM_COLOR_MONO) {
+            int idx = c->glyph_index & 0x3;
+            out_append(ctx, HALFBLOCK_MONO_GLYPHS[idx], HALFBLOCK_MONO_LENS[idx]);
+        } else {
+            out_append(ctx, HALFBLOCK_UTF8, HALFBLOCK_UTF8_LEN);
+        }
     } else {
         char ch = ASCII_RAMP[c->glyph_index < ASCII_RAMP_LEN
                              ? c->glyph_index : ASCII_RAMP_LEN - 1];
@@ -313,7 +337,7 @@ size_t term_render_frame(term_render_ctx *ctx,
     resize_cell_grid(ctx, cols, rows);
 
     if (caps->glyph == TERM_GLYPH_HALFBLOCK) {
-        build_cells_halfblock(ctx, pixels, fb_w, fb_h, cols, rows);
+        build_cells_halfblock(ctx, pixels, fb_w, fb_h, cols, rows, caps->color);
     } else {
         build_cells_ascii(ctx, pixels, fb_w, fb_h, cols, rows);
     }
@@ -355,7 +379,7 @@ size_t term_render_frame(term_render_ctx *ctx,
                 /* No SGR; the glyph alone carries information. */
                 break;
             }
-            emit_glyph(ctx, cur, caps->glyph);
+            emit_glyph(ctx, cur, caps);
         }
         st.cursor_stale = 1;     /* cursor at end-of-row is implementation-defined; force CUP next row */
     }
