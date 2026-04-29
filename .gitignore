@@ -103,6 +103,7 @@ apps/halftone/halftone
 apps/toon/toon
 apps/crt/crt
 apps/showcase/showcase
+apps/tty3d/tty3d
 
 # Mesh assets are Wavefront OBJ (text geometry), not compiled object files
 # — exempt from the global *.obj ignore.
@@ -122,6 +123,7 @@ libs/scene/tests/.dirstamp
 libs/scene/vendor/ufbx/.dirstamp
 libs/raytrace/cpu/.dirstamp
 libs/raytrace/opengl/.dirstamp
+libs/ini/tests/.dirstamp
 
 # --- Cross-compilation ---
 deps/

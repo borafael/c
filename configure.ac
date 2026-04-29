@@ -93,6 +93,15 @@ if test "x$have_opengl_backend" = "xyes"; then
 fi
 AM_CONDITIONAL([BUILD_OPENGL_BACKEND], [test "x$have_opengl_backend" = "xyes"])
 
+# Terminal renderer (libs/term + apps/sshorb) — uses POSIX termios,
+# fcntl O_NONBLOCK on stdin, ioctl(TIOCGWINSZ), and SIGWINCH. None of
+# those work on MinGW so the term/sshorb subdirs are skipped on Windows.
+case $host_os in
+    mingw*|cygwin*|msys*) build_term=no ;;
+    *)                    build_term=yes ;;
+esac
+AM_CONDITIONAL([BUILD_TERM], [test "x$build_term" = "xyes"])
+
 # Tell Autoconf which Makefiles to generate
 AC_CONFIG_FILES([
     Makefile
@@ -120,4 +129,7 @@ AC_CONFIG_FILES([
     apps/crt/Makefile
     apps/showcase/Makefile
 ])
+if test "x$build_term" = "xyes"; then
+    AC_CONFIG_FILES([libs/term/Makefile apps/tty3d/Makefile])
+fi
 AC_OUTPUT

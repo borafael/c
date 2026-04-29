@@ -27,6 +27,14 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   chromatic aberration, vignette, grain)
 │   ├── ini/              # INI config parser + CHECK unit tests
 │   ├── slice/            # Sprite-sheet loader (wraps stb_image)
+│   ├── term/             # ARGB framebuffer → ANSI escape stream for the
+│   │                     #   terminal: half-block (▀) two-pixels-per-cell
+│   │                     #   or ASCII ramp glyphs; truecolor / 256-colour /
+│   │                     #   mono with auto-detection from $LANG /
+│   │                     #   $COLORTERM / $TERM; raw-mode termios + alt
+│   │                     #   screen + SIGWINCH; non-blocking key parser.
+│   │                     #   Frame-diffing keeps the byte stream small
+│   │                     #   enough to be playable over ssh. POSIX-only.
 │   └── battleforge/      # Game framework built on raytrace + thread + slice
 ├── apps/                 # Applications
 │   ├── nbody/            # N-Body gravitational simulation (SDL2)
@@ -42,6 +50,11 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   ├── toon/             # Cel shading: lighting bands + comic outlines
 │   ├── crt/              # CRT/VHS look: scanlines + chromatic + vignette + grain
 │   ├── showcase/         # One-stop tour: cycle through every postfx mode (M/N)
+│   ├── tty3d/            # Orbit camera around the orb scene rendered into
+│   │                     #   the terminal — CPU raytracer + libs/term, no
+│   │                     #   SDL/X. Auto-detects best glyph/colour mode;
+│   │                     #   --glyph and --color force the fallbacks; G/C
+│   │                     #   cycle modes live. POSIX-only.
 │   └── barrier/          # Game prototype using battleforge (ECS + sprites + maps)
 ├── scripts/              # build-windows.sh (MinGW cross-compile, all apps), Blender sprite tools
 └── docs/                 # slice-sprite-guide.md, ideas/, plans/, superpowers/
@@ -60,7 +73,7 @@ make                       # Build everything
 make check                 # Run unit tests (CHECK framework)
 ```
 
-Top-level `SUBDIRS` enforces build order: `libs/math libs/thread libs/physics libs/scene libs/raytrace libs/postfx libs/ini libs/slice libs/battleforge` then every app.
+Top-level `SUBDIRS` enforces build order: `libs/math libs/thread libs/physics libs/scene libs/raytrace libs/postfx libs/ini libs/slice libs/battleforge` then every app. `libs/term` and `apps/tty3d` are appended conditionally on `BUILD_TERM` (POSIX hosts only — skipped on MinGW).
 
 The compute backend is gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`. CPU is always built; the OpenGL compute backend requires GL 4.3+ (Linux only). Display GL (used by every app for the FBO blit) is always linked: `-lGL` on Linux, `-lopengl32` on Windows; on Windows the GL≥3.0 entry points are loaded at runtime via `libs/raytrace/gl_compat.h`.
 
@@ -94,6 +107,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 ./apps/orb/orb                           # Textured orb inside a mirror sphere
 ./apps/mech/mech [scene.ini]             # INI-driven scene; defaults to apps/mech/assets/scene.ini
 ./apps/anim/anim [--load-fbx <file>]     # Skeleton/anim demo or FBX viewer (orbit camera)
+./apps/tty3d/tty3d                       # Orb scene in the terminal (G/C cycle glyph/color modes live)
 
 # Other
 ./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
