@@ -110,11 +110,45 @@ typedef struct {
     int    material;
 } scene_triangle;
 
+/* Oriented box. `ux`, `uy`, `uz` are the world-space directions of the
+ * box's local +X / +Y / +Z axes (unit vectors, mutually orthogonal); for
+ * an axis-aligned box they are the world basis. `half_extents` are the
+ * positive half-widths along those local axes. Build with the helpers
+ * below — `scene_box_aabb` for the legacy axis-aligned case,
+ * `scene_box_obb` for a rotated cube. */
 typedef struct {
-    vector min;
-    vector max;
+    vector center;
+    vector half_extents;
+    vector ux, uy, uz;
     int    material;
 } scene_box;
+
+static inline scene_box scene_box_aabb(vector min, vector max, int material) {
+    return (scene_box){
+        .center       = vector_scale(vector_add(min, max), 0.5f),
+        .half_extents = vector_scale(vector_sub(max, min), 0.5f),
+        .ux           = (vector){1, 0, 0},
+        .uy           = (vector){0, 1, 0},
+        .uz           = (vector){0, 0, 1},
+        .material     = material,
+    };
+}
+
+/* Build an OBB from center, positive half-extents, and Tait-Bryan XYZ
+ * Euler angles (radians) — same convention as mat4_rotate_xyz and
+ * scene_anim_sample. */
+static inline scene_box scene_box_obb(vector center, vector half_extents,
+                                       vector euler_xyz, int material) {
+    mat4 R = mat4_rotate_xyz(euler_xyz);
+    return (scene_box){
+        .center       = center,
+        .half_extents = half_extents,
+        .ux           = mat4_transform_dir(R, (vector){1, 0, 0}),
+        .uy           = mat4_transform_dir(R, (vector){0, 1, 0}),
+        .uz           = mat4_transform_dir(R, (vector){0, 0, 1}),
+        .material     = material,
+    };
+}
 
 typedef struct {
     uint32_t *pixels;   /* ARGB8888, NOT owned */

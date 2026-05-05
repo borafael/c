@@ -93,28 +93,24 @@ static void build_scene(scene **scene_out, scene_camera **camera_out) {
     });
 
     /* Left mirror wall (facing +X) */
-    scene_add_box(scene, (scene_box){
-        .min = {-HALL_HALF_W - WALL_THICK, FLOOR_Y,       -HALL_HALF_LEN},
-        .max = {-HALL_HALF_W,               WALL_HEIGHT,   HALL_HALF_LEN},
-        .material = m_mirror,
-    });
+    scene_add_box(scene, scene_box_aabb(
+        (vector){-HALL_HALF_W - WALL_THICK, FLOOR_Y,     -HALL_HALF_LEN},
+        (vector){-HALL_HALF_W,               WALL_HEIGHT, HALL_HALF_LEN},
+        m_mirror));
     /* Right mirror wall (facing -X) */
-    scene_add_box(scene, (scene_box){
-        .min = { HALL_HALF_W,               FLOOR_Y,       -HALL_HALF_LEN},
-        .max = { HALL_HALF_W + WALL_THICK,  WALL_HEIGHT,   HALL_HALF_LEN},
-        .material = m_mirror,
-    });
+    scene_add_box(scene, scene_box_aabb(
+        (vector){ HALL_HALF_W,               FLOOR_Y,     -HALL_HALF_LEN},
+        (vector){ HALL_HALF_W + WALL_THICK,  WALL_HEIGHT,  HALL_HALF_LEN},
+        m_mirror));
     /* End caps (non-mirror, so you can see into the hall) */
-    scene_add_box(scene, (scene_box){
-        .min = {-HALL_HALF_W - WALL_THICK, FLOOR_Y,      -HALL_HALF_LEN - WALL_THICK},
-        .max = { HALL_HALF_W + WALL_THICK, WALL_HEIGHT, -HALL_HALF_LEN},
-        .material = m_endwall,
-    });
-    scene_add_box(scene, (scene_box){
-        .min = {-HALL_HALF_W - WALL_THICK, FLOOR_Y,      HALL_HALF_LEN},
-        .max = { HALL_HALF_W + WALL_THICK, WALL_HEIGHT, HALL_HALF_LEN + WALL_THICK},
-        .material = m_endwall,
-    });
+    scene_add_box(scene, scene_box_aabb(
+        (vector){-HALL_HALF_W - WALL_THICK, FLOOR_Y,     -HALL_HALF_LEN - WALL_THICK},
+        (vector){ HALL_HALF_W + WALL_THICK, WALL_HEIGHT, -HALL_HALF_LEN},
+        m_endwall));
+    scene_add_box(scene, scene_box_aabb(
+        (vector){-HALL_HALF_W - WALL_THICK, FLOOR_Y,      HALL_HALF_LEN},
+        (vector){ HALL_HALF_W + WALL_THICK, WALL_HEIGHT,  HALL_HALF_LEN + WALL_THICK},
+        m_endwall));
 
     /* Ring of colored orbs — stored indices let us animate positions per frame. */
     for (int i = 0; i < ORB_COUNT; i++) {

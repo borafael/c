@@ -72,7 +72,10 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    vec4  n0; vec4 n1; vec4 n2;\n"
 "    ivec4 mat;\n"
 "};\n"
-"struct Box      { vec4 minp; vec4 maxp; ivec4 mat; };\n"
+"/* Oriented box: center / half_extents / orthonormal basis (ux,uy,uz)\n"
+" * matching scene_box. ux/uy/uz are world-space directions of the\n"
+" * box's local axes; for an AABB they are (1,0,0)/(0,1,0)/(0,0,1). */\n"
+"struct Box      { vec4 center; vec4 he; vec4 ux; vec4 uy; vec4 uz; ivec4 mat; };\n"
 "struct Sprite   { vec4 position_w; vec4 direction_h; ivec4 frame_info; };\n"
 "struct Light    { vec4 direction_intensity; };\n"
 "/* Per-mesh descriptor for BVH traversal. Triangles for each mesh live in\n"
@@ -241,37 +244,42 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                m.wi0.z*n.x + m.wi1.z*n.y + m.wi2.z*n.z);\n"
 "}\n"
 "\n"
-"float isect_box(vec3 ro, vec3 rd, Box b, out vec3 hp_out) {\n"
+"/* Project the ray into the box's local frame and run a slab test\n"
+" * against (-he, +he). Writes the world hit point and the local-space\n"
+" * hit point (used by normal_box / uv_box_face). t is preserved across\n"
+" * the rigid basis change, so it can be returned directly. */\n"
+"float isect_box(vec3 ro, vec3 rd, Box b, out vec3 hp_out, out vec3 lhp_out) {\n"
+"    vec3 od = ro - b.center.xyz;\n"
+"    vec3 lo = vec3(dot(od, b.ux.xyz), dot(od, b.uy.xyz), dot(od, b.uz.xyz));\n"
+"    vec3 ld = vec3(dot(rd, b.ux.xyz), dot(rd, b.uy.xyz), dot(rd, b.uz.xyz));\n"
+"    vec3 h  = b.he.xyz;\n"
 "    float tmin = -1e30;\n"
 "    float tmax =  1e30;\n"
 "    for (int i = 0; i < 3; i++) {\n"
-"        float rdi = rd[i];\n"
-"        float roi = ro[i];\n"
-"        float mn  = b.minp[i];\n"
-"        float mx  = b.maxp[i];\n"
-"        if (abs(rdi) > 1e-6) {\n"
-"            float t0 = (mn - roi) / rdi;\n"
-"            float t1 = (mx - roi) / rdi;\n"
+"        if (abs(ld[i]) > 1e-6) {\n"
+"            float t0 = (-h[i] - lo[i]) / ld[i];\n"
+"            float t1 = ( h[i] - lo[i]) / ld[i];\n"
 "            if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }\n"
 "            if (t0 > tmin) tmin = t0;\n"
 "            if (t1 < tmax) tmax = t1;\n"
-"        } else if (roi < mn || roi > mx) return -1.0;\n"
+"        } else if (lo[i] < -h[i] || lo[i] > h[i]) return -1.0;\n"
 "    }\n"
 "    if (tmin > tmax) return -1.0;\n"
 "    float t = (tmin > 0.0) ? tmin : tmax;\n"
 "    if (t <= 0.0) return -1.0;\n"
-"    hp_out = ro + rd * t;\n"
+"    hp_out  = ro + rd * t;\n"
+"    lhp_out = lo + ld * t;\n"
 "    return t;\n"
 "}\n"
 "\n"
-"vec3 normal_box(vec3 hp, Box b) {\n"
-"    float eps = 1e-4;\n"
-"    if (abs(hp.x - b.minp.x) < eps) return vec3(-1.0, 0.0, 0.0);\n"
-"    if (abs(hp.x - b.maxp.x) < eps) return vec3( 1.0, 0.0, 0.0);\n"
-"    if (abs(hp.y - b.minp.y) < eps) return vec3( 0.0,-1.0, 0.0);\n"
-"    if (abs(hp.y - b.maxp.y) < eps) return vec3( 0.0, 1.0, 0.0);\n"
-"    if (abs(hp.z - b.minp.z) < eps) return vec3( 0.0, 0.0,-1.0);\n"
-"    return vec3(0.0, 0.0, 1.0);\n"
+"vec3 normal_box(vec3 lhp, Box b) {\n"
+"    vec3 h = b.he.xyz;\n"
+"    float dx = h.x - abs(lhp.x);\n"
+"    float dy = h.y - abs(lhp.y);\n"
+"    float dz = h.z - abs(lhp.z);\n"
+"    if (dx <= dy && dx <= dz) return b.ux.xyz * (lhp.x >= 0.0 ? 1.0 : -1.0);\n"
+"    if (dy <= dz)             return b.uy.xyz * (lhp.y >= 0.0 ? 1.0 : -1.0);\n"
+"    return b.uz.xyz * (lhp.z >= 0.0 ? 1.0 : -1.0);\n"
 "}\n"
 "\n"
 "/* Sprite: billboard facing camera, axis-aligned-up. */\n"
@@ -492,11 +500,14 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                (h + c.center_hh.w) / (2.0 * c.center_hh.w));\n"
 "}\n"
 "\n"
-"vec2 uv_box_face(vec3 hp, vec3 normal) {\n"
-"    float ax = abs(normal.x), ay = abs(normal.y), az = abs(normal.z);\n"
-"    if (ax >= ay && ax >= az)      return vec2(hp.z, hp.y);\n"
-"    else if (ay >= ax && ay >= az) return vec2(hp.x, hp.z);\n"
-"    else                           return vec2(hp.x, hp.y);\n"
+"vec2 uv_box_face(vec3 lhp, Box b) {\n"
+"    vec3 h = b.he.xyz;\n"
+"    float dx = h.x - abs(lhp.x);\n"
+"    float dy = h.y - abs(lhp.y);\n"
+"    float dz = h.z - abs(lhp.z);\n"
+"    if (dx <= dy && dx <= dz)      return vec2(lhp.z, lhp.y);\n"
+"    else if (dy <= dz)             return vec2(lhp.x, lhp.z);\n"
+"    else                           return vec2(lhp.x, lhp.y);\n"
 "}\n"
 "\n"
 "/* ---- Procedural noise (matches libs/raytrace/cpu/render_chunk.c) ---- */\n"
@@ -938,13 +949,13 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_box_count; i++) {\n"
-"        vec3 hp;\n"
-"        float t = isect_box(ro, rd, boxes[i], hp);\n"
+"        vec3 hp, lhp;\n"
+"        float t = isect_box(ro, rd, boxes[i], hp, lhp);\n"
 "        if (t > 0.0 && t < closest_t) {\n"
 "            closest_t = t;\n"
 "            h.point  = hp;\n"
-"            h.normal = normal_box(hp, boxes[i]);\n"
-"            vec2 uv  = uv_box_face(hp, h.normal);\n"
+"            h.normal = normal_box(lhp, boxes[i]);\n"
+"            vec2 uv  = uv_box_face(lhp, boxes[i]);\n"
 "            int midx = boxes[i].mat.x;\n"
 "            h.albedo = material_sample(midx, hp, uv);\n"
 "            h.reflectivity = materials[midx].scale.y;\n"
@@ -1110,7 +1121,11 @@ typedef struct {
     float n0[4]; float n1[4]; float n2[4];
     int32_t mat[4];
 } gpu_triangle;
-typedef struct { float minp[4]; float maxp[4]; int32_t mat[4]; } gpu_box;
+typedef struct {
+    float center[4]; float he[4];
+    float ux[4]; float uy[4]; float uz[4];
+    int32_t mat[4];
+} gpu_box;
 typedef struct { float position_w[4]; float direction_h[4]; int32_t frame_info[4]; } gpu_sprite;
 typedef struct { float dir_int[4]; } gpu_light;
 typedef struct {
@@ -1554,9 +1569,13 @@ static void upload_boxes(opengl_backend_data *d, const scene *s) {
     if (n > 0) {
         buf = malloc(sizeof(gpu_box) * (size_t)n);
         for (int i = 0; i < n; i++) {
-            set_vec4(buf[i].minp, s->boxes[i].min.x, s->boxes[i].min.y, s->boxes[i].min.z, 0.0f);
-            set_vec4(buf[i].maxp, s->boxes[i].max.x, s->boxes[i].max.y, s->boxes[i].max.z, 0.0f);
-            set_mat_ivec4(buf[i].mat, s->boxes[i].material);
+            const scene_box *b = &s->boxes[i];
+            set_vec4(buf[i].center, b->center.x,       b->center.y,       b->center.z,       0.0f);
+            set_vec4(buf[i].he,     b->half_extents.x, b->half_extents.y, b->half_extents.z, 0.0f);
+            set_vec4(buf[i].ux,     b->ux.x,           b->ux.y,           b->ux.z,           0.0f);
+            set_vec4(buf[i].uy,     b->uy.x,           b->uy.y,           b->uy.z,           0.0f);
+            set_vec4(buf[i].uz,     b->uz.x,           b->uz.y,           b->uz.z,           0.0f);
+            set_mat_ivec4(buf[i].mat, b->material);
         }
     }
     upload_ssbo(d->ssbo[6], 6, buf, sizeof(gpu_box), n);

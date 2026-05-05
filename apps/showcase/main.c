@@ -150,9 +150,14 @@ static void build_scene(scene **scn, scene_camera **cam) {
     scene_add_sphere(*scn, (scene_sphere){
         .center = {0.5f, 0.5f, 1.6f}, .radius = 0.4f, .material = m_neon });
 
-    scene_add_box(*scn, (scene_box){
-        .min = {-3.5f, -0.5f, 1.5f}, .max = {-2.5f, 0.8f, 2.5f},
-        .material = m_yellow });
+    scene_add_box(*scn, scene_box_aabb((vector){-3.5f, -0.5f, 1.5f},
+                                       (vector){-2.5f,  0.8f, 2.5f}, m_yellow));
+    /* Rotated cube — tilted on all three axes to exercise the OBB path. */
+    scene_add_box(*scn, scene_box_obb(
+        (vector){-1.5f, 0.1f, 2.6f},
+        (vector){0.55f, 0.55f, 0.55f},
+        (vector){0.3f, 0.7f, 0.2f},
+        m_yellow));
     scene_add_cylinder(*scn, (scene_cylinder){
         .center = {2.5f, 0.5f, 2.0f}, .axis = {0.0f, 1.0f, 0.0f},
         .radius = 0.45f, .half_height = 1.0f, .material = m_yellow });

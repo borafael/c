@@ -134,9 +134,8 @@ static void build_scene(scene **scn, scene_camera **cam) {
     scene_add_sphere(*scn, (scene_sphere){
         .center = {2.0f, 0.8f, -1.0f}, .radius = 0.8f, .material = m_blue });
 
-    scene_add_box(*scn, (scene_box){
-        .min = {-3.5f, -0.5f, 1.5f}, .max = {-2.5f, 0.8f, 2.5f},
-        .material = m_yellow });
+    scene_add_box(*scn, scene_box_aabb((vector){-3.5f, -0.5f, 1.5f},
+                                       (vector){-2.5f,  0.8f, 2.5f}, m_yellow));
     scene_add_cylinder(*scn, (scene_cylinder){
         .center = {2.5f, 0.5f, 2.0f}, .axis = {0.0f, 1.0f, 0.0f},
         .radius = 0.45f, .half_height = 1.0f, .material = m_yellow });

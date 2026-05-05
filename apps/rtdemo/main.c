@@ -325,11 +325,8 @@ static void build_scene(scene **scene, scene_camera **camera) {
         .material = m_cyan
     });
 
-    scene_add_box(*scene, (scene_box){
-        .min = {-4.0f, -0.5f, -1.5f},
-        .max = {-3.0f,  0.5f, -0.5f},
-        .material = m_coral
-    });
+    scene_add_box(*scene, scene_box_aabb((vector){-4.0f, -0.5f, -1.5f},
+                                         (vector){-3.0f,  0.5f, -0.5f}, m_coral));
 
     scene_set_ambient(*scene, 0.15f);
     scene_add_light(*scene, (scene_light){

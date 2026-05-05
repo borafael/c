@@ -52,13 +52,6 @@ static inline void uv_cylinder(vector hp, const scene_cylinder *cyl,
     *v = (h + cyl->half_height) / (2.0f * cyl->half_height);
 }
 
-static inline void uv_box(vector hp, vector normal, float *u, float *v) {
-    float ax = fabsf(normal.x), ay = fabsf(normal.y), az = fabsf(normal.z);
-    if (ax >= ay && ax >= az)      { *u = hp.z; *v = hp.y; }
-    else if (ay >= ax && ay >= az) { *u = hp.x; *v = hp.z; }
-    else                           { *u = hp.x; *v = hp.y; }
-}
-
 /* Procedural-noise helpers (must match the GLSL versions in
  * libs/raytrace/opengl/renderer.c for backend parity). */
 
@@ -454,7 +447,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.point = hp;
             h.normal = rt_normal_box(hp, &scene->boxes[i]);
             float u, v;
-            uv_box(hp, h.normal, &u, &v);
+            rt_box_uv(hp, &scene->boxes[i], &u, &v);
             const scene_material *m = &scene->materials[scene->boxes[i].material];
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
