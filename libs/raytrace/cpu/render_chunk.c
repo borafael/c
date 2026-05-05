@@ -362,6 +362,10 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             vector hp = vector_add(ro, vector_scale(rd, t));
             h.point = hp;
             h.normal = rt_normal_disc(&scene->discs[i]);
+            /* Discs are double-sided: flip the authored normal to face
+             * the camera so the back side shades and reflects. */
+            if (vector_dot(h.normal, rd) > 0.0f)
+                h.normal = vector_scale(h.normal, -1.0f);
             float u, v;
             uv_planar(hp, scene->discs[i].center, h.normal, &u, &v);
             const scene_material *m = &scene->materials[scene->discs[i].material];
@@ -400,6 +404,10 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             vector hp = vector_add(ro, vector_scale(rd, t));
             h.point = hp;
             h.normal = rt_normal_triangle(&scene->triangles[i]);
+            /* Scene triangles are double-sided: flip the geometric normal
+             * to face the camera so the back side shades and reflects. */
+            if (vector_dot(h.normal, rd) > 0.0f)
+                h.normal = vector_scale(h.normal, -1.0f);
             float u, v;
             uv_planar(hp, scene->triangles[i].v0, h.normal, &u, &v);
             const scene_material *m = &scene->materials[scene->triangles[i].material];

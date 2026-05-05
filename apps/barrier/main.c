@@ -287,59 +287,67 @@ int main(int argc, char *argv[]) {
     /* Load default map via the command system (after materials are set). */
     load_map_from_ini("battlefield", engine, NULL);
 
-    static const char *unit_names[] = {
-        "rifleman", "heavy", "scout", "sniper", "medic",
-        "mech", "drone", "flamethrower", "engineer", "commander",
-        "artillery", "grenadier", "shield", "jetpack", "hacker",
-        "berserker", "stealth", "tank", "turret", "psychic"
+    /* One unit per primitive kind, all sharing the mirror material. */
+    bf_unit_def unit_defs[] = {
+        { .base_speed = 3.0f, .has_selection = 1, .visual = {
+            .kind = BF_VIS_SPHERE,
+            .sphere = { .radius = unit_radius, .material = unit_material } } },
+        { .base_speed = 3.0f, .has_selection = 1, .visual = {
+            .kind = BF_VIS_BOX,
+            .box = { .half_extents = {0.9f, 0.9f, 0.9f},
+                     .euler_xyz   = {0.3f, 0.7f, 0.2f},   /* tilted cube */
+                     .material    = unit_material } } },
+        { .base_speed = 3.0f, .has_selection = 1, .visual = {
+            .kind = BF_VIS_DISC,
+            .disc = { .radius = 1.1f, .normal = {0.0f, 1.0f, 0.0f},
+                      .material = unit_material } } },
+        { .base_speed = 3.0f, .has_selection = 1, .visual = {
+            .kind = BF_VIS_CYLINDER,
+            .cylinder = { .radius = 0.7f, .half_height = 1.0f,
+                          .axis = {0.0f, 1.0f, 0.0f},
+                          .material = unit_material } } },
+        { .base_speed = 3.0f, .has_selection = 1, .visual = {
+            .kind = BF_VIS_TRIANGLE,
+            .triangle = { .v0 = {-1.0f, 0.0f, 0.0f},
+                          .v1 = { 1.0f, 0.0f, 0.0f},
+                          .v2 = { 0.0f, 2.0f, 0.0f},
+                          .material = unit_material } } },
     };
-    #define NUM_UNIT_TYPES 20
-    #define ARMY_SIZE 10
-
-    int unit_def_ids[NUM_UNIT_TYPES];  /* unit def index (0..19) */
+    static const char *unit_names[] = {
+        "orb", "cube", "disc", "pillar", "wedge"
+    };
+    #define NUM_UNIT_TYPES ((int)(sizeof(unit_defs) / sizeof(unit_defs[0])))
+    #define ARMY_SIZE      NUM_UNIT_TYPES
 
     for (int i = 0; i < NUM_UNIT_TYPES; i++) {
-        bf_unit_def udef = {
-            .base_speed = 3.0f,
-            .has_selection = 1,
-            .visual = {
-                .kind = BF_VIS_SPHERE,
-                .sphere = { .radius = unit_radius, .material = unit_material }
-            }
-        };
-        snprintf(udef.name, BF_UNIT_NAME_SIZE, "%s", unit_names[i]);
+        snprintf(unit_defs[i].name, BF_UNIT_NAME_SIZE, "%s", unit_names[i]);
         bf_command(engine, (bf_cmd){
             .type = BF_CMD_REGISTER_UNIT,
-            .register_unit = { .def = udef }
+            .register_unit = { .def = unit_defs[i] }
         });
-        unit_def_ids[i] = i;
     }
     fprintf(stderr, "Registered %d unit types\n", NUM_UNIT_TYPES);
 
     /* Process registration commands before creating entities */
     bf_tick(engine, 0.0f);
 
-    /* Create two armies on opposite sides of the field */
-    /* Army 1 (units 0-9): near z=15, facing south toward center */
+    /* Two armies, one of each primitive per side. Spread along x so
+     * every shape is plainly visible. */
     for (int i = 0; i < ARMY_SIZE; i++) {
-        float x = 30.0f + (i % 5) * 4.0f;
-        float z = 15.0f + (i / 5) * 4.0f;
+        float x = 30.0f + i * 4.0f;
         bf_command(engine, (bf_cmd){
             .type = BF_CMD_ENTITY_CREATE,
-            .entity_create = { .id = i + 1, .unit_def_id = unit_def_ids[i],
-                               .position = {x, 0.0f, z},
+            .entity_create = { .id = i + 1, .unit_def_id = i,
+                               .position = {x, 0.0f, 15.0f},
                                .direction = {0.0f, 0.0f, 1.0f} }
         });
     }
-    /* Army 2 (units 10-19): near z=85, facing north toward center */
     for (int i = 0; i < ARMY_SIZE; i++) {
-        float x = 30.0f + (i % 5) * 4.0f;
-        float z = 85.0f - (i / 5) * 4.0f;
+        float x = 30.0f + i * 4.0f;
         bf_command(engine, (bf_cmd){
             .type = BF_CMD_ENTITY_CREATE,
-            .entity_create = { .id = ARMY_SIZE + i + 1,
-                               .unit_def_id = unit_def_ids[ARMY_SIZE + i],
-                               .position = {x, 0.0f, z},
+            .entity_create = { .id = ARMY_SIZE + i + 1, .unit_def_id = i,
+                               .position = {x, 0.0f, 85.0f},
                                .direction = {0.0f, 0.0f, -1.0f} }
         });
     }

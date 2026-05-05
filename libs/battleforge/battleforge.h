@@ -20,11 +20,19 @@ typedef struct slice_sheet slice_sheet;
 
 /* --- Visual descriptor ---
  * Tagged union describing how an entity is drawn. New primitive kinds
- * (box, cylinder, disc, ...) slot in by extending the enum and union. */
+ * slot in by extending the enum and union.
+ *
+ * Position handling: entity position is the unit's footprint on the
+ * ground; the renderer offsets the primitive vertically so it sits on
+ * top (sphere by radius, box/cylinder by half-height, etc.). */
 typedef enum {
-    BF_VIS_NONE   = 0,
-    BF_VIS_SPRITE = 1,
-    BF_VIS_SPHERE = 2,
+    BF_VIS_NONE     = 0,
+    BF_VIS_SPRITE   = 1,
+    BF_VIS_SPHERE   = 2,
+    BF_VIS_BOX      = 3,
+    BF_VIS_DISC     = 4,
+    BF_VIS_CYLINDER = 5,
+    BF_VIS_TRIANGLE = 6,
 } bf_visual_kind;
 
 typedef struct {
@@ -32,6 +40,16 @@ typedef struct {
     union {
         struct { int sheet_id; } sprite;
         struct { float radius; scene_material material; } sphere;
+        /* Box uses scene_box_obb; euler_xyz = {0,0,0} for an AABB. */
+        struct { vector half_extents; vector euler_xyz;
+                 scene_material material; } box;
+        struct { float radius; vector normal;
+                 scene_material material; } disc;
+        struct { float radius; float half_height; vector axis;
+                 scene_material material; } cylinder;
+        /* Triangle vertices are offsets from the entity position. */
+        struct { vector v0, v1, v2;
+                 scene_material material; } triangle;
     };
 } bf_visual_desc;
 

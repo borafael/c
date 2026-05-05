@@ -964,6 +964,55 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
             });
             break;
         }
+        case BF_VIS_BOX: {
+            int mat_id = scene_add_material(e->scene, vis->desc.box.material);
+            vector he = vis->desc.box.half_extents;
+            /* Lift by the largest half-extent so any rotation still clears
+             * the ground; for an unrotated cube this matches he.y. */
+            float lift = fmaxf(he.x, fmaxf(he.y, he.z));
+            vector center = pos;
+            center.y += lift;
+            scene_add_box(e->scene, scene_box_obb(center, he,
+                                                   vis->desc.box.euler_xyz, mat_id));
+            break;
+        }
+        case BF_VIS_DISC: {
+            int mat_id = scene_add_material(e->scene, vis->desc.disc.material);
+            vector center = pos;
+            /* Float the disc above the ground at one radius; reads as a
+             * floating coin regardless of normal orientation. */
+            center.y += vis->desc.disc.radius;
+            scene_add_disc(e->scene, (scene_disc){
+                .center   = center,
+                .normal   = vis->desc.disc.normal,
+                .radius   = vis->desc.disc.radius,
+                .material = mat_id,
+            });
+            break;
+        }
+        case BF_VIS_CYLINDER: {
+            int mat_id = scene_add_material(e->scene, vis->desc.cylinder.material);
+            vector center = pos;
+            center.y += vis->desc.cylinder.half_height;   /* assumes mostly +Y axis */
+            scene_add_cylinder(e->scene, (scene_cylinder){
+                .center      = center,
+                .axis        = vis->desc.cylinder.axis,
+                .radius      = vis->desc.cylinder.radius,
+                .half_height = vis->desc.cylinder.half_height,
+                .material    = mat_id,
+            });
+            break;
+        }
+        case BF_VIS_TRIANGLE: {
+            int mat_id = scene_add_material(e->scene, vis->desc.triangle.material);
+            scene_add_triangle(e->scene, (scene_triangle){
+                .v0       = vector_add(pos, vis->desc.triangle.v0),
+                .v1       = vector_add(pos, vis->desc.triangle.v1),
+                .v2       = vector_add(pos, vis->desc.triangle.v2),
+                .material = mat_id,
+            });
+            break;
+        }
         case BF_VIS_NONE:
             break;
         }
@@ -1040,6 +1089,52 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
             t = rt_intersect_sphere(origin, ray_dir, &s);
             if (t > 0.0f)
                 hp = vector_add(origin, vector_scale(ray_dir, t));
+            break;
+        }
+        case BF_VIS_BOX: {
+            vector he = vis->desc.box.half_extents;
+            float lift = fmaxf(he.x, fmaxf(he.y, he.z));
+            vector center = e->positions[i].position;
+            center.y += lift;
+            scene_box b = scene_box_obb(center, he, vis->desc.box.euler_xyz, 0);
+            t = rt_intersect_box(origin, ray_dir, &b);
+            if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
+            break;
+        }
+        case BF_VIS_DISC: {
+            vector center = e->positions[i].position;
+            center.y += vis->desc.disc.radius;
+            scene_disc d = {
+                .center = center, .normal = vis->desc.disc.normal,
+                .radius = vis->desc.disc.radius, .material = 0,
+            };
+            t = rt_intersect_disc(origin, ray_dir, &d);
+            if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
+            break;
+        }
+        case BF_VIS_CYLINDER: {
+            vector center = e->positions[i].position;
+            center.y += vis->desc.cylinder.half_height;
+            scene_cylinder c = {
+                .center = center, .axis = vis->desc.cylinder.axis,
+                .radius = vis->desc.cylinder.radius,
+                .half_height = vis->desc.cylinder.half_height,
+                .material = 0,
+            };
+            t = rt_intersect_cylinder(origin, ray_dir, &c);
+            if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
+            break;
+        }
+        case BF_VIS_TRIANGLE: {
+            vector p = e->positions[i].position;
+            scene_triangle tri = {
+                .v0 = vector_add(p, vis->desc.triangle.v0),
+                .v1 = vector_add(p, vis->desc.triangle.v1),
+                .v2 = vector_add(p, vis->desc.triangle.v2),
+                .material = 0,
+            };
+            t = rt_intersect_triangle(origin, ray_dir, &tri);
+            if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;
         }
         case BF_VIS_NONE:
