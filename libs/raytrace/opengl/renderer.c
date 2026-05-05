@@ -1081,7 +1081,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "\n"
 "        throughput *= h.reflectivity;\n"
 "        rd = reflect(rd, h.normal);\n"
-"        ro = h.point + rd * 1e-4;\n"
+"        ro = h.point + h.normal * 1e-4;\n"
 "    }\n"
 "\n"
 "    /* Bounce budget exhausted while still inside mirrors — treat as sky\n"

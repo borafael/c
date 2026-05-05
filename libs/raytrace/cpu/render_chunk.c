@@ -627,7 +627,15 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
 
                 float ndotrd = vector_dot(h.normal, rd);
                 rd = vector_normalize(vector_sub(rd, vector_scale(h.normal, 2.0f * ndotrd)));
-                ro = vector_add(h.point, vector_scale(rd, RT_REFLECT_EPSILON));
+                /* Offset along the surface normal, not the reflected
+                 * direction: at grazing reflection angles `rd` is nearly
+                 * tangent to the surface, so a tiny step along it leaves
+                 * the new origin within float epsilon of the same
+                 * primitive and produces self-hit acne (black speckles
+                 * on spherical mirrors). The normal is always
+                 * perpendicular, so the offset clears the surface
+                 * regardless of bounce angle. */
+                ro = vector_add(h.point, vector_scale(h.normal, RT_REFLECT_EPSILON));
             }
 
             /* Edge case: the entire bounce budget was spent inside
