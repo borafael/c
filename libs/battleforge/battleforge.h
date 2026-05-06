@@ -233,6 +233,10 @@ void        bf_map_generate_test_terrain(bf_map *map);
    grid_cols, and colors to already be allocated/computed. */
 void        bf_map_colorize(bf_map *map);
 float       bf_map_height_at(const bf_map *map, float x, float z);
+/* Bilinear-interpolated terrain normal at (x, z). Returns world +Y when
+   the map has no normals or no map is loaded — keeps caller code simple
+   on flat terrain. */
+vector      bf_map_normal_at(const bf_map *map, float x, float z);
 
 int         bf_command(bf_engine *e, bf_cmd cmd);
 void        bf_tick(bf_engine *e, float dt);

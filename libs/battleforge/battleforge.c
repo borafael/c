@@ -302,6 +302,167 @@ float bf_map_height_at(const bf_map *map, float x, float z) {
     return h;
 }
 
+vector bf_map_normal_at(const bf_map *map, float x, float z) {
+    if (!map || !map->normals) return (vector){0.0f, 1.0f, 0.0f};
+
+    int cols = map->grid_cols;
+    int rows = map->grid_rows;
+    float cell_w = map->width / (float)(cols - 1);
+    float cell_d = map->depth / (float)(rows - 1);
+
+    float gx = x / cell_w;
+    float gz = z / cell_d;
+    if (gx < 0.0f) gx = 0.0f;
+    if (gx > (float)(cols - 2)) gx = (float)(cols - 2);
+    if (gz < 0.0f) gz = 0.0f;
+    if (gz > (float)(rows - 2)) gz = (float)(rows - 2);
+
+    int c0 = (int)floorf(gx);
+    int r0 = (int)floorf(gz);
+    if (c0 >= cols - 1) c0 = cols - 2;
+    if (r0 >= rows - 1) r0 = rows - 2;
+
+    float fx = gx - c0;
+    float fz = gz - r0;
+
+    const float *N = map->normals;
+    int i00 = (r0 * cols + c0) * 3;
+    int i01 = (r0 * cols + c0 + 1) * 3;
+    int i10 = ((r0 + 1) * cols + c0) * 3;
+    int i11 = ((r0 + 1) * cols + c0 + 1) * 3;
+
+    float w00 = (1.0f - fx) * (1.0f - fz);
+    float w01 = fx * (1.0f - fz);
+    float w10 = (1.0f - fx) * fz;
+    float w11 = fx * fz;
+
+    vector n = {
+        N[i00 + 0] * w00 + N[i01 + 0] * w01 + N[i10 + 0] * w10 + N[i11 + 0] * w11,
+        N[i00 + 1] * w00 + N[i01 + 1] * w01 + N[i10 + 1] * w10 + N[i11 + 1] * w11,
+        N[i00 + 2] * w00 + N[i01 + 2] * w01 + N[i10 + 2] * w10 + N[i11 + 2] * w11,
+    };
+    n = vector_normalize(n);
+    if (vector_magnitude(n) < 0.5f) return (vector){0.0f, 1.0f, 0.0f};
+    return n;
+}
+
+/* Build an orthonormal basis (out_x, up, out_z) where `up` is treated as
+ * the local +Y. When up = world +Y this yields out_x = +X and out_z = +Z,
+ * so flat terrain reproduces the legacy axis-aligned placement. */
+static void basis_from_up(vector up, vector *out_x, vector *out_z) {
+    vector ref = (fabsf(up.y) > 0.99f) ? (vector){0.0f, 0.0f, 1.0f}
+                                       : (vector){0.0f, 1.0f, 0.0f};
+    vector x = vector_normalize(vector_cross(up, ref));
+    vector z = vector_cross(x, up);
+    *out_x = x;
+    *out_z = z;
+}
+
+/* --- Visual → scene primitive builders (terrain-aware) ---
+ * Each primitive's local +Y is rotated to align with `up` (the terrain
+ * normal at the entity position). When `up` = world +Y the rotation is
+ * the identity, reproducing the legacy axis-aligned placement. The
+ * sphere intentionally ignores `up` for orientation (rotation-invariant)
+ * and lifts along world +Y so its lowest point stays at the terrain. */
+static scene_sphere bf_make_sphere(const bf_visual_desc *d, vector pos, int mat) {
+    vector center = pos;
+    center.y += d->sphere.radius;
+    return (scene_sphere){
+        .center = center,
+        .radius = d->sphere.radius,
+        .material = mat,
+    };
+}
+
+static scene_box bf_make_box(const bf_visual_desc *d, vector pos, vector up, int mat) {
+    /* Terrain basis (world space) */
+    vector tx, tz;
+    basis_from_up(up, &tx, &tz);
+    /* Apply euler_xyz inside the terrain-aligned frame so zero euler keeps
+     * the cube parallel to the local ground. */
+    mat4 R = mat4_rotate_xyz(d->box.euler_xyz);
+    vector lx = mat4_transform_dir(R, (vector){1, 0, 0});
+    vector ly = mat4_transform_dir(R, (vector){0, 1, 0});
+    vector lz = mat4_transform_dir(R, (vector){0, 0, 1});
+    #define BF_LOCAL_TO_WORLD(v) vector_add(vector_add( \
+        vector_scale(tx, (v).x), vector_scale(up, (v).y)), \
+        vector_scale(tz, (v).z))
+    vector ux = BF_LOCAL_TO_WORLD(lx);
+    vector uy = BF_LOCAL_TO_WORLD(ly);
+    vector uz = BF_LOCAL_TO_WORLD(lz);
+    #undef BF_LOCAL_TO_WORLD
+    vector he = d->box.half_extents;
+    vector center = vector_add(pos, vector_scale(up, he.y));
+    return (scene_box){
+        .center       = center,
+        .half_extents = he,
+        .ux           = ux,
+        .uy           = uy,
+        .uz           = uz,
+        .material     = mat,
+    };
+}
+
+static scene_disc bf_make_disc(const bf_visual_desc *d, vector pos, vector up, int mat) {
+    vector center = vector_add(pos, vector_scale(up, d->disc.radius));
+    return (scene_disc){
+        .center   = center,
+        .normal   = up,
+        .radius   = d->disc.radius,
+        .material = mat,
+    };
+}
+
+static scene_cylinder bf_make_cylinder(const bf_visual_desc *d, vector pos, vector up, int mat) {
+    vector center = vector_add(pos, vector_scale(up, d->cylinder.half_height));
+    return (scene_cylinder){
+        .center      = center,
+        .axis        = up,
+        .radius      = d->cylinder.radius,
+        .half_height = d->cylinder.half_height,
+        .material    = mat,
+    };
+}
+
+static scene_triangle bf_make_triangle(const bf_visual_desc *d, vector pos, vector up, int mat) {
+    /* Rotate the local triangle vertices into the terrain-aligned basis. */
+    vector ux, uz;
+    basis_from_up(up, &ux, &uz);
+    vector v0 = d->triangle.v0, v1 = d->triangle.v1, v2 = d->triangle.v2;
+    #define BF_RECOORD(v) vector_add(vector_add( \
+        vector_scale(ux, (v).x), vector_scale(up, (v).y)), \
+        vector_scale(uz, (v).z))
+    return (scene_triangle){
+        .v0       = vector_add(pos, BF_RECOORD(v0)),
+        .v1       = vector_add(pos, BF_RECOORD(v1)),
+        .v2       = vector_add(pos, BF_RECOORD(v2)),
+        .material = mat,
+    };
+    #undef BF_RECOORD
+}
+
+static scene_cone bf_make_cone(const bf_visual_desc *d, vector pos, vector up, int mat) {
+    vector apex = vector_add(pos, vector_scale(up, d->cone.height));
+    return (scene_cone){
+        .apex     = apex,
+        .axis     = vector_scale(up, -1.0f),   /* apex → base */
+        .height   = d->cone.height,
+        .radius   = d->cone.radius,
+        .material = mat,
+    };
+}
+
+static scene_torus bf_make_torus(const bf_visual_desc *d, vector pos, vector up, int mat) {
+    vector center = vector_add(pos, vector_scale(up, d->torus.minor_radius));
+    return (scene_torus){
+        .center       = center,
+        .axis         = up,
+        .major_radius = d->torus.major_radius,
+        .minor_radius = d->torus.minor_radius,
+        .material     = mat,
+    };
+}
+
 bf_engine *bf_create(bf_config config) {
     bf_engine *e = calloc(1, sizeof(bf_engine));
     if (!e) return NULL;
@@ -933,6 +1094,7 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
 
         bf_visual *vis = &e->visuals[i];
         vector pos = e->positions[i].position;
+        vector up = bf_map_normal_at(&e->map, pos.x, pos.z);
 
         switch (vis->desc.kind) {
         case BF_VIS_SPRITE: {
@@ -955,90 +1117,37 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
         }
         case BF_VIS_SPHERE: {
             int mat_id = scene_add_material(e->scene, vis->desc.sphere.material);
-            vector center = pos;
-            center.y += vis->desc.sphere.radius;   /* rest on terrain */
-            scene_add_sphere(e->scene, (scene_sphere){
-                .center = center,
-                .radius = vis->desc.sphere.radius,
-                .material = mat_id,
-            });
+            scene_add_sphere(e->scene, bf_make_sphere(&vis->desc, pos, mat_id));
             break;
         }
         case BF_VIS_BOX: {
             int mat_id = scene_add_material(e->scene, vis->desc.box.material);
-            vector he = vis->desc.box.half_extents;
-            /* Lift by the largest half-extent so any rotation still clears
-             * the ground; for an unrotated cube this matches he.y. */
-            float lift = fmaxf(he.x, fmaxf(he.y, he.z));
-            vector center = pos;
-            center.y += lift;
-            scene_add_box(e->scene, scene_box_obb(center, he,
-                                                   vis->desc.box.euler_xyz, mat_id));
+            scene_add_box(e->scene, bf_make_box(&vis->desc, pos, up, mat_id));
             break;
         }
         case BF_VIS_DISC: {
             int mat_id = scene_add_material(e->scene, vis->desc.disc.material);
-            vector center = pos;
-            /* Float the disc above the ground at one radius; reads as a
-             * floating coin regardless of normal orientation. */
-            center.y += vis->desc.disc.radius;
-            scene_add_disc(e->scene, (scene_disc){
-                .center   = center,
-                .normal   = vis->desc.disc.normal,
-                .radius   = vis->desc.disc.radius,
-                .material = mat_id,
-            });
+            scene_add_disc(e->scene, bf_make_disc(&vis->desc, pos, up, mat_id));
             break;
         }
         case BF_VIS_CYLINDER: {
             int mat_id = scene_add_material(e->scene, vis->desc.cylinder.material);
-            vector center = pos;
-            center.y += vis->desc.cylinder.half_height;   /* assumes mostly +Y axis */
-            scene_add_cylinder(e->scene, (scene_cylinder){
-                .center      = center,
-                .axis        = vis->desc.cylinder.axis,
-                .radius      = vis->desc.cylinder.radius,
-                .half_height = vis->desc.cylinder.half_height,
-                .material    = mat_id,
-            });
+            scene_add_cylinder(e->scene, bf_make_cylinder(&vis->desc, pos, up, mat_id));
             break;
         }
         case BF_VIS_TRIANGLE: {
             int mat_id = scene_add_material(e->scene, vis->desc.triangle.material);
-            scene_add_triangle(e->scene, (scene_triangle){
-                .v0       = vector_add(pos, vis->desc.triangle.v0),
-                .v1       = vector_add(pos, vis->desc.triangle.v1),
-                .v2       = vector_add(pos, vis->desc.triangle.v2),
-                .material = mat_id,
-            });
+            scene_add_triangle(e->scene, bf_make_triangle(&vis->desc, pos, up, mat_id));
             break;
         }
         case BF_VIS_CONE: {
             int mat_id = scene_add_material(e->scene, vis->desc.cone.material);
-            /* Base on the ground, apex pointing up. */
-            vector apex = pos;
-            apex.y += vis->desc.cone.height;
-            scene_add_cone(e->scene, (scene_cone){
-                .apex     = apex,
-                .axis     = (vector){0.0f, -1.0f, 0.0f},
-                .height   = vis->desc.cone.height,
-                .radius   = vis->desc.cone.radius,
-                .material = mat_id,
-            });
+            scene_add_cone(e->scene, bf_make_cone(&vis->desc, pos, up, mat_id));
             break;
         }
         case BF_VIS_TORUS: {
             int mat_id = scene_add_material(e->scene, vis->desc.torus.material);
-            vector center = pos;
-            /* Float the torus so the bottom of the tube rests on the ground. */
-            center.y += vis->desc.torus.minor_radius;
-            scene_add_torus(e->scene, (scene_torus){
-                .center       = center,
-                .axis         = (vector){0.0f, 1.0f, 0.0f},
-                .major_radius = vis->desc.torus.major_radius,
-                .minor_radius = vis->desc.torus.minor_radius,
-                .material     = mat_id,
-            });
+            scene_add_torus(e->scene, bf_make_torus(&vis->desc, pos, up, mat_id));
             break;
         }
         case BF_VIS_NONE:
@@ -1086,6 +1195,8 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
         if ((e->component_masks[i] & pick_mask) != pick_mask) continue;
 
         bf_visual *vis = &e->visuals[i];
+        vector pos = e->positions[i].position;
+        vector up = bf_map_normal_at(&e->map, pos.x, pos.z);
         float t = -1.0f;
         vector hp = {0};
 
@@ -1096,7 +1207,7 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
             if (!sheet) break;
             int sheet_id = vis->desc.sprite.sheet_id;
             scene_sprite spr = {
-                .position = e->positions[i].position,
+                .position = pos,
                 .direction = e->positions[i].direction,
                 .width = e->sprites[sheet_id].width,
                 .height = e->sprites[sheet_id].height,
@@ -1107,88 +1218,43 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
             break;
         }
         case BF_VIS_SPHERE: {
-            vector center = e->positions[i].position;
-            center.y += vis->desc.sphere.radius;
-            scene_sphere s = {
-                .center = center,
-                .radius = vis->desc.sphere.radius,
-                .material = 0,  /* unused for intersection */
-            };
+            scene_sphere s = bf_make_sphere(&vis->desc, pos, 0);
             t = rt_intersect_sphere(origin, ray_dir, &s);
-            if (t > 0.0f)
-                hp = vector_add(origin, vector_scale(ray_dir, t));
+            if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;
         }
         case BF_VIS_BOX: {
-            vector he = vis->desc.box.half_extents;
-            float lift = fmaxf(he.x, fmaxf(he.y, he.z));
-            vector center = e->positions[i].position;
-            center.y += lift;
-            scene_box b = scene_box_obb(center, he, vis->desc.box.euler_xyz, 0);
+            scene_box b = bf_make_box(&vis->desc, pos, up, 0);
             t = rt_intersect_box(origin, ray_dir, &b);
             if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;
         }
         case BF_VIS_DISC: {
-            vector center = e->positions[i].position;
-            center.y += vis->desc.disc.radius;
-            scene_disc d = {
-                .center = center, .normal = vis->desc.disc.normal,
-                .radius = vis->desc.disc.radius, .material = 0,
-            };
+            scene_disc d = bf_make_disc(&vis->desc, pos, up, 0);
             t = rt_intersect_disc(origin, ray_dir, &d);
             if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;
         }
         case BF_VIS_CYLINDER: {
-            vector center = e->positions[i].position;
-            center.y += vis->desc.cylinder.half_height;
-            scene_cylinder c = {
-                .center = center, .axis = vis->desc.cylinder.axis,
-                .radius = vis->desc.cylinder.radius,
-                .half_height = vis->desc.cylinder.half_height,
-                .material = 0,
-            };
+            scene_cylinder c = bf_make_cylinder(&vis->desc, pos, up, 0);
             t = rt_intersect_cylinder(origin, ray_dir, &c);
             if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;
         }
         case BF_VIS_TRIANGLE: {
-            vector p = e->positions[i].position;
-            scene_triangle tri = {
-                .v0 = vector_add(p, vis->desc.triangle.v0),
-                .v1 = vector_add(p, vis->desc.triangle.v1),
-                .v2 = vector_add(p, vis->desc.triangle.v2),
-                .material = 0,
-            };
+            scene_triangle tri = bf_make_triangle(&vis->desc, pos, up, 0);
             t = rt_intersect_triangle(origin, ray_dir, &tri);
             if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;
         }
         case BF_VIS_CONE: {
-            vector p = e->positions[i].position;
-            vector apex = p;
-            apex.y += vis->desc.cone.height;
-            scene_cone c = {
-                .apex = apex, .axis = (vector){0.0f, -1.0f, 0.0f},
-                .height = vis->desc.cone.height,
-                .radius = vis->desc.cone.radius,
-                .material = 0,
-            };
+            scene_cone c = bf_make_cone(&vis->desc, pos, up, 0);
             t = rt_intersect_cone(origin, ray_dir, &c);
             if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;
         }
         case BF_VIS_TORUS: {
-            vector p = e->positions[i].position;
-            vector center = p;
-            center.y += vis->desc.torus.minor_radius;
-            scene_torus tor = {
-                .center = center, .axis = (vector){0.0f, 1.0f, 0.0f},
-                .major_radius = vis->desc.torus.major_radius,
-                .minor_radius = vis->desc.torus.minor_radius,
-                .material = 0,
-            };
+            scene_torus tor = bf_make_torus(&vis->desc, pos, up, 0);
             t = rt_intersect_torus(origin, ray_dir, &tor);
             if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;

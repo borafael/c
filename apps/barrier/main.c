@@ -295,7 +295,6 @@ int main(int argc, char *argv[]) {
         { .base_speed = 3.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_BOX,
             .box = { .half_extents = {0.9f, 0.9f, 0.9f},
-                     .euler_xyz   = {0.3f, 0.7f, 0.2f},   /* tilted cube */
                      .material    = unit_material } } },
         { .base_speed = 3.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_CYLINDER,
