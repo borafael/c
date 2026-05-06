@@ -117,6 +117,17 @@ typedef struct {
     int    material;
 } scene_cone;
 
+/* Torus. A circle of `minor_radius` swept around the `axis` (unit) at
+ * distance `major_radius` from the `center`. The swept central circle
+ * lies in the plane through `center` perpendicular to `axis`. */
+typedef struct {
+    vector center;
+    vector axis;
+    float  major_radius;   /* R: distance from center to tube center */
+    float  minor_radius;   /* r: tube thickness */
+    int    material;
+} scene_torus;
+
 typedef struct {
     vector v0, v1, v2;
     int    material;
@@ -382,6 +393,7 @@ typedef struct {
     scene_disc        *discs;        int disc_count,        disc_capacity;
     scene_cylinder    *cylinders;    int cylinder_count,    cylinder_capacity;
     scene_cone        *cones;        int cone_count,         cone_capacity;
+    scene_torus       *toruses;      int torus_count,        torus_capacity;
     scene_triangle    *triangles;    int triangle_count,    triangle_capacity;
     scene_box         *boxes;        int box_count,         box_capacity;
     scene_sprite      *sprites;      int sprite_count,      sprite_capacity;
@@ -417,6 +429,7 @@ int scene_add_plane(scene *s, scene_plane plane);
 int scene_add_disc(scene *s, scene_disc disc);
 int scene_add_cylinder(scene *s, scene_cylinder cylinder);
 int scene_add_cone(scene *s, scene_cone cone);
+int scene_add_torus(scene *s, scene_torus torus);
 int scene_add_triangle(scene *s, scene_triangle triangle);
 int scene_add_box(scene *s, scene_box box);
 int scene_add_sprite(scene *s, scene_sprite sprite);

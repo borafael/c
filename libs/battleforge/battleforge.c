@@ -1027,6 +1027,20 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
             });
             break;
         }
+        case BF_VIS_TORUS: {
+            int mat_id = scene_add_material(e->scene, vis->desc.torus.material);
+            vector center = pos;
+            /* Float the torus so the bottom of the tube rests on the ground. */
+            center.y += vis->desc.torus.minor_radius;
+            scene_add_torus(e->scene, (scene_torus){
+                .center       = center,
+                .axis         = (vector){0.0f, 1.0f, 0.0f},
+                .major_radius = vis->desc.torus.major_radius,
+                .minor_radius = vis->desc.torus.minor_radius,
+                .material     = mat_id,
+            });
+            break;
+        }
         case BF_VIS_NONE:
             break;
         }
@@ -1162,6 +1176,20 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
                 .material = 0,
             };
             t = rt_intersect_cone(origin, ray_dir, &c);
+            if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
+            break;
+        }
+        case BF_VIS_TORUS: {
+            vector p = e->positions[i].position;
+            vector center = p;
+            center.y += vis->desc.torus.minor_radius;
+            scene_torus tor = {
+                .center = center, .axis = (vector){0.0f, 1.0f, 0.0f},
+                .major_radius = vis->desc.torus.major_radius,
+                .minor_radius = vis->desc.torus.minor_radius,
+                .material = 0,
+            };
+            t = rt_intersect_torus(origin, ray_dir, &tor);
             if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;
         }

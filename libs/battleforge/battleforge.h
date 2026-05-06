@@ -11,6 +11,7 @@
 #include "disc.h"
 #include "cylinder.h"
 #include "cone.h"
+#include "torus.h"
 #include "triangle.h"
 #include "sprite.h"
 #include "heightfield.h"
@@ -35,6 +36,7 @@ typedef enum {
     BF_VIS_CYLINDER = 5,
     BF_VIS_TRIANGLE = 6,
     BF_VIS_CONE     = 7,
+    BF_VIS_TORUS    = 8,
 } bf_visual_kind;
 
 typedef struct {
@@ -56,6 +58,11 @@ typedef struct {
          * fixed pointing down so the base rests on the ground. */
         struct { float radius; float height;
                  scene_material material; } cone;
+        /* Torus: lies in the XZ plane (axis = +Y) and floats at
+         * (minor_radius + major_radius offset along Y) so the bottom of
+         * the tube clears the ground. */
+        struct { float major_radius; float minor_radius;
+                 scene_material material; } torus;
     };
 } bf_visual_desc;
 

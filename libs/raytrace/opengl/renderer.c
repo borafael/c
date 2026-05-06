@@ -10,6 +10,7 @@
 #include "disc.h"
 #include "cylinder.h"
 #include "cone.h"
+#include "torus.h"
 #include "triangle.h"
 #include "box.h"
 #include "sprite.h"
@@ -53,6 +54,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "uniform int   u_disc_count;\n"
 "uniform int   u_cylinder_count;\n"
 "uniform int   u_cone_count;\n"
+"uniform int   u_torus_count;\n"
 "uniform int   u_triangle_count;\n"
 "uniform int   u_box_count;\n"
 "uniform int   u_sprite_count;\n"
@@ -68,6 +70,10 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "/* Finite cone: apex_h.xyz = apex, apex_h.w = height; axis_r.xyz = unit\n"
 " * axis from apex toward base, axis_r.w = base radius. */\n"
 "struct Cone     { vec4 apex_h; vec4 axis_r; ivec4 mat; };\n"
+"/* Torus: center_R.xyz = center, center_R.w = major radius;\n"
+" * axis_r.xyz = unit axis (normal to the swept plane), axis_r.w = minor\n"
+" * radius. */\n"
+"struct Torus    { vec4 center_R; vec4 axis_r; ivec4 mat; };\n"
 "/* Triangle: positions in v0..v2.xyz, per-vertex u in v0..v2.w, vertex\n"
 " * normals in n0..n2.xyz, per-vertex v in n0..n2.w. mat.x = material\n"
 " * index, mat.y = 1 if per-vertex normals/uvs are valid (mesh tris),\n"
@@ -131,6 +137,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "layout(std430, binding = 15) readonly buffer MeshBuf     { Mesh     meshes[];     };\n"
 "layout(std430, binding = 16) readonly buffer BvhBuf      { BvhNode  bvh_nodes[];  };\n"
 "layout(std430, binding = 17) readonly buffer ConeBuf     { Cone     cones[];      };\n"
+"layout(std430, binding = 18) readonly buffer TorusBuf    { Torus    toruses[];    };\n"
 "\n"
 "/* Sampler for sprite frames: all frames packed into one texture array */\n"
 "uniform sampler2DArray u_sprite_atlas;\n"
@@ -246,6 +253,146 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    float cosa2  = (height*height) / (height*height + radius*radius);\n"
 "    vec3  cp     = hp - apex;\n"
 "    return normalize(cp * cosa2 - axis * dot(cp, axis));\n"
+"}\n"
+"\n"
+"/* Torus quartic solver. Same math as libs/raytrace/cpu/torus.c — see\n"
+"   that file for the derivation. We solve\n"
+"     (|P|^2 + R^2 - r^2)^2 = 4 R^2 * |P_perp|^2\n"
+"   for P(t) = ro' + t*rd, with ro' = ro - center, via Ferrari's method. */\n"
+"float cbrt_signed_t(float x) {\n"
+"    return (x >= 0.0) ? pow(x, 1.0/3.0) : -pow(-x, 1.0/3.0);\n"
+"}\n"
+"\n"
+"int torus_solve_cubic(float a, float b, float c, float d, out float roots[3]) {\n"
+"    if (abs(a) < 1e-14) {\n"
+"        if (abs(b) < 1e-14) {\n"
+"            if (abs(c) < 1e-14) return 0;\n"
+"            roots[0] = -d / c;\n"
+"            return 1;\n"
+"        }\n"
+"        float disc = c*c - 4.0*b*d;\n"
+"        if (disc < 0.0) return 0;\n"
+"        float sq = sqrt(disc);\n"
+"        roots[0] = (-c + sq) / (2.0*b);\n"
+"        roots[1] = (-c - sq) / (2.0*b);\n"
+"        return 2;\n"
+"    }\n"
+"    float p = b / a;\n"
+"    float q = c / a;\n"
+"    float r = d / a;\n"
+"    float P = q - p*p/3.0;\n"
+"    float Q = 2.0*p*p*p/27.0 - p*q/3.0 + r;\n"
+"    float disc = Q*Q/4.0 + P*P*P/27.0;\n"
+"    if (disc > 0.0) {\n"
+"        float s = sqrt(disc);\n"
+"        float u = cbrt_signed_t(-Q/2.0 + s);\n"
+"        float v = cbrt_signed_t(-Q/2.0 - s);\n"
+"        roots[0] = u + v - p/3.0;\n"
+"        return 1;\n"
+"    } else if (disc < 0.0) {\n"
+"        float rr = sqrt(-P*P*P/27.0);\n"
+"        float cphi = clamp(-Q/(2.0*rr), -1.0, 1.0);\n"
+"        float phi = acos(cphi);\n"
+"        float m = 2.0 * sqrt(-P/3.0);\n"
+"        roots[0] = m * cos(phi/3.0)                              - p/3.0;\n"
+"        roots[1] = m * cos((phi + 2.0*3.14159265358979)/3.0)     - p/3.0;\n"
+"        roots[2] = m * cos((phi + 4.0*3.14159265358979)/3.0)     - p/3.0;\n"
+"        return 3;\n"
+"    } else {\n"
+"        float u = cbrt_signed_t(-Q/2.0);\n"
+"        roots[0] =  2.0*u - p/3.0;\n"
+"        roots[1] = -u     - p/3.0;\n"
+"        return 2;\n"
+"    }\n"
+"}\n"
+"\n"
+"int torus_solve_quartic(float e4, float e3, float e2, float e1, float e0,\n"
+"                        out float roots[4]) {\n"
+"    if (abs(e4) < 1e-20) return 0;\n"
+"    float B = e3 / e4;\n"
+"    float C = e2 / e4;\n"
+"    float D = e1 / e4;\n"
+"    float E = e0 / e4;\n"
+"    float p = C - 3.0*B*B/8.0;\n"
+"    float q = D - B*C/2.0 + B*B*B/8.0;\n"
+"    float r = E - B*D/4.0 + B*B*C/16.0 - 3.0*B*B*B*B/256.0;\n"
+"    float shift = B / 4.0;\n"
+"    int n = 0;\n"
+"    if (abs(q) < 1e-12) {\n"
+"        float disc = p*p - 4.0*r;\n"
+"        if (disc < 0.0) return 0;\n"
+"        float sq = sqrt(disc);\n"
+"        float y2a = (-p + sq) / 2.0;\n"
+"        float y2b = (-p - sq) / 2.0;\n"
+"        if (y2a >= 0.0) { float ya = sqrt(y2a); roots[n++] =  ya - shift; roots[n++] = -ya - shift; }\n"
+"        if (y2b >= 0.0) { float yb = sqrt(y2b); roots[n++] =  yb - shift; roots[n++] = -yb - shift; }\n"
+"        return n;\n"
+"    }\n"
+"    float cr[3];\n"
+"    int ncr = torus_solve_cubic(8.0, -4.0*p, -8.0*r, 4.0*p*r - q*q, cr);\n"
+"    if (ncr <= 0) return 0;\n"
+"    float z = cr[0];\n"
+"    for (int i = 1; i < ncr; i++) if (cr[i] > z) z = cr[i];\n"
+"    float s2 = 2.0*z - p;\n"
+"    if (s2 <= 0.0) return 0;\n"
+"    float s = sqrt(s2);\n"
+"    float half_qs = q / (2.0 * s);\n"
+"    {\n"
+"        float bb = -s; float cc = z - half_qs;\n"
+"        float disc = bb*bb - 4.0*cc;\n"
+"        if (disc >= 0.0) {\n"
+"            float sq = sqrt(disc);\n"
+"            roots[n++] = (-bb + sq)/2.0 - shift;\n"
+"            roots[n++] = (-bb - sq)/2.0 - shift;\n"
+"        }\n"
+"    }\n"
+"    {\n"
+"        float bb =  s; float cc = z + half_qs;\n"
+"        float disc = bb*bb - 4.0*cc;\n"
+"        if (disc >= 0.0) {\n"
+"            float sq = sqrt(disc);\n"
+"            roots[n++] = (-bb + sq)/2.0 - shift;\n"
+"            roots[n++] = (-bb - sq)/2.0 - shift;\n"
+"        }\n"
+"    }\n"
+"    return n;\n"
+"}\n"
+"\n"
+"float isect_torus(vec3 ro, vec3 rd, Torus t) {\n"
+"    float R = t.center_R.w;\n"
+"    float r = t.axis_r.w;\n"
+"    vec3 rop = ro - t.center_R.xyz;\n"
+"    vec3 A   = t.axis_r.xyz;\n"
+"    float yo = dot(rop, A);\n"
+"    float ya = dot(rd,  A);\n"
+"    float a  = dot(rd,  rd);\n"
+"    float b  = dot(rop, rd);\n"
+"    float g  = dot(rop, rop);\n"
+"    float q  = g + R*R - r*r;\n"
+"    float e4 = a * a;\n"
+"    float e3 = 4.0 * a * b;\n"
+"    float e2 = 4.0*b*b + 2.0*a*q - 4.0*R*R*(a - ya*ya);\n"
+"    float e1 = 4.0*b*q - 8.0*R*R*(b - yo*ya);\n"
+"    float e0 = q*q - 4.0*R*R*(g - yo*yo);\n"
+"    float roots[4];\n"
+"    int nr = torus_solve_quartic(e4, e3, e2, e1, e0, roots);\n"
+"    float best = -1.0;\n"
+"    for (int i = 0; i < nr; i++) {\n"
+"        float tt = roots[i];\n"
+"        if (tt > 1e-4 && (best < 0.0 || tt < best)) best = tt;\n"
+"    }\n"
+"    return best;\n"
+"}\n"
+"\n"
+"vec3 normal_torus(vec3 hp, Torus t) {\n"
+"    vec3 cp = hp - t.center_R.xyz;\n"
+"    vec3 A  = t.axis_r.xyz;\n"
+"    float ax = dot(cp, A);\n"
+"    vec3 perp = cp - A * ax;\n"
+"    float plen = length(perp);\n"
+"    if (plen < 1e-8) return normalize(A);\n"
+"    vec3 closest = t.center_R.xyz + perp * (t.center_R.w / plen);\n"
+"    return normalize(hp - closest);\n"
 "}\n"
 "\n"
 "float isect_triangle_bary(vec3 ro, vec3 rd, Triangle tri,\n"
@@ -562,6 +709,20 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                (height > 0.0) ? (h / height) : 0.0);\n"
 "}\n"
 "\n"
+"vec2 uv_torus(vec3 hp, Torus t) {\n"
+"    vec3 cp = hp - t.center_R.xyz;\n"
+"    vec3 A  = t.axis_r.xyz;\n"
+"    float ax = dot(cp, A);\n"
+"    vec3 radial = cp - A * ax;\n"
+"    vec3 ta, tb;\n"
+"    rt_tangent_basis(A, ta, tb);\n"
+"    float x = dot(radial, ta);\n"
+"    float z = dot(radial, tb);\n"
+"    float radial_len = sqrt(x*x + z*z);\n"
+"    return vec2(atan(z, x) / (2.0 * RT_PI) + 0.5,\n"
+"                atan(ax, radial_len - t.center_R.w) / (2.0 * RT_PI) + 0.5);\n"
+"}\n"
+"\n"
 "vec2 uv_box_face(vec3 lhp, Box b) {\n"
 "    vec3 h = b.he.xyz;\n"
 "    float dx = h.x - abs(lhp.x);\n"
@@ -781,6 +942,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "const uint RT_OBJ_KIND_SPRITE      = 8u;\n"
 "const uint RT_OBJ_KIND_HEIGHTFIELD = 9u;\n"
 "const uint RT_OBJ_KIND_CONE        = 10u;\n"
+"const uint RT_OBJ_KIND_TORUS       = 11u;\n"
 "\n"
 "struct HitInfo {\n"
 "    bool  hit;\n"
@@ -890,6 +1052,23 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            h.hit = true;\n"
 "            h.distance = t;\n"
 "            h.object_id = (RT_OBJ_KIND_CONE << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"        }\n"
+"    }\n"
+"    for (int i = 0; i < u_torus_count; i++) {\n"
+"        float t = isect_torus(ro, rd, toruses[i]);\n"
+"        if (t > 0.0 && t < closest_t) {\n"
+"            closest_t = t;\n"
+"            vec3 hp = ro + rd * t;\n"
+"            h.point  = hp;\n"
+"            h.normal = normal_torus(hp, toruses[i]);\n"
+"            vec2 uv  = uv_torus(hp, toruses[i]);\n"
+"            int midx = toruses[i].mat.x;\n"
+"            h.albedo = material_sample(midx, hp, uv);\n"
+"            h.reflectivity = materials[midx].scale.y;\n"
+"            h.unlit = (materials[midx].kind.z != 0);\n"
+"            h.hit = true;\n"
+"            h.distance = t;\n"
+"            h.object_id = (RT_OBJ_KIND_TORUS << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_triangle_count; i++) {\n"
@@ -1197,6 +1376,7 @@ typedef struct { float point[4]; float normal[4]; int32_t mat[4]; } gpu_plane;
 typedef struct { float cr[4]; float normal[4]; int32_t mat[4]; } gpu_disc;
 typedef struct { float center_hh[4]; float axis_r[4]; int32_t mat[4]; } gpu_cylinder;
 typedef struct { float apex_h[4];    float axis_r[4]; int32_t mat[4]; } gpu_cone;
+typedef struct { float center_R[4];  float axis_r[4]; int32_t mat[4]; } gpu_torus;
 /* Triangle layout: positions in v0/v1/v2.xyz, per-vertex u in v0/v1/v2.w;
  * vertex normals in n0/n1/n2.xyz, per-vertex v in n0/n1/n2.w. mat = (mat,
  * has_vertex_data, _, _). Mesh tris carry per-vertex data; explicit scene
@@ -1257,12 +1437,13 @@ typedef struct {
     int g_tex_w, g_tex_h;
 
     /* SSBOs */
-    GLuint ssbo[18];
+    GLuint ssbo[19];
     /* bindings:
      * [0] unused  [1] spheres  [2] planes  [3] discs  [4] cylinders
      * [5] triangles [6] boxes  [7] sprites [8] lights [9] heightfields
      * [10] hf heights [11] hf normals [12] hf colors [13] materials
-     * [14] textures (metadata) [15] meshes [16] bvh nodes [17] cones */
+     * [14] textures (metadata) [15] meshes [16] bvh nodes [17] cones
+     * [18] toruses */
 
     /* Sprite texture atlas: one 2D texture array, all sprite frames */
     GLuint sprite_atlas;
@@ -1276,6 +1457,7 @@ typedef struct {
     GLint u_cam_origin, u_cam_forward, u_cam_right, u_cam_up;
     GLint u_fov, u_ambient;
     GLint u_sphere_count, u_plane_count, u_disc_count, u_cylinder_count, u_cone_count;
+    GLint u_torus_count;
     GLint u_triangle_count, u_box_count, u_sprite_count;
     GLint u_heightfield_count, u_light_count, u_mesh_count, u_material_count;
     GLint u_sprite_atlas, u_tex_atlas;
@@ -1350,6 +1532,7 @@ static void cache_uniform_locs(opengl_backend_data *d) {
     d->u_disc_count         = glGetUniformLocation(d->program, "u_disc_count");
     d->u_cylinder_count     = glGetUniformLocation(d->program, "u_cylinder_count");
     d->u_cone_count         = glGetUniformLocation(d->program, "u_cone_count");
+    d->u_torus_count        = glGetUniformLocation(d->program, "u_torus_count");
     d->u_triangle_count     = glGetUniformLocation(d->program, "u_triangle_count");
     d->u_box_count          = glGetUniformLocation(d->program, "u_box_count");
     d->u_sprite_count       = glGetUniformLocation(d->program, "u_sprite_count");
@@ -1508,6 +1691,24 @@ static void upload_cones(opengl_backend_data *d, const scene *s) {
         }
     }
     upload_ssbo(d->ssbo[17], 17, buf, sizeof(gpu_cone), n);
+    free(buf);
+}
+
+static void upload_toruses(opengl_backend_data *d, const scene *s) {
+    int n = s->torus_count;
+    gpu_torus *buf = NULL;
+    if (n > 0) {
+        buf = malloc(sizeof(gpu_torus) * (size_t)n);
+        for (int i = 0; i < n; i++) {
+            const scene_torus *t = &s->toruses[i];
+            set_vec4(buf[i].center_R, t->center.x, t->center.y, t->center.z,
+                     t->major_radius);
+            set_vec4(buf[i].axis_r,   t->axis.x,   t->axis.y,   t->axis.z,
+                     t->minor_radius);
+            set_mat_ivec4(buf[i].mat, t->material);
+        }
+    }
+    upload_ssbo(d->ssbo[18], 18, buf, sizeof(gpu_torus), n);
     free(buf);
 }
 
@@ -1935,7 +2136,7 @@ static void opengl_destroy(rt_renderer *r) {
         if (d->g_normal_tex) glDeleteTextures(1, &d->g_normal_tex);
         if (d->sprite_atlas) glDeleteTextures(1, &d->sprite_atlas);
         if (d->tex_atlas)    glDeleteTextures(1, &d->tex_atlas);
-        for (int i = 0; i < 18; i++) {
+        for (int i = 0; i < 19; i++) {
             if (d->ssbo[i]) glDeleteBuffers(1, &d->ssbo[i]);
         }
         rt_scene_accel_dispose(&d->accel);
@@ -1979,6 +2180,7 @@ static void opengl_render(rt_renderer *r,
     upload_discs(d, scn);
     upload_cylinders(d, scn);
     upload_cones(d, scn);
+    upload_toruses(d, scn);
     upload_triangles(d, scn);
     upload_meshes(d, scn, mesh_world_inv);
     upload_boxes(d, scn);
@@ -2002,6 +2204,7 @@ static void opengl_render(rt_renderer *r,
     glUniform1i(d->u_disc_count,        scn->disc_count);
     glUniform1i(d->u_cylinder_count,    scn->cylinder_count);
     glUniform1i(d->u_cone_count,        scn->cone_count);
+    glUniform1i(d->u_torus_count,       scn->torus_count);
     /* The triangle SSBO still holds explicit + mesh triangles, but only
      * explicit ones are scanned linearly here; mesh triangles are reached
      * through the per-mesh BVH traversal below. */
@@ -2070,7 +2273,7 @@ rt_renderer *rt_opengl_renderer_create(void) {
     if (!d->program) { free(d); free(r); return NULL; }
 
     cache_uniform_locs(d);
-    glGenBuffers(18, d->ssbo);
+    glGenBuffers(19, d->ssbo);
 
     r->destroy_fn   = opengl_destroy;
     r->render_fn    = opengl_render;

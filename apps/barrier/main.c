@@ -287,7 +287,7 @@ int main(int argc, char *argv[]) {
     /* Load default map via the command system (after materials are set). */
     load_map_from_ini("battlefield", engine, NULL);
 
-    /* One unit per primitive kind, all sharing the mirror material. */
+    /* One unit per 3D primitive kind, all sharing the mirror material. */
     bf_unit_def unit_defs[] = {
         { .base_speed = 3.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_SPHERE,
@@ -298,27 +298,21 @@ int main(int argc, char *argv[]) {
                      .euler_xyz   = {0.3f, 0.7f, 0.2f},   /* tilted cube */
                      .material    = unit_material } } },
         { .base_speed = 3.0f, .has_selection = 1, .visual = {
-            .kind = BF_VIS_DISC,
-            .disc = { .radius = 1.1f, .normal = {0.0f, 1.0f, 0.0f},
-                      .material = unit_material } } },
-        { .base_speed = 3.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_CYLINDER,
             .cylinder = { .radius = 0.7f, .half_height = 1.0f,
                           .axis = {0.0f, 1.0f, 0.0f},
                           .material = unit_material } } },
         { .base_speed = 3.0f, .has_selection = 1, .visual = {
-            .kind = BF_VIS_TRIANGLE,
-            .triangle = { .v0 = {-1.0f, 0.0f, 0.0f},
-                          .v1 = { 1.0f, 0.0f, 0.0f},
-                          .v2 = { 0.0f, 2.0f, 0.0f},
-                          .material = unit_material } } },
-        { .base_speed = 3.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_CONE,
             .cone = { .radius = 0.9f, .height = 2.0f,
                       .material = unit_material } } },
+        { .base_speed = 3.0f, .has_selection = 1, .visual = {
+            .kind = BF_VIS_TORUS,
+            .torus = { .major_radius = 0.9f, .minor_radius = 0.35f,
+                       .material = unit_material } } },
     };
     static const char *unit_names[] = {
-        "orb", "cube", "disc", "pillar", "wedge", "spire"
+        "orb", "cube", "pillar", "spire", "donut"
     };
     #define NUM_UNIT_TYPES ((int)(sizeof(unit_defs) / sizeof(unit_defs[0])))
     #define ARMY_SIZE      NUM_UNIT_TYPES
