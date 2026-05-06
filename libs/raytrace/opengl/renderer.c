@@ -9,6 +9,7 @@
 #include "plane.h"
 #include "disc.h"
 #include "cylinder.h"
+#include "cone.h"
 #include "triangle.h"
 #include "box.h"
 #include "sprite.h"
@@ -51,6 +52,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "uniform int   u_plane_count;\n"
 "uniform int   u_disc_count;\n"
 "uniform int   u_cylinder_count;\n"
+"uniform int   u_cone_count;\n"
 "uniform int   u_triangle_count;\n"
 "uniform int   u_box_count;\n"
 "uniform int   u_sprite_count;\n"
@@ -63,6 +65,9 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "struct Plane    { vec4 point; vec4 normal; ivec4 mat; };\n"
 "struct Disc     { vec4 center_radius; vec4 normal; ivec4 mat; };\n"
 "struct Cylinder { vec4 center_hh; vec4 axis_radius; ivec4 mat; };\n"
+"/* Finite cone: apex_h.xyz = apex, apex_h.w = height; axis_r.xyz = unit\n"
+" * axis from apex toward base, axis_r.w = base radius. */\n"
+"struct Cone     { vec4 apex_h; vec4 axis_r; ivec4 mat; };\n"
 "/* Triangle: positions in v0..v2.xyz, per-vertex u in v0..v2.w, vertex\n"
 " * normals in n0..n2.xyz, per-vertex v in n0..n2.w. mat.x = material\n"
 " * index, mat.y = 1 if per-vertex normals/uvs are valid (mesh tris),\n"
@@ -125,6 +130,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "layout(std430, binding = 14) readonly buffer TexBuf      { Texture  textures[];   };\n"
 "layout(std430, binding = 15) readonly buffer MeshBuf     { Mesh     meshes[];     };\n"
 "layout(std430, binding = 16) readonly buffer BvhBuf      { BvhNode  bvh_nodes[];  };\n"
+"layout(std430, binding = 17) readonly buffer ConeBuf     { Cone     cones[];      };\n"
 "\n"
 "/* Sampler for sprite frames: all frames packed into one texture array */\n"
 "uniform sampler2DArray u_sprite_atlas;\n"
@@ -197,6 +203,49 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    float proj = dot(diff, c.axis_radius.xyz);\n"
 "    vec3 on_axis = c.center_hh.xyz + c.axis_radius.xyz * proj;\n"
 "    return normalize(hp - on_axis);\n"
+"}\n"
+"\n"
+"/* Finite cone (lateral surface). Implicit equation\n"
+" *   ((P-apex).axis)^2 = cosa2 * |P-apex|^2,\n"
+" * with cosa2 = h^2 / (h^2 + r^2). Same algebra as the CPU path. */\n"
+"float isect_cone(vec3 ro, vec3 rd, Cone c, out vec3 hp_out) {\n"
+"    vec3  apex   = c.apex_h.xyz;\n"
+"    float height = c.apex_h.w;\n"
+"    vec3  axis   = c.axis_r.xyz;\n"
+"    float radius = c.axis_r.w;\n"
+"    float h2     = height * height;\n"
+"    float r2     = radius * radius;\n"
+"    float cosa2  = h2 / (h2 + r2);\n"
+"    vec3  oa     = ro - apex;\n"
+"    float k1     = dot(oa, axis);\n"
+"    float k2     = dot(rd, axis);\n"
+"    float a = k2*k2 - cosa2 * dot(rd, rd);\n"
+"    float b = 2.0 * (k1*k2 - cosa2 * dot(rd, oa));\n"
+"    float cc = k1*k1 - cosa2 * dot(oa, oa);\n"
+"    if (abs(a) < 1e-8) return -1.0;\n"
+"    float disc = b*b - 4.0*a*cc;\n"
+"    if (disc < 0.0) return -1.0;\n"
+"    float sq = sqrt(disc);\n"
+"    float t0 = (-b - sq) / (2.0 * a);\n"
+"    float t1 = (-b + sq) / (2.0 * a);\n"
+"    if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }\n"
+"    for (int i = 0; i < 2; i++) {\n"
+"        float t = (i == 0) ? t0 : t1;\n"
+"        if (t < 0.0) continue;\n"
+"        float proj = k1 + t * k2;\n"
+"        if (proj >= 0.0 && proj <= height) { hp_out = ro + rd * t; return t; }\n"
+"    }\n"
+"    return -1.0;\n"
+"}\n"
+"\n"
+"vec3 normal_cone(vec3 hp, Cone c) {\n"
+"    vec3  apex   = c.apex_h.xyz;\n"
+"    float height = c.apex_h.w;\n"
+"    vec3  axis   = c.axis_r.xyz;\n"
+"    float radius = c.axis_r.w;\n"
+"    float cosa2  = (height*height) / (height*height + radius*radius);\n"
+"    vec3  cp     = hp - apex;\n"
+"    return normalize(cp * cosa2 - axis * dot(cp, axis));\n"
 "}\n"
 "\n"
 "float isect_triangle_bary(vec3 ro, vec3 rd, Triangle tri,\n"
@@ -500,6 +549,19 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                (h + c.center_hh.w) / (2.0 * c.center_hh.w));\n"
 "}\n"
 "\n"
+"vec2 uv_cone(vec3 hp, Cone c) {\n"
+"    vec3  apex   = c.apex_h.xyz;\n"
+"    float height = c.apex_h.w;\n"
+"    vec3  axis   = c.axis_r.xyz;\n"
+"    vec3 cp = hp - apex;\n"
+"    float h = dot(cp, axis);\n"
+"    vec3 radial = cp - axis * h;\n"
+"    vec3 ta, tb;\n"
+"    rt_tangent_basis(axis, ta, tb);\n"
+"    return vec2(atan(dot(radial, tb), dot(radial, ta)) / (2.0 * RT_PI) + 0.5,\n"
+"                (height > 0.0) ? (h / height) : 0.0);\n"
+"}\n"
+"\n"
 "vec2 uv_box_face(vec3 lhp, Box b) {\n"
 "    vec3 h = b.he.xyz;\n"
 "    float dx = h.x - abs(lhp.x);\n"
@@ -718,6 +780,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "const uint RT_OBJ_KIND_BOX         = 7u;\n"
 "const uint RT_OBJ_KIND_SPRITE      = 8u;\n"
 "const uint RT_OBJ_KIND_HEIGHTFIELD = 9u;\n"
+"const uint RT_OBJ_KIND_CONE        = 10u;\n"
 "\n"
 "struct HitInfo {\n"
 "    bool  hit;\n"
@@ -810,6 +873,23 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            h.hit = true;\n"
 "            h.distance = t;\n"
 "            h.object_id = (RT_OBJ_KIND_CYLINDER << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"        }\n"
+"    }\n"
+"    for (int i = 0; i < u_cone_count; i++) {\n"
+"        vec3 hp;\n"
+"        float t = isect_cone(ro, rd, cones[i], hp);\n"
+"        if (t > 0.0 && t < closest_t) {\n"
+"            closest_t = t;\n"
+"            h.point  = hp;\n"
+"            h.normal = normal_cone(hp, cones[i]);\n"
+"            vec2 uv  = uv_cone(hp, cones[i]);\n"
+"            int midx = cones[i].mat.x;\n"
+"            h.albedo = material_sample(midx, hp, uv);\n"
+"            h.reflectivity = materials[midx].scale.y;\n"
+"            h.unlit = (materials[midx].kind.z != 0);\n"
+"            h.hit = true;\n"
+"            h.distance = t;\n"
+"            h.object_id = (RT_OBJ_KIND_CONE << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_triangle_count; i++) {\n"
@@ -1116,6 +1196,7 @@ typedef struct { float cr[4]; int32_t mat[4]; } gpu_sphere;
 typedef struct { float point[4]; float normal[4]; int32_t mat[4]; } gpu_plane;
 typedef struct { float cr[4]; float normal[4]; int32_t mat[4]; } gpu_disc;
 typedef struct { float center_hh[4]; float axis_r[4]; int32_t mat[4]; } gpu_cylinder;
+typedef struct { float apex_h[4];    float axis_r[4]; int32_t mat[4]; } gpu_cone;
 /* Triangle layout: positions in v0/v1/v2.xyz, per-vertex u in v0/v1/v2.w;
  * vertex normals in n0/n1/n2.xyz, per-vertex v in n0/n1/n2.w. mat = (mat,
  * has_vertex_data, _, _). Mesh tris carry per-vertex data; explicit scene
@@ -1176,12 +1257,12 @@ typedef struct {
     int g_tex_w, g_tex_h;
 
     /* SSBOs */
-    GLuint ssbo[17];
+    GLuint ssbo[18];
     /* bindings:
      * [0] unused  [1] spheres  [2] planes  [3] discs  [4] cylinders
      * [5] triangles [6] boxes  [7] sprites [8] lights [9] heightfields
      * [10] hf heights [11] hf normals [12] hf colors [13] materials
-     * [14] textures (metadata) [15] meshes [16] bvh nodes */
+     * [14] textures (metadata) [15] meshes [16] bvh nodes [17] cones */
 
     /* Sprite texture atlas: one 2D texture array, all sprite frames */
     GLuint sprite_atlas;
@@ -1194,7 +1275,7 @@ typedef struct {
     /* Cached uniform locations */
     GLint u_cam_origin, u_cam_forward, u_cam_right, u_cam_up;
     GLint u_fov, u_ambient;
-    GLint u_sphere_count, u_plane_count, u_disc_count, u_cylinder_count;
+    GLint u_sphere_count, u_plane_count, u_disc_count, u_cylinder_count, u_cone_count;
     GLint u_triangle_count, u_box_count, u_sprite_count;
     GLint u_heightfield_count, u_light_count, u_mesh_count, u_material_count;
     GLint u_sprite_atlas, u_tex_atlas;
@@ -1268,6 +1349,7 @@ static void cache_uniform_locs(opengl_backend_data *d) {
     d->u_plane_count        = glGetUniformLocation(d->program, "u_plane_count");
     d->u_disc_count         = glGetUniformLocation(d->program, "u_disc_count");
     d->u_cylinder_count     = glGetUniformLocation(d->program, "u_cylinder_count");
+    d->u_cone_count         = glGetUniformLocation(d->program, "u_cone_count");
     d->u_triangle_count     = glGetUniformLocation(d->program, "u_triangle_count");
     d->u_box_count          = glGetUniformLocation(d->program, "u_box_count");
     d->u_sprite_count       = glGetUniformLocation(d->program, "u_sprite_count");
@@ -1410,6 +1492,22 @@ static void upload_cylinders(opengl_backend_data *d, const scene *s) {
         }
     }
     upload_ssbo(d->ssbo[4], 4, buf, sizeof(gpu_cylinder), n);
+    free(buf);
+}
+
+static void upload_cones(opengl_backend_data *d, const scene *s) {
+    int n = s->cone_count;
+    gpu_cone *buf = NULL;
+    if (n > 0) {
+        buf = malloc(sizeof(gpu_cone) * (size_t)n);
+        for (int i = 0; i < n; i++) {
+            const scene_cone *c = &s->cones[i];
+            set_vec4(buf[i].apex_h, c->apex.x, c->apex.y, c->apex.z, c->height);
+            set_vec4(buf[i].axis_r, c->axis.x, c->axis.y, c->axis.z, c->radius);
+            set_mat_ivec4(buf[i].mat, c->material);
+        }
+    }
+    upload_ssbo(d->ssbo[17], 17, buf, sizeof(gpu_cone), n);
     free(buf);
 }
 
@@ -1837,7 +1935,7 @@ static void opengl_destroy(rt_renderer *r) {
         if (d->g_normal_tex) glDeleteTextures(1, &d->g_normal_tex);
         if (d->sprite_atlas) glDeleteTextures(1, &d->sprite_atlas);
         if (d->tex_atlas)    glDeleteTextures(1, &d->tex_atlas);
-        for (int i = 0; i < 17; i++) {
+        for (int i = 0; i < 18; i++) {
             if (d->ssbo[i]) glDeleteBuffers(1, &d->ssbo[i]);
         }
         rt_scene_accel_dispose(&d->accel);
@@ -1880,6 +1978,7 @@ static void opengl_render(rt_renderer *r,
     upload_planes(d, scn);
     upload_discs(d, scn);
     upload_cylinders(d, scn);
+    upload_cones(d, scn);
     upload_triangles(d, scn);
     upload_meshes(d, scn, mesh_world_inv);
     upload_boxes(d, scn);
@@ -1902,6 +2001,7 @@ static void opengl_render(rt_renderer *r,
     glUniform1i(d->u_plane_count,       scn->plane_count);
     glUniform1i(d->u_disc_count,        scn->disc_count);
     glUniform1i(d->u_cylinder_count,    scn->cylinder_count);
+    glUniform1i(d->u_cone_count,        scn->cone_count);
     /* The triangle SSBO still holds explicit + mesh triangles, but only
      * explicit ones are scanned linearly here; mesh triangles are reached
      * through the per-mesh BVH traversal below. */
@@ -1970,7 +2070,7 @@ rt_renderer *rt_opengl_renderer_create(void) {
     if (!d->program) { free(d); free(r); return NULL; }
 
     cache_uniform_locs(d);
-    glGenBuffers(17, d->ssbo);
+    glGenBuffers(18, d->ssbo);
 
     r->destroy_fn   = opengl_destroy;
     r->render_fn    = opengl_render;

@@ -1013,6 +1013,20 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
             });
             break;
         }
+        case BF_VIS_CONE: {
+            int mat_id = scene_add_material(e->scene, vis->desc.cone.material);
+            /* Base on the ground, apex pointing up. */
+            vector apex = pos;
+            apex.y += vis->desc.cone.height;
+            scene_add_cone(e->scene, (scene_cone){
+                .apex     = apex,
+                .axis     = (vector){0.0f, -1.0f, 0.0f},
+                .height   = vis->desc.cone.height,
+                .radius   = vis->desc.cone.radius,
+                .material = mat_id,
+            });
+            break;
+        }
         case BF_VIS_NONE:
             break;
         }
@@ -1134,6 +1148,20 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
                 .material = 0,
             };
             t = rt_intersect_triangle(origin, ray_dir, &tri);
+            if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
+            break;
+        }
+        case BF_VIS_CONE: {
+            vector p = e->positions[i].position;
+            vector apex = p;
+            apex.y += vis->desc.cone.height;
+            scene_cone c = {
+                .apex = apex, .axis = (vector){0.0f, -1.0f, 0.0f},
+                .height = vis->desc.cone.height,
+                .radius = vis->desc.cone.radius,
+                .material = 0,
+            };
+            t = rt_intersect_cone(origin, ray_dir, &c);
             if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;
         }

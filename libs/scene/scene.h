@@ -105,6 +105,18 @@ typedef struct {
     int    material;
 } scene_cylinder;
 
+/* Finite cone. Apex is the pointy end; `axis` (unit) points from the
+ * apex toward the base circle, which sits at `apex + axis * height` with
+ * radius `radius`. Lateral surface only — no base cap (drop a scene_disc
+ * at the base if you want a closed cone). */
+typedef struct {
+    vector apex;
+    vector axis;
+    float  height;
+    float  radius;
+    int    material;
+} scene_cone;
+
 typedef struct {
     vector v0, v1, v2;
     int    material;
@@ -369,6 +381,7 @@ typedef struct {
     scene_plane       *planes;       int plane_count,       plane_capacity;
     scene_disc        *discs;        int disc_count,        disc_capacity;
     scene_cylinder    *cylinders;    int cylinder_count,    cylinder_capacity;
+    scene_cone        *cones;        int cone_count,         cone_capacity;
     scene_triangle    *triangles;    int triangle_count,    triangle_capacity;
     scene_box         *boxes;        int box_count,         box_capacity;
     scene_sprite      *sprites;      int sprite_count,      sprite_capacity;
@@ -403,6 +416,7 @@ int scene_add_sphere(scene *s, scene_sphere sphere);
 int scene_add_plane(scene *s, scene_plane plane);
 int scene_add_disc(scene *s, scene_disc disc);
 int scene_add_cylinder(scene *s, scene_cylinder cylinder);
+int scene_add_cone(scene *s, scene_cone cone);
 int scene_add_triangle(scene *s, scene_triangle triangle);
 int scene_add_box(scene *s, scene_box box);
 int scene_add_sprite(scene *s, scene_sprite sprite);

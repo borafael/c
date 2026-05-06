@@ -10,6 +10,7 @@
 #include "box.h"
 #include "disc.h"
 #include "cylinder.h"
+#include "cone.h"
 #include "triangle.h"
 #include "sprite.h"
 #include "heightfield.h"
@@ -33,6 +34,7 @@ typedef enum {
     BF_VIS_DISC     = 4,
     BF_VIS_CYLINDER = 5,
     BF_VIS_TRIANGLE = 6,
+    BF_VIS_CONE     = 7,
 } bf_visual_kind;
 
 typedef struct {
@@ -50,6 +52,10 @@ typedef struct {
         /* Triangle vertices are offsets from the entity position. */
         struct { vector v0, v1, v2;
                  scene_material material; } triangle;
+        /* Cone: apex sits at entity position + (0, height, 0); axis is
+         * fixed pointing down so the base rests on the ground. */
+        struct { float radius; float height;
+                 scene_material material; } cone;
     };
 } bf_visual_desc;
 

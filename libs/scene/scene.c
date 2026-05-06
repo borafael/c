@@ -91,6 +91,7 @@ scene *scene_create(void) {
     s->plane_capacity        = SCENE_DEFAULT_CAPACITY;
     s->disc_capacity         = SCENE_DEFAULT_CAPACITY;
     s->cylinder_capacity     = SCENE_DEFAULT_CAPACITY;
+    s->cone_capacity         = SCENE_DEFAULT_CAPACITY;
     s->triangle_capacity     = SCENE_DEFAULT_CAPACITY;
     s->box_capacity          = SCENE_DEFAULT_CAPACITY;
     s->sprite_capacity       = SCENE_DEFAULT_CAPACITY;
@@ -108,6 +109,7 @@ scene *scene_create(void) {
     s->planes       = malloc(sizeof(scene_plane)       * s->plane_capacity);
     s->discs        = malloc(sizeof(scene_disc)        * s->disc_capacity);
     s->cylinders    = malloc(sizeof(scene_cylinder)    * s->cylinder_capacity);
+    s->cones        = malloc(sizeof(scene_cone)        * s->cone_capacity);
     s->triangles    = malloc(sizeof(scene_triangle)    * s->triangle_capacity);
     s->boxes        = malloc(sizeof(scene_box)         * s->box_capacity);
     s->sprites      = malloc(sizeof(scene_sprite)      * s->sprite_capacity);
@@ -121,8 +123,8 @@ scene *scene_create(void) {
     s->animations   = malloc(sizeof(scene_animation)   * s->animation_capacity);
 
     if (!s->spheres || !s->planes || !s->discs || !s->cylinders ||
-        !s->triangles || !s->boxes || !s->sprites || !s->heightfields ||
-        !s->lights || !s->materials || !s->textures ||
+        !s->cones || !s->triangles || !s->boxes || !s->sprites ||
+        !s->heightfields || !s->lights || !s->materials || !s->textures ||
         !s->meshes || !s->skins || !s->nodes || !s->animations) {
         scene_destroy(s);
         return NULL;
@@ -177,6 +179,7 @@ void scene_clear(scene *s) {
     s->plane_count       = 0;
     s->disc_count        = 0;
     s->cylinder_count    = 0;
+    s->cone_count        = 0;
     s->triangle_count    = 0;
     s->box_count         = 0;
     s->sprite_count      = 0;
@@ -199,6 +202,7 @@ void scene_destroy(scene *s) {
     free(s->planes);
     free(s->discs);
     free(s->cylinders);
+    free(s->cones);
     free(s->triangles);
     free(s->boxes);
     free(s->sprites);
@@ -238,6 +242,13 @@ int scene_add_cylinder(scene *s, scene_cylinder cylinder) {
     GROW_IF_NEEDED(s->cylinders, s->cylinder_count, s->cylinder_capacity, scene_cylinder);
     int idx = s->cylinder_count;
     s->cylinders[s->cylinder_count++] = cylinder;
+    return idx;
+}
+
+int scene_add_cone(scene *s, scene_cone cone) {
+    GROW_IF_NEEDED(s->cones, s->cone_count, s->cone_capacity, scene_cone);
+    int idx = s->cone_count;
+    s->cones[s->cone_count++] = cone;
     return idx;
 }
 

@@ -312,9 +312,13 @@ int main(int argc, char *argv[]) {
                           .v1 = { 1.0f, 0.0f, 0.0f},
                           .v2 = { 0.0f, 2.0f, 0.0f},
                           .material = unit_material } } },
+        { .base_speed = 3.0f, .has_selection = 1, .visual = {
+            .kind = BF_VIS_CONE,
+            .cone = { .radius = 0.9f, .height = 2.0f,
+                      .material = unit_material } } },
     };
     static const char *unit_names[] = {
-        "orb", "cube", "disc", "pillar", "wedge"
+        "orb", "cube", "disc", "pillar", "wedge", "spire"
     };
     #define NUM_UNIT_TYPES ((int)(sizeof(unit_defs) / sizeof(unit_defs[0])))
     #define ARMY_SIZE      NUM_UNIT_TYPES

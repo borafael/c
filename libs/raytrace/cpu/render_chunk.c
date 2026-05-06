@@ -3,6 +3,7 @@
 #include "plane.h"
 #include "disc.h"
 #include "cylinder.h"
+#include "cone.h"
 #include "triangle.h"
 #include "box.h"
 #include "sprite.h"
@@ -50,6 +51,19 @@ static inline void uv_cylinder(vector hp, const scene_cylinder *cyl,
     float z = vector_dot(radial, tan_b);
     *u = atan2f(z, x) / (2.0f * (float)M_PI) + 0.5f;
     *v = (h + cyl->half_height) / (2.0f * cyl->half_height);
+}
+
+static inline void uv_cone(vector hp, const scene_cone *cone,
+                           float *u, float *v) {
+    vector cp = vector_sub(hp, cone->apex);
+    float h = vector_dot(cp, cone->axis);
+    vector radial = vector_sub(cp, vector_scale(cone->axis, h));
+    vector tan_a, tan_b;
+    tangent_basis(cone->axis, &tan_a, &tan_b);
+    float x = vector_dot(radial, tan_a);
+    float z = vector_dot(radial, tan_b);
+    *u = atan2f(z, x) / (2.0f * (float)M_PI) + 0.5f;
+    *v = (cone->height > 0.0f) ? (h / cone->height) : 0.0f;
 }
 
 /* Procedural-noise helpers (must match the GLSL versions in
@@ -297,6 +311,7 @@ static inline scene_color material_sample(const scene_material *m,
 #define RT_OBJ_KIND_BOX         7
 #define RT_OBJ_KIND_SPRITE      8
 #define RT_OBJ_KIND_HEIGHTFIELD 9
+#define RT_OBJ_KIND_CONE       10
 #define RT_OBJ_ID(kind, index) \
     (((uint32_t)(kind) << 24) | ((uint32_t)(index) & 0x00FFFFFFu))
 
@@ -394,6 +409,25 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.hit = 1;
             h.distance = t;
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_CYLINDER, i);
+        }
+    }
+
+    for (int i = 0; i < scene->cone_count; i++) {
+        float t = rt_intersect_cone(ro, rd, &scene->cones[i]);
+        if (t > 0.0f && t < closest_t) {
+            closest_t = t;
+            vector hp = vector_add(ro, vector_scale(rd, t));
+            h.point = hp;
+            h.normal = rt_normal_cone(hp, &scene->cones[i]);
+            float u, v;
+            uv_cone(hp, &scene->cones[i], &u, &v);
+            const scene_material *m = &scene->materials[scene->cones[i].material];
+            h.albedo = material_sample(m, scene->textures, hp, u, v);
+            h.reflectivity = m->reflectivity;
+            h.unlit = m->unlit;
+            h.hit = 1;
+            h.distance = t;
+            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_CONE, i);
         }
     }
 
