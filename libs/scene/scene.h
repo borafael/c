@@ -437,6 +437,15 @@ int scene_add_heightfield(scene *s, const scene_heightfield *hf);
 int scene_add_light(scene *s, scene_light light);
 int scene_add_material(scene *s, scene_material material);
 int scene_add_texture(scene *s, scene_texture texture);
+
+/* Load a PNG/JPG/etc. from disk into ARGB8888 pixels. The returned
+ * scene_texture owns its `pixels` buffer — callers must release it
+ * with scene_texture_free after the scene that references it has
+ * been destroyed. Pixel layout matches the renderer's expectation:
+ * A in bits 24-31, R in 16-23, G in 8-15, B in 0-7.
+ * Returns 0 on success, -1 on failure (file missing, decode error). */
+int  scene_texture_load(const char *path, scene_texture *out);
+void scene_texture_free(scene_texture *t);
 int scene_add_mesh(scene *s, scene_mesh mesh);
 /* Append a skin record. Takes ownership of all owned buffers (bones,
  * influences, rest_positions, rest_normals) — they are freed by

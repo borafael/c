@@ -204,15 +204,25 @@ static void build_test_texture(void) {
     }
 }
 
+/* Owned by build_scene; freed in main after scene_destroy. NULL pixels
+ * means the load failed and we fell back to the procedural texture. */
+static scene_texture rtdemo_loaded_texture;
+
 static void build_scene(scene **scene, scene_camera **camera) {
     *scene = scene_create();
 
-    build_test_texture();
-    int t_grid = scene_add_texture(*scene, (scene_texture){
-        .pixels = rtdemo_test_texture_pixels,
-        .width  = RTDEMO_TEX_SIZE,
-        .height = RTDEMO_TEX_SIZE,
-    });
+    int t_grid;
+    if (scene_texture_load("apps/rtdemo/assets/test_texture.png",
+                           &rtdemo_loaded_texture) == 0) {
+        t_grid = scene_add_texture(*scene, rtdemo_loaded_texture);
+    } else {
+        build_test_texture();
+        t_grid = scene_add_texture(*scene, (scene_texture){
+            .pixels = rtdemo_test_texture_pixels,
+            .width  = RTDEMO_TEX_SIZE,
+            .height = RTDEMO_TEX_SIZE,
+        });
+    }
 
     int m_red    = scene_add_material(*scene, (scene_material){
         .albedo    = {200,  40,  40},  /* deep red stone */
@@ -572,6 +582,7 @@ int main(int argc, char *argv[]) {
     free(pixels);
     scene_camera_destroy(camera);
     scene_destroy(scene);
+    scene_texture_free(&rtdemo_loaded_texture);
     SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);
     SDL_Quit();
