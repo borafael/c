@@ -347,12 +347,15 @@ vector bf_map_normal_at(const bf_map *map, float x, float z) {
 }
 
 /* Build an orthonormal basis (out_x, up, out_z) where `up` is treated as
- * the local +Y. When up = world +Y this yields out_x = +X and out_z = +Z,
- * so flat terrain reproduces the legacy axis-aligned placement. */
+ * the local +Y. The local +X is world +X projected onto the tangent
+ * plane (so it stays aligned with world +X on slopes — never flipping),
+ * and likewise for local +Z. On flat terrain this is the world basis.
+ * Falls back to projecting +Z when up is nearly parallel to world +X. */
 static void basis_from_up(vector up, vector *out_x, vector *out_z) {
-    vector ref = (fabsf(up.y) > 0.99f) ? (vector){0.0f, 0.0f, 1.0f}
-                                       : (vector){0.0f, 1.0f, 0.0f};
-    vector x = vector_normalize(vector_cross(up, ref));
+    vector ref = (fabsf(up.x) > 0.99f) ? (vector){0.0f, 0.0f, 1.0f}
+                                       : (vector){1.0f, 0.0f, 0.0f};
+    float d = vector_dot(ref, up);
+    vector x = vector_normalize(vector_sub(ref, vector_scale(up, d)));
     vector z = vector_cross(x, up);
     *out_x = x;
     *out_z = z;
