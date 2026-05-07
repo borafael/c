@@ -129,9 +129,11 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "layout(std430, binding = 7)  readonly buffer SpriteBuf   { Sprite   sprites[];    };\n"
 "layout(std430, binding = 8)  readonly buffer LightBuf    { Light    lights[];     };\n"
 "layout(std430, binding = 9)  readonly buffer HfBuf       { Heightfield heightfields[]; };\n"
-"layout(std430, binding = 10) readonly buffer HfHeights   { float hf_heights[];    };\n"
-"layout(std430, binding = 11) readonly buffer HfNormals   { float hf_normals[];    };\n"
-"layout(std430, binding = 12) readonly buffer HfColors    { uint  hf_colors[];     };\n"
+"/* Heights, normals, and colors are concatenated into one buffer to keep us\n"
+" * under GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS (commonly 16). Heights and\n"
+" * normals are floats reinterpreted via uintBitsToFloat; colors are uint\n"
+" * channels (0..255). offsets.x/y/z point into this single buffer. */\n"
+"layout(std430, binding = 10) readonly buffer HfDataBuf   { uint hf_data[]; };\n"
 "layout(std430, binding = 13) readonly buffer MatBuf      { Material materials[];  };\n"
 "layout(std430, binding = 14) readonly buffer TexBuf      { Texture  textures[];   };\n"
 "layout(std430, binding = 15) readonly buffer MeshBuf     { Mesh     meshes[];     };\n"
@@ -570,14 +572,16 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    int cols = int(hf.grid.y);\n"
 "    float cw = hf.origin_world.z / float(cols - 1);\n"
 "    float cd = hf.origin_world.w / float(rows - 1);\n"
-"    float h = hf_heights[hf.offsets.x + r * cols + c];\n"
+"    float h = uintBitsToFloat(hf_data[hf.offsets.x + r * cols + c]);\n"
 "    return vec3(hf.origin_world.x + float(c) * cw, h, hf.origin_world.y + float(r) * cd);\n"
 "}\n"
 "\n"
 "vec3 hf_vertex_normal(Heightfield hf, int r, int c) {\n"
 "    int cols = int(hf.grid.y);\n"
 "    int base = hf.offsets.y + (r * cols + c) * 3;\n"
-"    return vec3(hf_normals[base], hf_normals[base + 1], hf_normals[base + 2]);\n"
+"    return vec3(uintBitsToFloat(hf_data[base]),\n"
+"                uintBitsToFloat(hf_data[base + 1]),\n"
+"                uintBitsToFloat(hf_data[base + 2]));\n"
 "}\n"
 "\n"
 "float hf_tri(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, out float uu, out float vv) {\n"
@@ -1258,9 +1262,9 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                int cells_per_row = int(heightfields[i].grid.y) - 1;\n"
 "                int ci = heightfields[i].offsets.z + (cr * cells_per_row + cc) * 3;\n"
 "                vec3 cell = vec3(\n"
-"                    float(hf_colors[ci])     / 255.0,\n"
-"                    float(hf_colors[ci + 1]) / 255.0,\n"
-"                    float(hf_colors[ci + 2]) / 255.0\n"
+"                    float(hf_data[ci])     / 255.0,\n"
+"                    float(hf_data[ci + 1]) / 255.0,\n"
+"                    float(hf_data[ci + 2]) / 255.0\n"
 "                );\n"
 "                int hf_mat = heightfields[i].offsets.w;\n"
 "                if (hf_mat >= 0 && hf_mat < u_material_count) {\n"
@@ -1441,9 +1445,13 @@ typedef struct {
     /* bindings:
      * [0] unused  [1] spheres  [2] planes  [3] discs  [4] cylinders
      * [5] triangles [6] boxes  [7] sprites [8] lights [9] heightfields
-     * [10] hf heights [11] hf normals [12] hf colors [13] materials
-     * [14] textures (metadata) [15] meshes [16] bvh nodes [17] cones
-     * [18] toruses */
+     * [10] hf data (heights+normals+colors packed) [11] unused
+     * [12] unused [13] materials [14] textures (metadata) [15] meshes
+     * [16] bvh nodes [17] cones [18] toruses
+     *
+     * Slots 11 and 12 were freed by collapsing the three heightfield
+     * arrays into one block at slot 10 — keeps us under
+     * GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS (commonly 16). */
 
     /* Sprite texture atlas: one 2D texture array, all sprite frames */
     GLuint sprite_atlas;
@@ -2062,8 +2070,11 @@ static void upload_sprites(opengl_backend_data *d, const scene *s) {
     glUniform1i(d->u_sprite_atlas, 0);
 }
 
-/* Heightfields: pack metadata + concatenated heights/normals/colors
- * into four SSBOs. */
+/* Heightfields: pack metadata into one SSBO and concatenate
+ * heights / normals / colors into a single uint SSBO (heights and
+ * normals are stored as raw float bits; colors are uint channels).
+ * Keeping the data in one block lets us stay under
+ * GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS (commonly 16). */
 static void upload_heightfields(opengl_backend_data *d, const scene *s) {
     int n = s->heightfield_count;
 
@@ -2074,19 +2085,21 @@ static void upload_heightfields(opengl_backend_data *d, const scene *s) {
         total_cells += (s->heightfields[i].rows - 1) * (s->heightfields[i].cols - 1);
     }
 
+    /* Layout in hf_data (uint indices):
+     *   [0, total_verts)                               heights (float bits)
+     *   [total_verts, total_verts + total_verts*3)     normals (float bits)
+     *   [total_verts + total_verts*3, total_uints)     colors  (0..255) */
+    int normals_base = total_verts;
+    int colors_base  = total_verts + total_verts * 3;
+    int total_uints  = colors_base + total_cells * 3;
+
     gpu_heightfield *meta = NULL;
-    float *heights = NULL;
-    float *normals = NULL;
-    uint32_t *colors = NULL;
+    uint32_t *data = NULL;
 
     if (n > 0) {
         meta = malloc(sizeof(gpu_heightfield) * (size_t)n);
-        if (total_verts > 0) {
-            heights = malloc(sizeof(float) * (size_t)total_verts);
-            normals = malloc(sizeof(float) * (size_t)total_verts * 3);
-        }
-        if (total_cells > 0) {
-            colors  = malloc(sizeof(uint32_t) * (size_t)total_cells * 3);
+        if (total_uints > 0) {
+            data = malloc(sizeof(uint32_t) * (size_t)total_uints);
         }
         int h_off = 0, n_off = 0, c_off = 0;
         for (int i = 0; i < n; i++) {
@@ -2098,16 +2111,21 @@ static void upload_heightfields(opengl_backend_data *d, const scene *s) {
                      hf->world_width, hf->world_depth);
             set_vec4(meta[i].grid, (float)hf->rows, (float)hf->cols,
                      hf->max_height, 0.0f);
+            /* Offsets are absolute indices into hf_data. */
             meta[i].offsets[0] = h_off;
-            meta[i].offsets[1] = n_off;
-            meta[i].offsets[2] = c_off;
+            meta[i].offsets[1] = normals_base + n_off;
+            meta[i].offsets[2] = colors_base  + c_off;
             meta[i].offsets[3] = (int32_t)hf->material;  /* -1 = raw cell colors */
 
-            memcpy(&heights[h_off], hf->heights, sizeof(float) * (size_t)verts);
-            memcpy(&normals[n_off], hf->normals, sizeof(float) * (size_t)verts * 3);
-            /* Expand uint8 color bytes to uint32 for std430 alignment */
+            /* float bits → uint slots; std430 makes float and uint share
+             * the same 4-byte layout, so memcpy is a valid reinterpretation. */
+            memcpy(&data[h_off],
+                   hf->heights, sizeof(float) * (size_t)verts);
+            memcpy(&data[normals_base + n_off],
+                   hf->normals, sizeof(float) * (size_t)verts * 3);
+            /* Expand uint8 color bytes to uint32 for std430 alignment. */
             for (int k = 0; k < cells * 3; k++) {
-                colors[c_off + k] = (uint32_t)hf->colors[k];
+                data[colors_base + c_off + k] = (uint32_t)hf->colors[k];
             }
 
             h_off += verts;
@@ -2116,12 +2134,10 @@ static void upload_heightfields(opengl_backend_data *d, const scene *s) {
         }
     }
 
-    upload_ssbo(d->ssbo[9],  9,  meta,    sizeof(gpu_heightfield), n);
-    upload_ssbo(d->ssbo[10], 10, heights, sizeof(float),           total_verts);
-    upload_ssbo(d->ssbo[11], 11, normals, sizeof(float),           total_verts * 3);
-    upload_ssbo(d->ssbo[12], 12, colors,  sizeof(uint32_t),        total_cells * 3);
+    upload_ssbo(d->ssbo[9],  9,  meta, sizeof(gpu_heightfield), n);
+    upload_ssbo(d->ssbo[10], 10, data, sizeof(uint32_t),        total_uints);
 
-    free(meta); free(heights); free(normals); free(colors);
+    free(meta); free(data);
 }
 
 /* -- Vtable ----------------------------------------------------------- */
