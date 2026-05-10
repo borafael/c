@@ -609,7 +609,8 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
                      const rt_viewport *viewport,
                      int y_start, int y_end,
                      const scene_camera *camera, const scene *scene,
-                     const mat4 *mesh_world_inv) {
+                     const mat4 *mesh_world_inv,
+                     int interlace_field) {
     int width = viewport->width;
     int height = viewport->height;
     float fov_factor = (float)height / (2.0f * tanf(viewport->fov / 2.0f));
@@ -617,7 +618,10 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
     float half_w = (float)width * 0.5f;
     float half_h = (float)height * 0.5f;
 
+    int interlace = (interlace_field == 0 || interlace_field == 1);
+
     for (int y = y_start; y < y_end; y++) {
+        if (interlace && (y & 1) != interlace_field) continue;
         for (int x = 0; x < width; x++) {
             float sx = ((float)x - half_w) / fov_factor;
             float sy = -((float)y - half_h) / fov_factor;

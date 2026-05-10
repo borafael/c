@@ -22,6 +22,12 @@
  * OBJ-loader behavior). The renderer transforms the ray into mesh-local
  * space before BVH traversal.
  *
+ * `interlace_field` selects every-other-row rendering: 0 renders even
+ * rows only, 1 renders odd rows only, any other value (e.g. -1) renders
+ * all rows. Skipped rows are left untouched in pixel_buf and gbuf —
+ * callers that care about the visual must fill them (e.g., by
+ * duplicating the previous row).
+ *
  * CPU backend internal — only cpu/renderer.c calls this function. Not
  * part of the public rt_renderer API.
  */
@@ -29,6 +35,7 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
                      const rt_viewport *viewport,
                      int y_start, int y_end,
                      const scene_camera *camera, const scene *scene,
-                     const mat4 *mesh_world_inv);
+                     const mat4 *mesh_world_inv,
+                     int interlace_field);
 
 #endif /* RT_CPU_RENDER_CHUNK_H */

@@ -55,6 +55,13 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   SDL/X. Auto-detects best glyph/colour mode;
 │   │                     #   --glyph and --color force the fallbacks; G/C
 │   │                     #   cycle modes live. POSIX-only.
+│   ├── lowspec/          # Headless CPU-raytrace benchmark (no SDL/GL).
+│   │                     #   --res WxH, --threads N, --frames N,
+│   │                     #   --interlace (render every other row),
+│   │                     #   --scene simple|mirror, --out frame.ppm.
+│   │                     #   Reports avg/best/worst ms, FPS, rays/sec —
+│   │                     #   used to estimate the floor of host CPUs the
+│   │                     #   raytracer can hit real-time on.
 │   └── barrier/          # Game prototype using battleforge (ECS + sprites + maps)
 ├── scripts/              # build-windows.sh (MinGW cross-compile, all apps), Blender sprite tools
 └── docs/                 # slice-sprite-guide.md, ideas/, plans/, superpowers/
@@ -112,6 +119,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 # Other
 ./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
 ./apps/barrier/barrier                   # Game prototype
+./apps/lowspec/lowspec --threads 1       # Headless CPU-raytrace bench (no SDL); --res, --interlace, --out
 ```
 
 ## Dependencies
@@ -125,7 +133,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 ## Patterns
 
 - **Renderer-agnostic scene**: `libs/scene` holds pure data (materials, primitives, meshes, nodes, skins, animations). Game code populates a `scene` each frame; renderers in `libs/raytrace` consume it read-only and produce pixels. Camera is a sibling type, not a field of `scene` (one world, many views).
-- **Pluggable backends**: `rt_renderer` vtable (see `libs/raytrace/renderer.h`) dispatches to CPU or OpenGL implementations. `rt_renderer_available()` lets callers check which backends were compiled in. `rt_renderer_render` optionally fills an `rt_gbuffer` (object_id / depth / normal channels) — both backends produce identical G-buffer output, including through reflection bounces.
+- **Pluggable backends**: `rt_renderer` vtable (see `libs/raytrace/renderer.h`) dispatches to CPU or OpenGL implementations. `rt_renderer_available()` lets callers check which backends were compiled in. `rt_renderer_render` optionally fills an `rt_gbuffer` (object_id / depth / normal channels) — both backends produce identical G-buffer output, including through reflection bounces. The CPU backend honors two env vars read at `rt_renderer_create` time: `RT_CPU_THREADS=N` pins the thread-pool size (useful when the host CPU isn't representative of the target), and `RT_CPU_INTERLACE=0|1` renders only even or odd rows (skipped rows are left untouched in the framebuffer).
 - **Materials + textures**: `scene_material` (in `libs/scene/scene.h`) carries albedo, reflectivity, an `unlit` flag, and a `scene_tex_kind` — either an image texture (`scene_texture`) or one of the procedural kinds: `CHECKER`, `GRADIENT`, `NOISE`, `WOOD`, `MARBLE`, `CELLS`, `CRACKS`, `STRIPES`, `DOTS`, `BRICKS`, `CLOUDS`, `SPOTS`. Reflections are recursive up to a renderer-defined bounce budget.
 - **Mesh acceleration**: `scene_mesh` carries vertex/index buffers plus an opaque `accel` slot. `rt_scene_build_accel` (CPU) builds a per-mesh BVH; the OpenGL backend builds GPU BVH descriptors. A bounding sphere (`bounds_center` / `bounds_radius`) gives an O(1) reject before BVH traversal.
 - **Node hierarchy + skinning**: `scene_node` forms a tree via `parent_index`. `scene_resolve_world_transforms` does one forward sweep to compute world matrices. Meshes with `skin_index >= 0` are deformed by `scene_apply_skinning` from a preserved rest pose; rigid meshes follow the existing path. FBX import lives in `libs/scene/fbx.c` (via vendored ufbx).

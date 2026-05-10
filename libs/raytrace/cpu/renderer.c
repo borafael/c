@@ -12,6 +12,22 @@
 #include <unistd.h>
 #endif
 
+/* Env-var overrides honored at rt_cpu_renderer_create time.
+ *   RT_CPU_THREADS=<int>   pin the CPU backend's thread-pool size
+ *                          (1..N, clamped to >= 1). Useful for
+ *                          benchmarking on a machine that does not
+ *                          represent the target hardware.
+ *   RT_CPU_INTERLACE=0|1   render only even (0) or odd (1) rows;
+ *                          unset or any other value renders all rows. */
+static int env_int_or(const char *name, int fallback) {
+    const char *s = getenv(name);
+    if (!s || !*s) return fallback;
+    char *end = NULL;
+    long v = strtol(s, &end, 10);
+    if (end == s) return fallback;
+    return (int)v;
+}
+
 static int detect_cpu_count(void) {
 #ifdef _WIN32
     SYSTEM_INFO si;
@@ -31,6 +47,7 @@ typedef struct {
     const scene_camera *camera;
     const scene *scene;
     const mat4 *mesh_world_inv;
+    int interlace_field;
 } cpu_render_task;
 
 typedef struct {
@@ -38,12 +55,14 @@ typedef struct {
     int num_threads;
     cpu_render_task *tasks;       /* scratch buffer sized [num_threads] */
     rt_scene_accel accel;         /* per-frame node/mesh transform scratch */
+    int interlace_field;          /* -1 full, 0/1 even/odd rows only */
 } cpu_backend_data;
 
 static void cpu_render_task_fn(void *arg) {
     cpu_render_task *t = arg;
     rt_render_chunk(t->pixels, t->gbuf, t->viewport, t->y_start, t->y_end,
-                    t->camera, t->scene, t->mesh_world_inv);
+                    t->camera, t->scene, t->mesh_world_inv,
+                    t->interlace_field);
 }
 
 static void cpu_destroy(rt_renderer *r) {
@@ -81,14 +100,15 @@ static void cpu_render(rt_renderer *r,
 
     for (int i = 0; i < n; i++) {
         d->tasks[i] = (cpu_render_task){
-            .pixels         = pixels,
-            .gbuf           = gbuf,
-            .viewport       = viewport,
-            .y_start        = i * rows_per,
-            .y_end          = (i == n - 1) ? viewport->height : (i + 1) * rows_per,
-            .camera         = camera,
-            .scene          = scn,
-            .mesh_world_inv = mesh_world_inv,
+            .pixels          = pixels,
+            .gbuf            = gbuf,
+            .viewport        = viewport,
+            .y_start         = i * rows_per,
+            .y_end           = (i == n - 1) ? viewport->height : (i + 1) * rows_per,
+            .camera          = camera,
+            .scene           = scn,
+            .mesh_world_inv  = mesh_world_inv,
+            .interlace_field = d->interlace_field,
         };
         thread_pool_submit(d->pool, cpu_render_task_fn, &d->tasks[i]);
     }
@@ -110,10 +130,17 @@ rt_renderer *rt_cpu_renderer_create(void) {
         return NULL;
     }
 
-    int n = detect_cpu_count();
-    if (n < 1) n = 4;
+    int n = env_int_or("RT_CPU_THREADS", 0);
+    if (n < 1) {
+        n = detect_cpu_count();
+        if (n < 1) n = 4;
+    }
+
+    int field = env_int_or("RT_CPU_INTERLACE", -1);
+    if (field != 0 && field != 1) field = -1;
 
     d->num_threads = n;
+    d->interlace_field = field;
     d->pool = thread_pool_create(n);
     if (!d->pool) {
         free(d);
