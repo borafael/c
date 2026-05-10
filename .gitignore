@@ -103,6 +103,7 @@ apps/halftone/halftone
 apps/toon/toon
 apps/crt/crt
 apps/showcase/showcase
+apps/lowspec/lowspec
 apps/tty3d/tty3d
 apps/ttycam/ttycam
 
