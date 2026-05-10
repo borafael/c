@@ -258,9 +258,40 @@ int main(int argc, char *argv[]) {
      *     CLOUDS, SPOTS, etc.), colors — everything picks up the change
      *     on the next build. Must be set before load_map_from_ini so
      *     g_terrain_material flows into bf_map. --- */
-    scene_material unit_material = {
-        .albedo       = {200, 200, 210},
-        .reflectivity = 1.0f,
+    scene_material orb_material = {
+        .albedo       = {220,  90,  80},   /* warm coral */
+        .albedo2      = {110,  30,  40},
+        .tex_kind     = SCENE_TEX_MARBLE,
+        .tex_scale    = 0.6f,
+        .reflectivity = 0.0f,
+    };
+    scene_material cube_material = {
+        .albedo       = {180, 140,  80},   /* sandy ochre */
+        .albedo2      = { 90,  60,  30},
+        .tex_kind     = SCENE_TEX_BRICKS,
+        .tex_scale    = 0.4f,
+        .reflectivity = 0.0f,
+    };
+    scene_material pillar_material = {
+        .albedo       = {120, 180, 120},   /* mossy green */
+        .albedo2      = { 50,  90,  60},
+        .tex_kind     = SCENE_TEX_CELLS,
+        .tex_scale    = 0.5f,
+        .reflectivity = 0.0f,
+    };
+    scene_material spire_material = {
+        .albedo       = { 80, 110, 200},   /* steel blue */
+        .albedo2      = { 30,  50, 110},
+        .tex_kind     = SCENE_TEX_STRIPES,
+        .tex_scale    = 0.35f,
+        .reflectivity = 0.0f,
+    };
+    scene_material donut_material = {
+        .albedo       = {230, 200,  90},   /* glaze yellow */
+        .albedo2      = {180,  70, 120},   /* sprinkle pink */
+        .tex_kind     = SCENE_TEX_DOTS,
+        .tex_scale    = 0.3f,
+        .reflectivity = 0.0f,
     };
     float unit_radius = 1.0f;
 
@@ -287,28 +318,28 @@ int main(int argc, char *argv[]) {
     /* Load default map via the command system (after materials are set). */
     load_map_from_ini("battlefield", engine, NULL);
 
-    /* One unit per 3D primitive kind, all sharing the mirror material. */
+    /* One unit per 3D primitive kind; each gets its own non-reflective look. */
     bf_unit_def unit_defs[] = {
         { .base_speed = 3.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_SPHERE,
-            .sphere = { .radius = unit_radius, .material = unit_material } } },
+            .sphere = { .radius = unit_radius, .material = orb_material } } },
         { .base_speed = 3.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_BOX,
             .box = { .half_extents = {0.9f, 0.9f, 0.9f},
-                     .material    = unit_material } } },
+                     .material    = cube_material } } },
         { .base_speed = 3.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_CYLINDER,
             .cylinder = { .radius = 0.7f, .half_height = 1.0f,
                           .axis = {0.0f, 1.0f, 0.0f},
-                          .material = unit_material } } },
+                          .material = pillar_material } } },
         { .base_speed = 3.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_CONE,
             .cone = { .radius = 0.9f, .height = 2.0f,
-                      .material = unit_material } } },
+                      .material = spire_material } } },
         { .base_speed = 3.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_TORUS,
             .torus = { .major_radius = 0.9f, .minor_radius = 0.35f,
-                       .material = unit_material } } },
+                       .material = donut_material } } },
     };
     static const char *unit_names[] = {
         "orb", "cube", "pillar", "spire", "donut"
