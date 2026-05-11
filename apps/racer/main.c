@@ -28,12 +28,14 @@
  *   I            toggle interlacing (CPU backend only)
  *   R            toggle reflections (off state swaps in procedural textures)
  *   P            toggle postfx stack (chromatic / vignette / grain)
+ *   H            toggle on-screen key legend
  *   - / =        zoom camera out / in
  *   A / D        strafe
  *   W / S        boost / brake
  *   SPACE        reset to start (resets lap counter too)
  *
  * HUD: lap counter in the top-left, speed (km/h) in the top-right.
+ * Press H to overlay the full key legend.
  */
 
 #include "renderer.h"
@@ -125,16 +127,34 @@ static const uint8_t HUD_FONT[][7] = {
     {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}, /* 7 */
     {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, /* 8 */
     {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}, /* 9 */
-    /* letters A,H,K,L,M,P (in this order) */
+    /* letters — ordered alphabetically to match hud_font_index */
     {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}, /* A */
+    {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}, /* B */
+    {0x0F,0x10,0x10,0x10,0x10,0x10,0x0F}, /* C */
+    {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E}, /* D */
+    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}, /* E */
+    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}, /* F */
     {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}, /* H */
+    {0x1F,0x04,0x04,0x04,0x04,0x04,0x1F}, /* I */
     {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, /* K */
     {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}, /* L */
     {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}, /* M */
+    {0x11,0x19,0x19,0x15,0x13,0x13,0x11}, /* N */
+    {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}, /* O */
     {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}, /* P */
-    /* punctuation: '/' ':' ' ' */
+    {0x0E,0x11,0x11,0x11,0x15,0x13,0x0F}, /* Q */
+    {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11}, /* R */
+    {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}, /* S */
+    {0x1F,0x04,0x04,0x04,0x04,0x04,0x04}, /* T */
+    {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}, /* U */
+    {0x11,0x11,0x11,0x15,0x15,0x1B,0x11}, /* W */
+    {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}, /* X */
+    {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F}, /* Z */
+    /* punctuation */
     {0x01,0x02,0x02,0x04,0x08,0x08,0x10}, /* / */
     {0x00,0x04,0x04,0x00,0x04,0x04,0x00}, /* : */
+    {0x00,0x00,0x00,0x1F,0x00,0x00,0x00}, /* - */
+    {0x00,0x1F,0x00,0x1F,0x00,0x00,0x00}, /* = */
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* space */
 };
 
@@ -142,14 +162,32 @@ static int hud_font_index(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     switch (c) {
         case 'A': return 10;
-        case 'H': return 11;
-        case 'K': return 12;
-        case 'L': return 13;
-        case 'M': return 14;
-        case 'P': return 15;
-        case '/': return 16;
-        case ':': return 17;
-        case ' ': return 18;
+        case 'B': return 11;
+        case 'C': return 12;
+        case 'D': return 13;
+        case 'E': return 14;
+        case 'F': return 15;
+        case 'H': return 16;
+        case 'I': return 17;
+        case 'K': return 18;
+        case 'L': return 19;
+        case 'M': return 20;
+        case 'N': return 21;
+        case 'O': return 22;
+        case 'P': return 23;
+        case 'Q': return 24;
+        case 'R': return 25;
+        case 'S': return 26;
+        case 'T': return 27;
+        case 'U': return 28;
+        case 'W': return 29;
+        case 'X': return 30;
+        case 'Z': return 31;
+        case '/': return 32;
+        case ':': return 33;
+        case '-': return 34;
+        case '=': return 35;
+        case ' ': return 36;
         default:  return -1;
     }
 }
@@ -808,6 +846,7 @@ int main(int argc, char *argv[]) {
     int    interlace_on  = 1;   /* I toggles; CPU only */
     int    reflections_on = 1;  /* R toggles; swap to procedural tex when off */
     int    postfx_on = 1;       /* P toggles chromatic+vignette+grain stack */
+    int    legend_on = 0;       /* H toggles the key-legend overlay */
 
     int running = 1;
     Uint32 fps_last = SDL_GetTicks();
@@ -871,6 +910,9 @@ int main(int argc, char *argv[]) {
                 if (k == SDLK_p) {
                     postfx_on = !postfx_on;
                     fprintf(stderr, "Postfx: %s\n", postfx_on ? "on" : "off");
+                }
+                if (k == SDLK_h) {
+                    legend_on = !legend_on;
                 }
                 if (k >= SDLK_1 && k <= SDLK_6) {
                     int idx = k - SDLK_1;
@@ -976,6 +1018,32 @@ int main(int argc, char *argv[]) {
             hud_draw_text(pixels, render_w, render_h,
                           render_w - spd_w - pad, pad, spd_buf,
                           hud_scale, hud_color);
+
+            if (legend_on) {
+                static const char *legend[] = {
+                    "A/D STRAFE",
+                    "W/S BOOST/BRAKE",
+                    "SPACE RESET",
+                    "1-6 RES",
+                    "-/= ZOOM",
+                    "I INTERLACE",
+                    "R REFLECTIONS",
+                    "P POSTFX",
+                    "H HELP",
+                    "F11 FULLSCREEN",
+                    "TAB BACKEND",
+                    "ESC QUIT",
+                };
+                int n_lines = (int)(sizeof(legend) / sizeof(legend[0]));
+                int line_h = 8 * hud_scale;       /* 7 row + 1 spacing */
+                int y0 = pad + line_h * 2;        /* below LAP */
+                for (int i = 0; i < n_lines; i++) {
+                    int y = y0 + i * line_h;
+                    if (y + 7 * hud_scale >= render_h) break;
+                    hud_draw_text(pixels, render_w, render_h,
+                                  pad, y, legend[i], hud_scale, hud_color);
+                }
+            }
         }
         Uint32 fx_done = SDL_GetTicks();
 
