@@ -24,7 +24,7 @@
  *   ESC          quit
  *   F11          toggle fullscreen
  *   TAB          toggle CPU/OpenGL backend (OpenGL has no interlace)
- *   1..4         resolution preset (160x120 / 320x240 / 480x360 / 640x480)
+ *   1..5         resolution preset (240x180 / 320x240 / 480x360 / 640x480 / 960x720)
  *   - / =        zoom camera out / in
  *   A / D        strafe
  *   W / S        boost / brake
@@ -56,10 +56,11 @@
 
 typedef struct { int w, h; const char *name; } pixel_preset;
 static const pixel_preset PRESETS[] = {
-    { 160, 120, "160x120" },   /* chunky pixel */
-    { 320, 240, "320x240" },   /* default */
+    { 240, 180, "240x180" },   /* low — legible chunky pixels */
+    { 320, 240, "320x240" },   /* default — CRT-era authentic */
     { 480, 360, "480x360" },   /* medium */
     { 640, 480, "640x480" },   /* sharp */
+    { 960, 720, "960x720" },   /* native window */
 };
 #define PRESET_COUNT  ((int)(sizeof(PRESETS) / sizeof(PRESETS[0])))
 #define PRESET_DEFAULT 1
@@ -536,7 +537,7 @@ int main(int argc, char *argv[]) {
                     if (cam_zoom < 0.5f) cam_zoom = 0.5f;
                     fprintf(stderr, "Camera zoom: %.2fx\n", cam_zoom);
                 }
-                if (k >= SDLK_1 && k <= SDLK_4) {
+                if (k >= SDLK_1 && k <= SDLK_5) {
                     int idx = k - SDLK_1;
                     if (idx < PRESET_COUNT && idx != preset) {
                         preset = idx;
