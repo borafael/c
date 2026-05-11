@@ -47,6 +47,10 @@ const char *rt_renderer_name(const rt_renderer *r) {
     return r->name_fn(r);
 }
 
+void rt_renderer_set_interlace(rt_renderer *r, int field) {
+    if (r && r->set_interlace_fn) r->set_interlace_fn(r, field);
+}
+
 int rt_renderer_available(rt_backend type) {
     switch (type) {
 #ifdef RT_HAVE_CPU_BACKEND

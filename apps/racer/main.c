@@ -24,7 +24,8 @@
  *   ESC          quit
  *   F11          toggle fullscreen
  *   TAB          toggle CPU/OpenGL backend (OpenGL has no interlace)
- *   1..5         resolution preset (240x180 / 320x240 / 480x360 / 640x480 / 960x720)
+ *   1..6         resolution preset (160x120 / 240x180 / 320x240 / 480x360 / 640x480 / 960x720)
+ *   I            toggle interlacing (CPU backend only)
  *   - / =        zoom camera out / in
  *   A / D        strafe
  *   W / S        boost / brake
@@ -57,14 +58,15 @@
 
 typedef struct { int w, h; const char *name; } pixel_preset;
 static const pixel_preset PRESETS[] = {
-    { 240, 180, "240x180" },   /* low — legible chunky pixels */
+    { 160, 120, "160x120" },   /* chunky pixel — pair with interlace off for legibility */
+    { 240, 180, "240x180" },   /* low */
     { 320, 240, "320x240" },   /* default — CRT-era authentic */
     { 480, 360, "480x360" },   /* medium */
     { 640, 480, "640x480" },   /* sharp */
     { 960, 720, "960x720" },   /* native window */
 };
 #define PRESET_COUNT  ((int)(sizeof(PRESETS) / sizeof(PRESETS[0])))
-#define PRESET_DEFAULT 1
+#define PRESET_DEFAULT 2
 
 #define TRACK_WIDTH         6.0f
 #define TRACK_Y             0.0f
@@ -548,6 +550,7 @@ int main(int argc, char *argv[]) {
     float  strafe_v = 0.0f;
     float  boost    = 1.0f;
     float  cam_zoom = 1.0f;     /* scales chase distance + height; -/= adjust */
+    int    interlace_on = 1;    /* I toggles; CPU only */
 
     int running = 1;
     Uint32 fps_last = SDL_GetTicks();
@@ -593,7 +596,15 @@ int main(int argc, char *argv[]) {
                     if (cam_zoom < 0.5f) cam_zoom = 0.5f;
                     fprintf(stderr, "Camera zoom: %.2fx\n", cam_zoom);
                 }
-                if (k >= SDLK_1 && k <= SDLK_5) {
+                if (k == SDLK_i) {
+                    interlace_on = !interlace_on;
+                    if (cpu_rnd) rt_renderer_set_interlace(cpu_rnd, interlace_on ? 0 : -1);
+                    /* Clear the framebuffer so the half-rows from the
+                     * prior mode don't ghost when switching. */
+                    memset(pixels, 0, (size_t)(render_w * render_h) * sizeof(uint32_t));
+                    fprintf(stderr, "Interlace: %s\n", interlace_on ? "on" : "off");
+                }
+                if (k >= SDLK_1 && k <= SDLK_6) {
                     int idx = k - SDLK_1;
                     if (idx < PRESET_COUNT && idx != preset) {
                         preset = idx;

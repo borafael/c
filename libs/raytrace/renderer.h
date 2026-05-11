@@ -65,6 +65,11 @@ struct rt_renderer {
                              uint32_t *pixels,
                              rt_gbuffer *gbuf);
     const char *(*name_fn)(const struct rt_renderer *r);
+    /* Optional: set the interlace field (0 = even rows only, 1 = odd
+     * rows only, any other value = full frame). NULL on backends that
+     * don't support it (e.g. OpenGL). The top-level
+     * rt_renderer_set_interlace wrapper is NULL-safe. */
+    void        (*set_interlace_fn)(struct rt_renderer *r, int field);
     void         *backend_data;
 };
 
@@ -120,5 +125,16 @@ void rt_renderer_render(rt_renderer *r,
  * freed.
  */
 const char *rt_renderer_name(const rt_renderer *r);
+
+/**
+ * Set the interlace field for backends that support it. Pass 0 to
+ * render only even rows, 1 for odd, any other value (e.g. -1) for full
+ * frame. No-op on backends without interlace support. NULL-safe.
+ *
+ * Skipped rows are left untouched in the framebuffer — pair with not
+ * clearing the pixel buffer between frames to get CRT-style phosphor
+ * persistence on moving content.
+ */
+void rt_renderer_set_interlace(rt_renderer *r, int field);
 
 #endif /* RT_RENDERER_H */

@@ -120,6 +120,12 @@ static const char *cpu_name(const rt_renderer *r) {
     return "CPU";
 }
 
+static void cpu_set_interlace(rt_renderer *r, int field) {
+    cpu_backend_data *d = (cpu_backend_data *)r->backend_data;
+    if (field != 0 && field != 1) field = -1;
+    d->interlace_field = field;
+}
+
 rt_renderer *rt_cpu_renderer_create(void) {
     rt_renderer *r = calloc(1, sizeof(*r));
     if (!r) return NULL;
@@ -156,9 +162,10 @@ rt_renderer *rt_cpu_renderer_create(void) {
         return NULL;
     }
 
-    r->destroy_fn   = cpu_destroy;
-    r->render_fn    = cpu_render;
-    r->name_fn      = cpu_name;
-    r->backend_data = d;
+    r->destroy_fn       = cpu_destroy;
+    r->render_fn        = cpu_render;
+    r->name_fn          = cpu_name;
+    r->set_interlace_fn = cpu_set_interlace;
+    r->backend_data     = d;
     return r;
 }
