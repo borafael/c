@@ -285,7 +285,10 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         .albedo = {255, 230, 180}, .unlit = 1,
     });
     int m_tunnel = scene_add_material(s, (scene_material){
-        .albedo = {22, 28, 42}, .reflectivity = 0.68f,
+        /* unlit so the wall shows its albedo at full brightness even
+         * when no directional light reaches the interior. Combined with
+         * reflectivity this reads as "softly lit reflective panels". */
+        .albedo = {55, 65, 95}, .reflectivity = 0.55f, .unlit = 1,
     });
     int m_strip = scene_add_material(s, (scene_material){
         .albedo = {255, 180, 90}, .unlit = 1,
@@ -409,7 +412,7 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         .radius = 14.0f, .material = m_sun,
     });
 
-    scene_set_ambient(s, 0.18f);
+    scene_set_ambient(s, 0.25f);
     scene_add_light(s, (scene_light){
         .direction = {-0.4f, 0.85f, -0.35f},
         .intensity = 0.95f,
