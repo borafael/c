@@ -25,6 +25,7 @@
  *   F11          toggle fullscreen
  *   TAB          toggle CPU/OpenGL backend (OpenGL has no interlace)
  *   1..4         resolution preset (160x120 / 320x240 / 480x360 / 640x480)
+ *   - / =        zoom camera out / in
  *   A / D        strafe
  *   W / S        boost / brake
  *   SPACE        reset to start
@@ -73,9 +74,18 @@ static const pixel_preset PRESETS[] = {
 #define TRACK_TURN_RADIUS   28.0f
 #define TRACK_TURN_ANGLE    ((float)(M_PI * 0.55))   /* ~99° */
 #define TRACK_TURN_BANK     ((float)(M_PI / 6.0))    /* 30° peak */
-#define TRACK_STRAIGHT2     70.0f
+#define TRACK_STRAIGHT2     50.0f
+#define TRACK_CORK_LEN      55.0f       /* full 360° barrel-roll over this arc length */
+#define TRACK_STRAIGHT3     50.0f
 #define TRACK_ARC_LEN       (TRACK_TURN_RADIUS * TRACK_TURN_ANGLE)
-#define TRACK_TOTAL         (TRACK_STRAIGHT1 + TRACK_ARC_LEN + TRACK_STRAIGHT2)
+#define TRACK_TOTAL         (TRACK_STRAIGHT1 + TRACK_ARC_LEN + TRACK_STRAIGHT2 + \
+                             TRACK_CORK_LEN + TRACK_STRAIGHT3)
+
+/* Useful segment-start offsets along the spline. */
+#define TRACK_S_TURN_START  (TRACK_STRAIGHT1)
+#define TRACK_S_STR2_START  (TRACK_STRAIGHT1 + TRACK_ARC_LEN)
+#define TRACK_S_CORK_START  (TRACK_S_STR2_START + TRACK_STRAIGHT2)
+#define TRACK_S_STR3_START  (TRACK_S_CORK_START + TRACK_CORK_LEN)
 
 #define TRACK_SEG_LEN       2.5f   /* approximate; segments overlap slightly */
 
@@ -159,7 +169,10 @@ static track_frame track_frame_at(float s) {
         return f;
     }
 
-    /* Straight 2: continues from the end of the arc. */
+    /* Past the arc — compute the arc-exit frame once, then place the
+     * remaining straight-2 / corkscrew / straight-3 sections relative
+     * to it. The exit frame is back to flat (no bank) since we eased
+     * banking down across the arc. */
     float ca = cosf(TRACK_TURN_ANGLE), sa = sinf(TRACK_TURN_ANGLE);
     vector arc_end_pos = {
         -TRACK_TURN_RADIUS + TRACK_TURN_RADIUS * ca,
@@ -168,9 +181,53 @@ static track_frame track_frame_at(float s) {
     };
     vector arc_end_tan   = {-sa, 0, ca};
     vector arc_end_right = { ca, 0, sa};
+    vector flat_up       = {0, 1, 0};
 
-    float local_s = s - TRACK_STRAIGHT1 - TRACK_ARC_LEN;
-    f.pos     = vector_add(arc_end_pos, vector_scale(arc_end_tan, local_s));
+    if (s < TRACK_S_CORK_START) {
+        /* Straight 2: flat run from the arc exit. */
+        float local_s = s - TRACK_S_STR2_START;
+        f.pos     = vector_add(arc_end_pos, vector_scale(arc_end_tan, local_s));
+        f.tangent = arc_end_tan;
+        f.right   = arc_end_right;
+        return f;
+    }
+
+    /* Corkscrew start position is at the end of straight 2. */
+    vector cork_start_pos = vector_add(arc_end_pos,
+                                       vector_scale(arc_end_tan, TRACK_STRAIGHT2));
+
+    if (s < TRACK_S_STR3_START) {
+        /* Corkscrew: centerline keeps going along arc_end_tan, but
+         * (right, up) rolls 360° around the tangent over CORK_LEN.
+         * Lift the centerline slightly in the middle of the roll so
+         * the ship has clearance when the track is overhead. */
+        float local_s = s - TRACK_S_CORK_START;
+        float t       = local_s / TRACK_CORK_LEN;
+        float roll    = 2.0f * (float)M_PI * t;
+        float cr = cosf(roll), sr = sinf(roll);
+
+        /* Raise centerline in a bell curve so the ship rolls under a
+         * track that's lifted above its original height when inverted. */
+        float lift = 3.5f * sinf((float)M_PI * t);
+
+        f.pos = vector_add(cork_start_pos, vector_scale(arc_end_tan, local_s));
+        f.pos.y += lift;
+        f.tangent = arc_end_tan;
+        /* Roll the (right, up) basis around the tangent. Start with
+         * the arc-exit (right, up) and rotate by `roll`. */
+        f.right = vector_add(vector_scale(arc_end_right,  cr),
+                             vector_scale(flat_up,        sr));
+        f.up    = vector_add(vector_scale(arc_end_right, -sr),
+                             vector_scale(flat_up,        cr));
+        return f;
+    }
+
+    /* Straight 3: continues from the end of the corkscrew (back to
+     * flat orientation since roll = 2π = 0 mod 2π). */
+    vector str3_start_pos = vector_add(cork_start_pos,
+                                       vector_scale(arc_end_tan, TRACK_CORK_LEN));
+    float local_s = s - TRACK_S_STR3_START;
+    f.pos     = vector_add(str3_start_pos, vector_scale(arc_end_tan, local_s));
     f.tangent = arc_end_tan;
     f.right   = arc_end_right;
     return f;
@@ -433,6 +490,7 @@ int main(int argc, char *argv[]) {
     float  ship_lat = 0.0f;
     float  strafe_v = 0.0f;
     float  boost    = 1.0f;
+    float  cam_zoom = 1.0f;     /* scales chase distance + height; -/= adjust */
 
     int running = 1;
     Uint32 fps_last = SDL_GetTicks();
@@ -467,6 +525,16 @@ int main(int argc, char *argv[]) {
                     SDL_SetWindowFullscreen(window,
                         fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
                     SDL_GetWindowSize(window, &window_w, &window_h);
+                }
+                if (k == SDLK_MINUS || k == SDLK_KP_MINUS) {
+                    cam_zoom += 0.25f;
+                    if (cam_zoom > 3.5f) cam_zoom = 3.5f;
+                    fprintf(stderr, "Camera zoom: %.2fx\n", cam_zoom);
+                }
+                if (k == SDLK_EQUALS || k == SDLK_KP_PLUS) {
+                    cam_zoom -= 0.25f;
+                    if (cam_zoom < 0.5f) cam_zoom = 0.5f;
+                    fprintf(stderr, "Camera zoom: %.2fx\n", cam_zoom);
                 }
                 if (k >= SDLK_1 && k <= SDLK_4) {
                     int idx = k - SDLK_1;
@@ -526,11 +594,13 @@ int main(int argc, char *argv[]) {
                                            (vector){ship_lat, SHIP_HOVER_Y, 0});
         update_ship_geometry(scn, ship_world, sf.right, sf.up, sf.tangent);
 
-        /* Chase cam: 4.5m behind on the spline, 1.6m above the surface,
-         * pulled slightly toward the ship's lateral side. Looks 6m ahead. */
-        track_frame cf = track_frame_at(ship_s - 4.5f);
+        /* Chase cam: trailing distance + height scaled by cam_zoom.
+         * Pulled slightly toward the ship's lateral side, looks 6m ahead. */
+        float cam_back = 4.5f * cam_zoom;
+        float cam_high = 1.6f * cam_zoom;
+        track_frame cf = track_frame_at(ship_s - cam_back);
         vector cam_pos = local_to_world(cf.pos, cf.right, cf.up, cf.tangent,
-                                        (vector){ship_lat * 0.6f, 1.6f, 0});
+                                        (vector){ship_lat * 0.6f, cam_high, 0});
         track_frame lf = track_frame_at(ship_s + 6.0f);
         vector look_at = local_to_world(lf.pos, lf.right, lf.up, lf.tangent,
                                         (vector){ship_lat, 0.4f, 0});
