@@ -54,11 +54,21 @@
 #define RENDER_H        240
 #define FOV             (M_PI / 3.0f)
 
-#define TRACK_LENGTH    200.0f
-#define TRACK_WIDTH     6.0f
-#define TRACK_Y         0.0f
-#define SHIP_HOVER_Y    0.9f
-#define WORLD_GROUND_Y  -1.5f
+#define TRACK_WIDTH         6.0f
+#define TRACK_Y             0.0f
+#define SHIP_HOVER_Y        0.9f
+#define WORLD_GROUND_Y      -1.5f
+
+/* Track layout: straight → banked left turn → straight. */
+#define TRACK_STRAIGHT1     70.0f
+#define TRACK_TURN_RADIUS   28.0f
+#define TRACK_TURN_ANGLE    ((float)(M_PI * 0.55))   /* ~99° */
+#define TRACK_TURN_BANK     ((float)(M_PI / 6.0))    /* 30° peak */
+#define TRACK_STRAIGHT2     70.0f
+#define TRACK_ARC_LEN       (TRACK_TURN_RADIUS * TRACK_TURN_ANGLE)
+#define TRACK_TOTAL         (TRACK_STRAIGHT1 + TRACK_ARC_LEN + TRACK_STRAIGHT2)
+
+#define TRACK_SEG_LEN       2.5f   /* approximate; segments overlap slightly */
 
 #define BASE_SPEED      24.0f
 #define MAX_BOOST       1.6f
@@ -67,7 +77,7 @@
 #define STRAFE_ACCEL    40.0f
 #define STRAFE_DAMP     6.0f
 #define MAX_STRAFE_V    14.0f
-#define STRAFE_CLAMP_X  (TRACK_WIDTH * 0.40f)
+#define STRAFE_CLAMP    (TRACK_WIDTH * 0.40f)
 
 typedef struct {
     int body, wing_l, wing_r, canopy;
@@ -77,6 +87,94 @@ typedef struct {
 } ship_rig;
 
 static ship_rig SHIP;
+
+/* ----- Track spline -------------------------------------------------------
+ *
+ * A track frame at arc-length s gives world position + an orthonormal
+ * (tangent, right, up) basis. Bank is a roll around the tangent axis,
+ * which tilts (right, up) but leaves the centerline path itself flat in
+ * world space. The arc is a horizontal left turn; banking peaks in the
+ * middle of the arc and eases off at the ends.
+ */
+typedef struct { vector pos, tangent, right, up; } track_frame;
+
+static float track_wrap_s(float s) {
+    while (s <  0.0f)        s += TRACK_TOTAL;
+    while (s >= TRACK_TOTAL) s -= TRACK_TOTAL;
+    return s;
+}
+
+static track_frame track_frame_at(float s) {
+    /* No wrap: extend the endpoints linearly so the chase cam (which
+     * samples s±offset) gets a sensible frame even just before the
+     * starting line or just past the finish. Lap wrapping is handled
+     * by track_wrap_s at the ship-state level. */
+    track_frame f;
+    f.up = (vector){0, 1, 0};
+
+    if (s < TRACK_STRAIGHT1) {
+        f.pos     = (vector){0, TRACK_Y, s};       /* s may be < 0 — extends straight 1 backwards */
+        f.tangent = (vector){0, 0, 1};
+        f.right   = (vector){1, 0, 0};
+        return f;
+    }
+
+    if (s < TRACK_STRAIGHT1 + TRACK_ARC_LEN) {
+        float local_s = s - TRACK_STRAIGHT1;
+        float a  = local_s / TRACK_TURN_RADIUS;
+        float ca = cosf(a), sa = sinf(a);
+
+        /* Curve center sits TRACK_TURN_RADIUS to the left of the start
+         * of the arc (i.e., at -X). Going CCW from above gives a left
+         * turn that initially still heads +Z. */
+        f.pos = (vector){
+            -TRACK_TURN_RADIUS + TRACK_TURN_RADIUS * ca,
+             TRACK_Y,
+             TRACK_STRAIGHT1 + TRACK_TURN_RADIUS * sa
+        };
+        f.tangent = (vector){-sa, 0, ca};
+        vector flat_right = (vector){ ca, 0, sa};
+
+        /* Smooth bell-shaped bank: 0 at arc ends, peak in middle. */
+        float t    = a / TRACK_TURN_ANGLE;
+        float bank = TRACK_TURN_BANK * sinf((float)M_PI * t);
+        float cb = cosf(bank), sb = sinf(bank);
+
+        vector flat_up = (vector){0, 1, 0};
+        /* Roll (right, up) by `bank` around tangent. For a left turn,
+         * positive bank raises the right edge (banking into the turn). */
+        f.right = vector_add(vector_scale(flat_right,  cb),
+                             vector_scale(flat_up,     sb));
+        f.up    = vector_add(vector_scale(flat_right, -sb),
+                             vector_scale(flat_up,     cb));
+        return f;
+    }
+
+    /* Straight 2: continues from the end of the arc. */
+    float ca = cosf(TRACK_TURN_ANGLE), sa = sinf(TRACK_TURN_ANGLE);
+    vector arc_end_pos = {
+        -TRACK_TURN_RADIUS + TRACK_TURN_RADIUS * ca,
+         TRACK_Y,
+         TRACK_STRAIGHT1 + TRACK_TURN_RADIUS * sa
+    };
+    vector arc_end_tan   = {-sa, 0, ca};
+    vector arc_end_right = { ca, 0, sa};
+
+    float local_s = s - TRACK_STRAIGHT1 - TRACK_ARC_LEN;
+    f.pos     = vector_add(arc_end_pos, vector_scale(arc_end_tan, local_s));
+    f.tangent = arc_end_tan;
+    f.right   = arc_end_right;
+    return f;
+}
+
+/* Transform a point from ship-local frame (right, up, tangent) to world. */
+static vector local_to_world(vector origin, vector right, vector up,
+                             vector tangent, vector local) {
+    return vector_add(origin,
+           vector_add(vector_scale(right,   local.x),
+           vector_add(vector_scale(up,      local.y),
+                      vector_scale(tangent, local.z))));
+}
 
 static void build_scene(scene **scn_out, scene_camera **cam_out) {
     scene *s = scene_create();
@@ -120,29 +218,46 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         .material = m_water,
     });
 
-    /* Track surface */
-    scene_add_box(s, scene_box_aabb(
-        (vector){-TRACK_WIDTH/2, TRACK_Y - 0.5f, -10.0f},
-        (vector){ TRACK_WIDTH/2, TRACK_Y,         TRACK_LENGTH},
-        m_track));
+    /* Track surface — chain of slightly overlapping OBBs along the spline. */
+    int num_segs = (int)(TRACK_TOTAL / TRACK_SEG_LEN) + 1;
+    float seg_len = TRACK_TOTAL / (float)num_segs;
+    float seg_half_z = seg_len * 0.55f;     /* ~10% overlap into next seg */
+    for (int i = 0; i < num_segs; i++) {
+        float s_mid = (i + 0.5f) * seg_len;
+        track_frame f = track_frame_at(s_mid);
+        scene_box b = {
+            .center = vector_add(f.pos, vector_scale(f.up, -0.25f)),
+            .half_extents = {TRACK_WIDTH * 0.5f, 0.25f, seg_half_z},
+            .ux = f.right, .uy = f.up, .uz = f.tangent,
+            .material = m_track,
+        };
+        scene_add_box(s, b);
+    }
 
-    /* Barriers every 8m on both edges */
-    for (float z = -4.0f; z < TRACK_LENGTH; z += 8.0f) {
-        scene_add_box(s, scene_box_aabb(
-            (vector){-TRACK_WIDTH/2 - 0.45f, TRACK_Y,        z - 0.25f},
-            (vector){-TRACK_WIDTH/2,         TRACK_Y + 0.5f, z + 0.25f},
-            m_barrier));
-        scene_add_box(s, scene_box_aabb(
-            (vector){ TRACK_WIDTH/2,         TRACK_Y,        z - 0.25f},
-            (vector){ TRACK_WIDTH/2 + 0.45f, TRACK_Y + 0.5f, z + 0.25f},
-            m_barrier));
+    /* Barriers every 8m on both edges, oriented with the local frame. */
+    for (float sp = 0.0f; sp < TRACK_TOTAL; sp += 8.0f) {
+        track_frame f = track_frame_at(sp);
+        vector bar_half = {0.22f, 0.25f, 0.25f};
+        vector left_c  = local_to_world(f.pos, f.right, f.up, f.tangent,
+                          (vector){-(TRACK_WIDTH * 0.5f + bar_half.x), 0.25f, 0});
+        vector right_c = local_to_world(f.pos, f.right, f.up, f.tangent,
+                          (vector){ (TRACK_WIDTH * 0.5f + bar_half.x), 0.25f, 0});
+        scene_box bl = { .center = left_c,  .half_extents = bar_half,
+                         .ux = f.right, .uy = f.up, .uz = f.tangent,
+                         .material = m_barrier };
+        scene_box br = { .center = right_c, .half_extents = bar_half,
+                         .ux = f.right, .uy = f.up, .uz = f.tangent,
+                         .material = m_barrier };
+        scene_add_box(s, bl);
+        scene_add_box(s, br);
     }
 
     /* Glowing pickup rings down the center */
-    for (float z = 25.0f; z < TRACK_LENGTH; z += 30.0f) {
+    for (float sp = 25.0f; sp < TRACK_TOTAL; sp += 30.0f) {
+        track_frame f = track_frame_at(sp);
         scene_add_torus(s, (scene_torus){
-            .center = {0, TRACK_Y + 1.4f, z},
-            .axis = {0, 0, 1},
+            .center = vector_add(f.pos, vector_scale(f.up, 1.4f)),
+            .axis = f.tangent,
             .major_radius = 1.1f, .minor_radius = 0.10f,
             .material = m_pickup,
         });
@@ -175,7 +290,7 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
 
     /* Skybox + sun */
     scene_add_sphere(s, (scene_sphere){
-        .center = {0, 0, TRACK_LENGTH * 0.5f},
+        .center = {0, 0, TRACK_TOTAL * 0.5f},
         .radius = 500.0f, .material = m_sky,
     });
     scene_add_sphere(s, (scene_sphere){
@@ -197,11 +312,24 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         (vector){0, -0.15f, 1.0f});
 }
 
-static void update_ship_geometry(scene *s, vector ship_pos) {
-    s->spheres[SHIP.body].center   = vector_add(ship_pos, SHIP.body_off);
-    s->spheres[SHIP.canopy].center = vector_add(ship_pos, SHIP.canopy_off);
-    s->boxes[SHIP.wing_l].center   = vector_add(ship_pos, SHIP.wing_l_off);
-    s->boxes[SHIP.wing_r].center   = vector_add(ship_pos, SHIP.wing_r_off);
+static void update_ship_geometry(scene *s, vector ship_pos,
+                                 vector right, vector up, vector tangent) {
+    s->spheres[SHIP.body].center =
+        local_to_world(ship_pos, right, up, tangent, SHIP.body_off);
+    s->spheres[SHIP.canopy].center =
+        local_to_world(ship_pos, right, up, tangent, SHIP.canopy_off);
+
+    s->boxes[SHIP.wing_l].center =
+        local_to_world(ship_pos, right, up, tangent, SHIP.wing_l_off);
+    s->boxes[SHIP.wing_l].ux = right;
+    s->boxes[SHIP.wing_l].uy = up;
+    s->boxes[SHIP.wing_l].uz = tangent;
+
+    s->boxes[SHIP.wing_r].center =
+        local_to_world(ship_pos, right, up, tangent, SHIP.wing_r_off);
+    s->boxes[SHIP.wing_r].ux = right;
+    s->boxes[SHIP.wing_r].uy = up;
+    s->boxes[SHIP.wing_r].uz = tangent;
 }
 
 static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
@@ -290,10 +418,11 @@ int main(int argc, char *argv[]) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glGenFramebuffers(1, &display_fbo);
 
-    /* Game state */
-    vector ship_pos = {0, TRACK_Y + SHIP_HOVER_Y, 0};
+    /* Game state — track-relative: (arc-length along centerline, lateral offset). */
+    float  ship_s   = 0.0f;
+    float  ship_lat = 0.0f;
     float  strafe_v = 0.0f;
-    float  boost = 1.0f;
+    float  boost    = 1.0f;
 
     int running = 1;
     Uint32 fps_last = SDL_GetTicks();
@@ -315,7 +444,7 @@ int main(int argc, char *argv[]) {
                 SDL_Keycode k = e.key.keysym.sym;
                 if (k == SDLK_ESCAPE) running = 0;
                 if (k == SDLK_SPACE) {
-                    ship_pos = (vector){0, TRACK_Y + SHIP_HOVER_Y, 0};
+                    ship_s = 0.0f; ship_lat = 0.0f;
                     strafe_v = 0.0f; boost = 1.0f;
                 }
                 if (k == SDLK_TAB) {
@@ -355,26 +484,27 @@ int main(int argc, char *argv[]) {
             boost += toward_one;
         }
 
-        /* Integrate motion */
-        ship_pos.x += strafe_v * dt;
-        ship_pos.z += BASE_SPEED * boost * dt;
-        if (ship_pos.x >  STRAFE_CLAMP_X) { ship_pos.x =  STRAFE_CLAMP_X; strafe_v = 0; }
-        if (ship_pos.x < -STRAFE_CLAMP_X) { ship_pos.x = -STRAFE_CLAMP_X; strafe_v = 0; }
-        if (ship_pos.z > TRACK_LENGTH) ship_pos.z -= TRACK_LENGTH;
+        /* Integrate along the track */
+        ship_lat += strafe_v * dt;
+        ship_s   += BASE_SPEED * boost * dt;
+        if (ship_lat >  STRAFE_CLAMP) { ship_lat =  STRAFE_CLAMP; strafe_v = 0; }
+        if (ship_lat < -STRAFE_CLAMP) { ship_lat = -STRAFE_CLAMP; strafe_v = 0; }
+        ship_s = track_wrap_s(ship_s);
 
-        update_ship_geometry(scn, ship_pos);
+        /* Resolve to world */
+        track_frame sf = track_frame_at(ship_s);
+        vector ship_world = local_to_world(sf.pos, sf.right, sf.up, sf.tangent,
+                                           (vector){ship_lat, SHIP_HOVER_Y, 0});
+        update_ship_geometry(scn, ship_world, sf.right, sf.up, sf.tangent);
 
-        /* Chase cam: behind and above the ship, looking ahead */
-        vector cam_pos = {
-            ship_pos.x * 0.6f,
-            ship_pos.y + 1.6f,
-            ship_pos.z - 4.5f
-        };
-        vector look_at = {
-            ship_pos.x,
-            ship_pos.y + 0.4f,
-            ship_pos.z + 6.0f
-        };
+        /* Chase cam: 4.5m behind on the spline, 1.6m above the surface,
+         * pulled slightly toward the ship's lateral side. Looks 6m ahead. */
+        track_frame cf = track_frame_at(ship_s - 4.5f);
+        vector cam_pos = local_to_world(cf.pos, cf.right, cf.up, cf.tangent,
+                                        (vector){ship_lat * 0.6f, 1.6f, 0});
+        track_frame lf = track_frame_at(ship_s + 6.0f);
+        vector look_at = local_to_world(lf.pos, lf.right, lf.up, lf.tangent,
+                                        (vector){ship_lat, 0.4f, 0});
         vector cam_dir = vector_normalize(vector_sub(look_at, cam_pos));
         scene_camera_place(cam, cam_pos, cam_dir);
 
@@ -401,9 +531,10 @@ int main(int argc, char *argv[]) {
             float avg_r  = fps_frames ? (float)render_ms_accum / fps_frames : 0.0f;
             float avg_fx = fps_frames ? (float)fx_ms_accum     / fps_frames : 0.0f;
             snprintf(title_buf, sizeof(title_buf),
-                     "Racer - %s %dx%d boost=%.2f z=%.0f %d FPS (rt=%.1fms fx=%.1fms)",
+                     "Racer - %s %dx%d boost=%.2f s=%.0f/%.0f %d FPS (rt=%.1fms fx=%.1fms)",
                      rt_renderer_name(active), render_w, render_h,
-                     boost, ship_pos.z, fps_frames, avg_r, avg_fx);
+                     boost, ship_s, (float)TRACK_TOTAL,
+                     fps_frames, avg_r, avg_fx);
             SDL_SetWindowTitle(window, title_buf);
             fps_frames = 0; render_ms_accum = 0; fx_ms_accum = 0;
             fps_last = now;
