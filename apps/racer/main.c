@@ -74,31 +74,24 @@ static const pixel_preset PRESETS[] = {
 #define SHIP_HOVER_Y        0.9f
 #define WORLD_GROUND_Y      -1.5f
 
-/* Track layout: straight → banked left turn → straight. */
-#define TRACK_STRAIGHT1     70.0f
-#define TRACK_TURN_RADIUS   28.0f
-#define TRACK_TURN_ANGLE    ((float)(M_PI * 0.55))   /* ~99° */
-#define TRACK_TURN_BANK     ((float)(M_PI / 6.0))    /* 30° peak */
-#define TRACK_STRAIGHT2     50.0f
-#define TRACK_CORK_LEN      55.0f       /* full 360° barrel-roll over this arc length */
-#define TRACK_STRAIGHT3     50.0f
-#define TRACK_ARC_LEN       (TRACK_TURN_RADIUS * TRACK_TURN_ANGLE)
-#define TRACK_TOTAL         (TRACK_STRAIGHT1 + TRACK_ARC_LEN + TRACK_STRAIGHT2 + \
-                             TRACK_CORK_LEN + TRACK_STRAIGHT3)
+/* Track laid out as a closed loop:
+ *
+ *   0  straight 1  (20m)            entry runway
+ *   1  banked turn (90° left, R=15m, 30° peak)   tunnel wraps this
+ *   2  straight 2  (30m)
+ *   3  corkscrew   (55m, 360° barrel roll)
+ *   4  straight 3  (30m)
+ *   5  hairpin     (180° left, R=25m, 60° peak)  open-air wall-of-death
+ *   6  straight 4  (115m)            back stretch
+ *   7  closing arc (90° left, R=15m, 30° peak)   lands at origin facing +Z
+ *
+ * Total angular change = 90 + 180 + 90 = 360° (one full lap).
+ * The straight-4 length (115m) is the only free knob — chosen so the
+ * closing turn lands at (0,0,0) with heading +Z. See init_track() for
+ * the position/heading propagation that proves closure. */
+#define TRACK_SEG_LEN       2.5f   /* arc-segment target length */
 
-/* Useful segment-start offsets along the spline. */
-#define TRACK_S_TURN_START  (TRACK_STRAIGHT1)
-#define TRACK_S_STR2_START  (TRACK_STRAIGHT1 + TRACK_ARC_LEN)
-#define TRACK_S_CORK_START  (TRACK_S_STR2_START + TRACK_STRAIGHT2)
-#define TRACK_S_STR3_START  (TRACK_S_CORK_START + TRACK_CORK_LEN)
-
-#define TRACK_SEG_LEN       2.5f   /* approximate; segments overlap slightly */
-
-/* Tunnel wraps the banked turn for the photogenic reflection moment.
- * Built from one cylinder per segment (axis = tangent) so the cross-
- * section is a true circle that follows the spline + banking. */
-#define TUNNEL_S_START      TRACK_S_TURN_START
-#define TUNNEL_S_END        TRACK_S_STR2_START
+/* Tunnel wraps the first banked turn. */
 #define TUNNEL_RADIUS       3.5f
 #define TUNNEL_CENTER_OFF   3.0f    /* up-offset of cylinder center from track */
 #define TUNNEL_LIGHT_SPACE  4.0f    /* emissive strip every Nm along each side */
@@ -149,127 +142,157 @@ static void apply_reflections(scene *s, int on) {
 
 /* ----- Track spline -------------------------------------------------------
  *
- * A track frame at arc-length s gives world position + an orthonormal
- * (tangent, right, up) basis. Bank is a roll around the tangent axis,
- * which tilts (right, up) but leaves the centerline path itself flat in
- * world space. The arc is a horizontal left turn; banking peaks in the
- * middle of the arc and eases off at the ends.
- */
+ * The track is a sequence of sections; each section has a kind
+ * (straight / arc / corkscrew), a length, and (for arcs) a turn angle
+ * + radius + peak bank. init_track() walks the table once and fills
+ * in each section's s_start + start_pos + start_tangent + start_right.
+ * Then track_frame_at(s) locates the section containing s and computes
+ * the frame relative to that section's start. */
 typedef struct { vector pos, tangent, right, up; } track_frame;
 
+typedef enum {
+    SEC_STRAIGHT,
+    SEC_ARC,         /* horizontal left turn, optionally banked (sine bell) */
+    SEC_CORKSCREW,   /* straight centerline + 360° roll around tangent + bell lift */
+} sec_kind;
+
+typedef struct {
+    sec_kind kind;
+    float length;       /* arc-length (for arcs, computed = radius * angle) */
+    float angle;        /* SEC_ARC: turn angle in radians, CCW (always left) */
+    float radius;       /* SEC_ARC: turn radius */
+    float bank_peak;    /* SEC_ARC: peak bank angle in radians */
+    float cork_lift;    /* SEC_CORKSCREW: centerline lift at apex */
+
+    /* Filled in by init_track() — DO NOT initialize manually. */
+    float s_start;
+    vector start_pos, start_tangent, start_right;
+} track_section;
+
+enum {
+    SEC_S1 = 0,        /* straight 1 (entry) */
+    SEC_TURN1,         /* banked 90° left + tunnel */
+    SEC_S2,
+    SEC_CORK,
+    SEC_S3,
+    SEC_HAIRPIN,       /* 180° left, steep bank */
+    SEC_S4,            /* back-stretch */
+    SEC_TURN2,         /* 90° left closing turn */
+    SEC_COUNT
+};
+
+static track_section SECTIONS[SEC_COUNT] = {
+    [SEC_S1]      = { .kind = SEC_STRAIGHT,  .length = 20.0f },
+    [SEC_TURN1]   = { .kind = SEC_ARC,       .angle = (float)(M_PI / 2.0), .radius = 15.0f, .bank_peak = (float)(M_PI / 6.0) },
+    [SEC_S2]      = { .kind = SEC_STRAIGHT,  .length = 30.0f },
+    [SEC_CORK]    = { .kind = SEC_CORKSCREW, .length = 55.0f, .cork_lift = 3.5f },
+    [SEC_S3]      = { .kind = SEC_STRAIGHT,  .length = 30.0f },
+    [SEC_HAIRPIN] = { .kind = SEC_ARC,       .angle = (float)M_PI,         .radius = 25.0f, .bank_peak = (float)(M_PI / 3.0) },
+    [SEC_S4]      = { .kind = SEC_STRAIGHT,  .length = 115.0f },
+    [SEC_TURN2]   = { .kind = SEC_ARC,       .angle = (float)(M_PI / 2.0), .radius = 15.0f, .bank_peak = (float)(M_PI / 6.0) },
+};
+
+static float TRACK_TOTAL_LEN = 0.0f;     /* set by init_track */
+
+/* Rotate (x, z) CCW by angle (around +Y). */
+static inline vector rot_y(vector v, float ca, float sa) {
+    return (vector){ v.x * ca - v.z * sa, v.y, v.x * sa + v.z * ca };
+}
+
+static void init_track(void) {
+    vector pos = {0, TRACK_Y, 0};
+    vector tangent = {0, 0, 1};
+    vector right = {1, 0, 0};
+    float s = 0.0f;
+    for (int i = 0; i < SEC_COUNT; i++) {
+        track_section *sec = &SECTIONS[i];
+        if (sec->kind == SEC_ARC) sec->length = sec->radius * sec->angle;
+
+        sec->s_start       = s;
+        sec->start_pos     = pos;
+        sec->start_tangent = tangent;
+        sec->start_right   = right;
+        s += sec->length;
+
+        if (sec->kind == SEC_STRAIGHT || sec->kind == SEC_CORKSCREW) {
+            pos = vector_add(pos, vector_scale(tangent, sec->length));
+        } else { /* SEC_ARC */
+            float ca = cosf(sec->angle), sa = sinf(sec->angle);
+            vector new_tangent = rot_y(tangent, ca, sa);
+            vector new_right   = rot_y(right,   ca, sa);
+            /* Left turn: arc center is at start_pos - R*right. End is at
+             * center + R*new_right (the new "right" at section's end). */
+            vector arc_center = vector_sub(pos, vector_scale(right, sec->radius));
+            pos = vector_add(arc_center, vector_scale(new_right, sec->radius));
+            tangent = new_tangent;
+            right = new_right;
+        }
+    }
+    TRACK_TOTAL_LEN = s;
+}
+
 static float track_wrap_s(float s) {
-    while (s <  0.0f)        s += TRACK_TOTAL;
-    while (s >= TRACK_TOTAL) s -= TRACK_TOTAL;
+    while (s <  0.0f)             s += TRACK_TOTAL_LEN;
+    while (s >= TRACK_TOTAL_LEN)  s -= TRACK_TOTAL_LEN;
     return s;
 }
 
 static track_frame track_frame_at(float s) {
-    /* No wrap: extend the endpoints linearly so the chase cam (which
-     * samples s±offset) gets a sensible frame even just before the
-     * starting line or just past the finish. Lap wrapping is handled
-     * by track_wrap_s at the ship-state level. */
+    s = track_wrap_s(s);
+
+    /* Find the section containing s. Linear scan over ~8 sections. */
+    int idx = SEC_COUNT - 1;
+    for (int i = 0; i < SEC_COUNT; i++) {
+        if (s < SECTIONS[i].s_start + SECTIONS[i].length) { idx = i; break; }
+    }
+    const track_section *sec = &SECTIONS[idx];
+    float local_s = s - sec->s_start;
+
     track_frame f;
     f.up = (vector){0, 1, 0};
 
-    if (s < TRACK_STRAIGHT1) {
-        f.pos     = (vector){0, TRACK_Y, s};       /* s may be < 0 — extends straight 1 backwards */
-        f.tangent = (vector){0, 0, 1};
-        f.right   = (vector){1, 0, 0};
+    if (sec->kind == SEC_STRAIGHT) {
+        f.pos     = vector_add(sec->start_pos, vector_scale(sec->start_tangent, local_s));
+        f.tangent = sec->start_tangent;
+        f.right   = sec->start_right;
         return f;
     }
 
-    if (s < TRACK_STRAIGHT1 + TRACK_ARC_LEN) {
-        float local_s = s - TRACK_STRAIGHT1;
-        float a  = local_s / TRACK_TURN_RADIUS;
-        float ca = cosf(a), sa = sinf(a);
-
-        /* Curve center sits TRACK_TURN_RADIUS to the left of the start
-         * of the arc (i.e., at -X). Going CCW from above gives a left
-         * turn that initially still heads +Z. */
-        f.pos = (vector){
-            -TRACK_TURN_RADIUS + TRACK_TURN_RADIUS * ca,
-             TRACK_Y,
-             TRACK_STRAIGHT1 + TRACK_TURN_RADIUS * sa
-        };
-        f.tangent = (vector){-sa, 0, ca};
-        vector flat_right = (vector){ ca, 0, sa};
-
-        /* Smooth bell-shaped bank: 0 at arc ends, peak in middle. */
-        float t    = a / TRACK_TURN_ANGLE;
-        float bank = TRACK_TURN_BANK * sinf((float)M_PI * t);
-        float cb = cosf(bank), sb = sinf(bank);
-
-        vector flat_up = (vector){0, 1, 0};
-        /* Roll (right, up) by `bank` around tangent. For a left turn,
-         * positive bank raises the right edge (banking into the turn). */
-        f.right = vector_add(vector_scale(flat_right,  cb),
-                             vector_scale(flat_up,     sb));
-        f.up    = vector_add(vector_scale(flat_right, -sb),
-                             vector_scale(flat_up,     cb));
-        return f;
-    }
-
-    /* Past the arc — compute the arc-exit frame once, then place the
-     * remaining straight-2 / corkscrew / straight-3 sections relative
-     * to it. The exit frame is back to flat (no bank) since we eased
-     * banking down across the arc. */
-    float ca = cosf(TRACK_TURN_ANGLE), sa = sinf(TRACK_TURN_ANGLE);
-    vector arc_end_pos = {
-        -TRACK_TURN_RADIUS + TRACK_TURN_RADIUS * ca,
-         TRACK_Y,
-         TRACK_STRAIGHT1 + TRACK_TURN_RADIUS * sa
-    };
-    vector arc_end_tan   = {-sa, 0, ca};
-    vector arc_end_right = { ca, 0, sa};
-    vector flat_up       = {0, 1, 0};
-
-    if (s < TRACK_S_CORK_START) {
-        /* Straight 2: flat run from the arc exit. */
-        float local_s = s - TRACK_S_STR2_START;
-        f.pos     = vector_add(arc_end_pos, vector_scale(arc_end_tan, local_s));
-        f.tangent = arc_end_tan;
-        f.right   = arc_end_right;
-        return f;
-    }
-
-    /* Corkscrew start position is at the end of straight 2. */
-    vector cork_start_pos = vector_add(arc_end_pos,
-                                       vector_scale(arc_end_tan, TRACK_STRAIGHT2));
-
-    if (s < TRACK_S_STR3_START) {
-        /* Corkscrew: centerline keeps going along arc_end_tan, but
-         * (right, up) rolls 360° around the tangent over CORK_LEN.
-         * Lift the centerline slightly in the middle of the roll so
-         * the ship has clearance when the track is overhead. */
-        float local_s = s - TRACK_S_CORK_START;
-        float t       = local_s / TRACK_CORK_LEN;
+    if (sec->kind == SEC_CORKSCREW) {
+        float t       = local_s / sec->length;
         float roll    = 2.0f * (float)M_PI * t;
         float cr = cosf(roll), sr = sinf(roll);
+        float lift    = sec->cork_lift * sinf((float)M_PI * t);
 
-        /* Raise centerline in a bell curve so the ship rolls under a
-         * track that's lifted above its original height when inverted. */
-        float lift = 3.5f * sinf((float)M_PI * t);
-
-        f.pos = vector_add(cork_start_pos, vector_scale(arc_end_tan, local_s));
+        f.pos = vector_add(sec->start_pos, vector_scale(sec->start_tangent, local_s));
         f.pos.y += lift;
-        f.tangent = arc_end_tan;
-        /* Roll the (right, up) basis around the tangent. Start with
-         * the arc-exit (right, up) and rotate by `roll`. */
-        f.right = vector_add(vector_scale(arc_end_right,  cr),
-                             vector_scale(flat_up,        sr));
-        f.up    = vector_add(vector_scale(arc_end_right, -sr),
-                             vector_scale(flat_up,        cr));
+        f.tangent = sec->start_tangent;
+        f.right = vector_add(vector_scale(sec->start_right,  cr),
+                             vector_scale(f.up,              sr));
+        f.up    = vector_add(vector_scale(sec->start_right, -sr),
+                             vector_scale(f.up,              cr));
         return f;
     }
 
-    /* Straight 3: continues from the end of the corkscrew (back to
-     * flat orientation since roll = 2π = 0 mod 2π). */
-    vector str3_start_pos = vector_add(cork_start_pos,
-                                       vector_scale(arc_end_tan, TRACK_CORK_LEN));
-    float local_s = s - TRACK_S_STR3_START;
-    f.pos     = vector_add(str3_start_pos, vector_scale(arc_end_tan, local_s));
-    f.tangent = arc_end_tan;
-    f.right   = arc_end_right;
+    /* SEC_ARC */
+    float a  = local_s / sec->radius;
+    float ca = cosf(a), sa = sinf(a);
+    vector new_tangent = rot_y(sec->start_tangent, ca, sa);
+    vector new_right   = rot_y(sec->start_right,   ca, sa);
+    vector arc_center  = vector_sub(sec->start_pos,
+                                    vector_scale(sec->start_right, sec->radius));
+    f.pos     = vector_add(arc_center, vector_scale(new_right, sec->radius));
+    f.tangent = new_tangent;
+
+    /* Banking: sine-bell, 0 at ends, peak at midpoint. */
+    float t    = a / sec->angle;
+    float bank = sec->bank_peak * sinf((float)M_PI * t);
+    float cb = cosf(bank), sb = sinf(bank);
+    vector flat_up = (vector){0, 1, 0};
+    f.right = vector_add(vector_scale(new_right,  cb),
+                         vector_scale(flat_up,    sb));
+    f.up    = vector_add(vector_scale(new_right, -sb),
+                         vector_scale(flat_up,    cb));
     return f;
 }
 
@@ -361,71 +384,58 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         .material = m_water,
     });
 
-    /* Track surface — straights are single long OBBs (frame is constant
-     * along their length, so no segmentation needed); the arc and the
-     * corkscrew are segmented because their frames vary continuously.
-     * Tunnel cylinders ride the arc segments. */
+    /* Track surface — walk the section table. Straights emit a single
+     * long OBB; arcs and corkscrews emit a chain of small OBBs so the
+     * varying frame is sampled at intervals. Tunnel cylinders are
+     * attached to SEC_TURN1 only. */
+    for (int si = 0; si < SEC_COUNT; si++) {
+        const track_section *sec = &SECTIONS[si];
+        int is_tunnel = (si == SEC_TURN1);
 
-    /* Helper macro for the straight sections. */
-    #define ADD_STRAIGHT(SMID, LEN) do {                                    \
-        track_frame f = track_frame_at(SMID);                               \
-        scene_box b = {                                                     \
-            .center = vector_add(f.pos, vector_scale(f.up, -0.25f)),        \
-            .half_extents = {TRACK_WIDTH * 0.5f, 0.25f, (LEN) * 0.5f},      \
-            .ux = f.right, .uy = f.up, .uz = f.tangent,                     \
-            .material = m_track,                                            \
-        };                                                                  \
-        scene_add_box(s, b);                                                \
-    } while (0)
+        if (sec->kind == SEC_STRAIGHT) {
+            float s_mid = sec->s_start + sec->length * 0.5f;
+            track_frame f = track_frame_at(s_mid);
+            scene_box b = {
+                .center = vector_add(f.pos, vector_scale(f.up, -0.25f)),
+                .half_extents = {TRACK_WIDTH * 0.5f, 0.25f, sec->length * 0.5f},
+                .ux = f.right, .uy = f.up, .uz = f.tangent,
+                .material = m_track,
+            };
+            scene_add_box(s, b);
+            continue;
+        }
 
-    ADD_STRAIGHT(TRACK_STRAIGHT1 * 0.5f, TRACK_STRAIGHT1);
-
-    int arc_segs = (int)(TRACK_ARC_LEN / TRACK_SEG_LEN) + 1;
-    float arc_seg_len = TRACK_ARC_LEN / (float)arc_segs;
-    float arc_seg_half_z = arc_seg_len * 0.55f;
-    for (int i = 0; i < arc_segs; i++) {
-        float s_mid = TRACK_S_TURN_START + (i + 0.5f) * arc_seg_len;
-        track_frame f = track_frame_at(s_mid);
-        scene_box surface = {
-            .center = vector_add(f.pos, vector_scale(f.up, -0.25f)),
-            .half_extents = {TRACK_WIDTH * 0.5f, 0.25f, arc_seg_half_z},
-            .ux = f.right, .uy = f.up, .uz = f.tangent,
-            .material = m_track,
-        };
-        scene_add_box(s, surface);
-        scene_add_cylinder(s, (scene_cylinder){
-            .center = vector_add(f.pos, vector_scale(f.up, TUNNEL_CENTER_OFF)),
-            .axis = f.tangent,
-            .radius = TUNNEL_RADIUS,
-            .half_height = arc_seg_half_z,
-            .material = m_tunnel,
-        });
+        int nseg = (int)(sec->length / TRACK_SEG_LEN) + 1;
+        float seg_len = sec->length / (float)nseg;
+        float seg_half_z = seg_len * 0.55f;
+        for (int j = 0; j < nseg; j++) {
+            float s_mid = sec->s_start + (j + 0.5f) * seg_len;
+            track_frame f = track_frame_at(s_mid);
+            scene_box surface = {
+                .center = vector_add(f.pos, vector_scale(f.up, -0.25f)),
+                .half_extents = {TRACK_WIDTH * 0.5f, 0.25f, seg_half_z},
+                .ux = f.right, .uy = f.up, .uz = f.tangent,
+                .material = m_track,
+            };
+            scene_add_box(s, surface);
+            if (is_tunnel) {
+                scene_add_cylinder(s, (scene_cylinder){
+                    .center = vector_add(f.pos, vector_scale(f.up, TUNNEL_CENTER_OFF)),
+                    .axis = f.tangent,
+                    .radius = TUNNEL_RADIUS,
+                    .half_height = seg_half_z,
+                    .material = m_tunnel,
+                });
+            }
+        }
     }
-
-    ADD_STRAIGHT(TRACK_S_STR2_START + TRACK_STRAIGHT2 * 0.5f, TRACK_STRAIGHT2);
-
-    int cork_segs = (int)(TRACK_CORK_LEN / TRACK_SEG_LEN) + 1;
-    float cork_seg_len = TRACK_CORK_LEN / (float)cork_segs;
-    float cork_seg_half_z = cork_seg_len * 0.55f;
-    for (int i = 0; i < cork_segs; i++) {
-        float s_mid = TRACK_S_CORK_START + (i + 0.5f) * cork_seg_len;
-        track_frame f = track_frame_at(s_mid);
-        scene_box surface = {
-            .center = vector_add(f.pos, vector_scale(f.up, -0.25f)),
-            .half_extents = {TRACK_WIDTH * 0.5f, 0.25f, cork_seg_half_z},
-            .ux = f.right, .uy = f.up, .uz = f.tangent,
-            .material = m_track,
-        };
-        scene_add_box(s, surface);
-    }
-
-    ADD_STRAIGHT(TRACK_S_STR3_START + TRACK_STRAIGHT3 * 0.5f, TRACK_STRAIGHT3);
-    #undef ADD_STRAIGHT
 
     /* Emissive strips on the upper-side of the tunnel interior.
      * Reflective cylinder bounces them into the rest of the tube so it
      * doesn't feel dead. */
-    for (float sp = TUNNEL_S_START; sp <= TUNNEL_S_END; sp += TUNNEL_LIGHT_SPACE) {
+    float tunnel_s_start = SECTIONS[SEC_TURN1].s_start;
+    float tunnel_s_end   = tunnel_s_start + SECTIONS[SEC_TURN1].length;
+    for (float sp = tunnel_s_start; sp <= tunnel_s_end; sp += TUNNEL_LIGHT_SPACE) {
         track_frame f = track_frame_at(sp);
         vector strip_he = {0.05f, 0.18f, 0.30f};
         /* Place strips at ~60° up-and-out along the cylinder interior. */
@@ -476,7 +486,7 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
 
     /* Skybox + sun */
     scene_add_sphere(s, (scene_sphere){
-        .center = {0, 0, TRACK_TOTAL * 0.5f},
+        .center = {0, 0, TRACK_TOTAL_LEN * 0.5f},
         .radius = 500.0f, .material = m_sky,
     });
     scene_add_sphere(s, (scene_sphere){
@@ -584,6 +594,7 @@ int main(int argc, char *argv[]) {
 
     scene *scn;
     scene_camera *cam;
+    init_track();
     build_scene(&scn, &cam);
 
     int preset = PRESET_DEFAULT;
@@ -768,7 +779,7 @@ int main(int argc, char *argv[]) {
             snprintf(title_buf, sizeof(title_buf),
                      "Racer - %s %dx%d boost=%.2f s=%.0f/%.0f %d FPS (rt=%.1fms fx=%.1fms)",
                      rt_renderer_name(active), render_w, render_h,
-                     boost, ship_s, (float)TRACK_TOTAL,
+                     boost, ship_s, TRACK_TOTAL_LEN,
                      fps_frames, avg_r, avg_fx);
             SDL_SetWindowTitle(window, title_buf);
             fps_frames = 0; render_ms_accum = 0; fx_ms_accum = 0;
