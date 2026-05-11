@@ -27,6 +27,7 @@
  *   1..6         resolution preset (160x120 / 240x180 / 320x240 / 480x360 / 640x480 / 960x720)
  *   I            toggle interlacing (CPU backend only)
  *   R            toggle reflections (off state swaps in procedural textures)
+ *   P            toggle postfx stack (chromatic / vignette / grain)
  *   - / =        zoom camera out / in
  *   A / D        strafe
  *   W / S        boost / brake
@@ -624,6 +625,7 @@ int main(int argc, char *argv[]) {
     float  cam_zoom = 1.0f;     /* scales chase distance + height; -/= adjust */
     int    interlace_on  = 1;   /* I toggles; CPU only */
     int    reflections_on = 1;  /* R toggles; swap to procedural tex when off */
+    int    postfx_on = 1;       /* P toggles chromatic+vignette+grain stack */
 
     int running = 1;
     Uint32 fps_last = SDL_GetTicks();
@@ -682,6 +684,10 @@ int main(int argc, char *argv[]) {
                     apply_reflections(scn, reflections_on);
                     fprintf(stderr, "Reflections: %s\n",
                             reflections_on ? "on" : "off");
+                }
+                if (k == SDLK_p) {
+                    postfx_on = !postfx_on;
+                    fprintf(stderr, "Postfx: %s\n", postfx_on ? "on" : "off");
                 }
                 if (k >= SDLK_1 && k <= SDLK_6) {
                     int idx = k - SDLK_1;
@@ -758,10 +764,12 @@ int main(int argc, char *argv[]) {
         rt_renderer_render(active, scn, cam, &viewport, pixels, NULL);
         Uint32 r_done = SDL_GetTicks();
 
-        postfx_chromatic_apply(chrom, pixels, render_w, render_h, &chrom_cfg);
-        postfx_vignette_apply (pixels, render_w, render_h, &vig_cfg);
-        grain_cfg.seed = frame_now;
-        postfx_grain_apply    (pixels, render_w, render_h, &grain_cfg);
+        if (postfx_on) {
+            postfx_chromatic_apply(chrom, pixels, render_w, render_h, &chrom_cfg);
+            postfx_vignette_apply (pixels, render_w, render_h, &vig_cfg);
+            grain_cfg.seed = frame_now;
+            postfx_grain_apply    (pixels, render_w, render_h, &grain_cfg);
+        }
         Uint32 fx_done = SDL_GetTicks();
 
         render_ms_accum += r_done  - r_start;
