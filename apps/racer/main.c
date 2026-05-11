@@ -106,11 +106,32 @@ static const pixel_preset PRESETS[] = {
 #define MAX_STRAFE_V    14.0f
 #define STRAFE_CLAMP    (TRACK_WIDTH * 0.40f)
 
+/* Ship is a primitive composite expressed in a local frame:
+ *   +z = forward (tangent), +x = right, +y = up.
+ * update_ship_geometry transforms each part into world space using the
+ * (right, up, tangent) frame from the track spline. */
 typedef struct {
-    int body, wing_l, wing_r, canopy;
-    vector body_off, wing_l_off, wing_r_off, canopy_off;
-    float body_r, canopy_r;
-    vector wing_he;
+    /* primitive indices into the scene arrays */
+    int hull;            /* OBB elongated body */
+    int nose;            /* cone, apex forward */
+    int canopy;          /* sphere on top, near front */
+    int tail_fin;        /* OBB vertical fin at the back */
+    int wing_l, wing_r;  /* OBBs, swept slightly outward */
+    int engine_l, engine_r;   /* cylinders along tangent at the back */
+    int glow_l, glow_r;       /* emissive spheres at the engine exhausts */
+
+    /* local-frame offsets */
+    vector hull_off, canopy_off, tail_fin_off;
+    vector wing_l_off, wing_r_off;
+    vector engine_l_off, engine_r_off;
+    vector glow_l_off, glow_r_off;
+    vector nose_apex_off;
+
+    /* shape sizes */
+    vector hull_he, tail_fin_he, wing_he;
+    float  canopy_r, glow_r_size;
+    float  nose_height, nose_radius;
+    float  engine_radius, engine_half_h;
 } ship_rig;
 
 static ship_rig SHIP;
@@ -460,30 +481,86 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         scene_add_box(s, right_strip);
     }
 
-    /* Ship parts — record indices and local offsets so we can
-     * translate them by the ship position each frame. */
-    SHIP.body_r   = 0.55f;
-    SHIP.canopy_r = 0.32f;
-    SHIP.wing_he  = (vector){0.45f, 0.08f, 0.40f};
-    SHIP.body_off     = (vector){0, 0, 0};
-    SHIP.canopy_off   = (vector){0, 0.35f, -0.05f};
-    SHIP.wing_l_off   = (vector){-0.80f, -0.05f,  0.05f};
-    SHIP.wing_r_off   = (vector){ 0.80f, -0.05f,  0.05f};
+    /* Engine-exhaust glow — bright cyan, unlit so it always reads as a
+     * light source regardless of orientation. */
+    int m_glow = scene_add_material(s, (scene_material){
+        .albedo = {120, 230, 255}, .unlit = 1,
+    });
+    /* Engine pods — dark metallic. Reused canopy material's dark blue
+     * keeps the palette tight. */
+    int m_engine = scene_add_material(s, (scene_material){
+        .albedo = {35, 40, 55}, .reflectivity = 0.50f,
+    });
+    register_swap(s, m_engine, (scene_material){
+        .albedo = {35, 40, 55}, .albedo2 = {18, 22, 32},
+        .tex_kind = SCENE_TEX_STRIPES, .tex_scale = 0.25f,
+        .reflectivity = 0.0f,
+    });
 
-    SHIP.body = scene_add_sphere(s, (scene_sphere){
-        .center = {0, TRACK_Y + SHIP_HOVER_Y, 0},
-        .radius = SHIP.body_r, .material = m_ship,
+    /* Ship parts — record indices and local offsets so we can
+     * translate them by the ship position each frame.
+     *
+     * Local frame: +z = forward (tangent), +x = right, +y = up. */
+    vector zero_pos = {0, TRACK_Y + SHIP_HOVER_Y, 0};
+
+    SHIP.hull_he       = (vector){0.35f, 0.20f, 0.85f};
+    SHIP.hull_off      = (vector){0, 0, 0};
+
+    SHIP.nose_height   = 0.40f;
+    SHIP.nose_radius   = 0.32f;
+    SHIP.nose_apex_off = (vector){0, 0, 1.15f};
+
+    SHIP.canopy_r      = 0.30f;
+    SHIP.canopy_off    = (vector){0, 0.26f, 0.20f};
+
+    SHIP.tail_fin_he   = (vector){0.04f, 0.28f, 0.18f};
+    SHIP.tail_fin_off  = (vector){0, 0.42f, -0.55f};
+
+    SHIP.wing_he       = (vector){0.45f, 0.07f, 0.42f};
+    SHIP.wing_l_off    = (vector){-0.72f, -0.05f, -0.10f};
+    SHIP.wing_r_off    = (vector){ 0.72f, -0.05f, -0.10f};
+
+    SHIP.engine_radius = 0.16f;
+    SHIP.engine_half_h = 0.30f;
+    SHIP.engine_l_off  = (vector){-0.45f, -0.05f, -0.78f};
+    SHIP.engine_r_off  = (vector){ 0.45f, -0.05f, -0.78f};
+
+    SHIP.glow_r_size   = 0.13f;
+    SHIP.glow_l_off    = (vector){-0.45f, -0.05f, -1.12f};
+    SHIP.glow_r_off    = (vector){ 0.45f, -0.05f, -1.12f};
+
+    SHIP.hull = scene_add_box(s,
+        scene_box_obb(zero_pos, SHIP.hull_he, (vector){0,0,0}, m_ship));
+    SHIP.nose = scene_add_cone(s, (scene_cone){
+        .apex = zero_pos, .axis = {0, 0, -1},
+        .height = SHIP.nose_height, .radius = SHIP.nose_radius,
+        .material = m_ship,
     });
     SHIP.canopy = scene_add_sphere(s, (scene_sphere){
-        .center = {0, TRACK_Y + SHIP_HOVER_Y, 0},
-        .radius = SHIP.canopy_r, .material = m_canopy,
+        .center = zero_pos, .radius = SHIP.canopy_r, .material = m_canopy,
     });
-    SHIP.wing_l = scene_add_box(s, scene_box_obb(
-        (vector){0, TRACK_Y + SHIP_HOVER_Y, 0},
-        SHIP.wing_he, (vector){0, 0, 0}, m_wing));
-    SHIP.wing_r = scene_add_box(s, scene_box_obb(
-        (vector){0, TRACK_Y + SHIP_HOVER_Y, 0},
-        SHIP.wing_he, (vector){0, 0, 0}, m_wing));
+    SHIP.tail_fin = scene_add_box(s,
+        scene_box_obb(zero_pos, SHIP.tail_fin_he, (vector){0,0,0}, m_wing));
+    SHIP.wing_l = scene_add_box(s,
+        scene_box_obb(zero_pos, SHIP.wing_he, (vector){0,0,0}, m_wing));
+    SHIP.wing_r = scene_add_box(s,
+        scene_box_obb(zero_pos, SHIP.wing_he, (vector){0,0,0}, m_wing));
+    SHIP.engine_l = scene_add_cylinder(s, (scene_cylinder){
+        .center = zero_pos, .axis = {0, 0, 1},
+        .radius = SHIP.engine_radius, .half_height = SHIP.engine_half_h,
+        .material = m_engine,
+    });
+    SHIP.engine_r = scene_add_cylinder(s, (scene_cylinder){
+        .center = zero_pos, .axis = {0, 0, 1},
+        .radius = SHIP.engine_radius, .half_height = SHIP.engine_half_h,
+        .material = m_engine,
+    });
+    SHIP.glow_l = scene_add_sphere(s, (scene_sphere){
+        .center = zero_pos, .radius = SHIP.glow_r_size, .material = m_glow,
+    });
+    SHIP.glow_r = scene_add_sphere(s, (scene_sphere){
+        .center = zero_pos, .radius = SHIP.glow_r_size, .material = m_glow,
+    });
 
     /* Skybox + sun */
     scene_add_sphere(s, (scene_sphere){
@@ -509,24 +586,52 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         (vector){0, -0.15f, 1.0f});
 }
 
+static inline void set_obb_frame(scene_box *b, vector right, vector up, vector tangent) {
+    b->ux = right; b->uy = up; b->uz = tangent;
+}
+
 static void update_ship_geometry(scene *s, vector ship_pos,
                                  vector right, vector up, vector tangent) {
-    s->spheres[SHIP.body].center =
-        local_to_world(ship_pos, right, up, tangent, SHIP.body_off);
+    /* Hull (OBB) */
+    s->boxes[SHIP.hull].center =
+        local_to_world(ship_pos, right, up, tangent, SHIP.hull_off);
+    set_obb_frame(&s->boxes[SHIP.hull], right, up, tangent);
+
+    /* Nose cone — apex forward, axis points back toward base. */
+    s->cones[SHIP.nose].apex =
+        local_to_world(ship_pos, right, up, tangent, SHIP.nose_apex_off);
+    s->cones[SHIP.nose].axis = vector_scale(tangent, -1.0f);
+
+    /* Canopy (sphere) */
     s->spheres[SHIP.canopy].center =
         local_to_world(ship_pos, right, up, tangent, SHIP.canopy_off);
 
+    /* Tail fin (OBB) */
+    s->boxes[SHIP.tail_fin].center =
+        local_to_world(ship_pos, right, up, tangent, SHIP.tail_fin_off);
+    set_obb_frame(&s->boxes[SHIP.tail_fin], right, up, tangent);
+
+    /* Wings (OBBs) */
     s->boxes[SHIP.wing_l].center =
         local_to_world(ship_pos, right, up, tangent, SHIP.wing_l_off);
-    s->boxes[SHIP.wing_l].ux = right;
-    s->boxes[SHIP.wing_l].uy = up;
-    s->boxes[SHIP.wing_l].uz = tangent;
-
+    set_obb_frame(&s->boxes[SHIP.wing_l], right, up, tangent);
     s->boxes[SHIP.wing_r].center =
         local_to_world(ship_pos, right, up, tangent, SHIP.wing_r_off);
-    s->boxes[SHIP.wing_r].ux = right;
-    s->boxes[SHIP.wing_r].uy = up;
-    s->boxes[SHIP.wing_r].uz = tangent;
+    set_obb_frame(&s->boxes[SHIP.wing_r], right, up, tangent);
+
+    /* Engine pods (cylinders) — axis along tangent. */
+    s->cylinders[SHIP.engine_l].center =
+        local_to_world(ship_pos, right, up, tangent, SHIP.engine_l_off);
+    s->cylinders[SHIP.engine_l].axis = tangent;
+    s->cylinders[SHIP.engine_r].center =
+        local_to_world(ship_pos, right, up, tangent, SHIP.engine_r_off);
+    s->cylinders[SHIP.engine_r].axis = tangent;
+
+    /* Engine glows (emissive spheres) */
+    s->spheres[SHIP.glow_l].center =
+        local_to_world(ship_pos, right, up, tangent, SHIP.glow_l_off);
+    s->spheres[SHIP.glow_r].center =
+        local_to_world(ship_pos, right, up, tangent, SHIP.glow_r_off);
 }
 
 static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
