@@ -26,6 +26,7 @@
  *   TAB          toggle CPU/OpenGL backend (OpenGL has no interlace)
  *   1..6         resolution preset (160x120 / 240x180 / 320x240 / 480x360 / 640x480 / 960x720)
  *   I            toggle interlacing (CPU backend only)
+ *   R            toggle reflections (off state swaps in procedural textures)
  *   - / =        zoom camera out / in
  *   A / D        strafe
  *   W / S        boost / brake
@@ -119,6 +120,32 @@ typedef struct {
 } ship_rig;
 
 static ship_rig SHIP;
+
+/* Reflections toggle: each reflective material has an "off" state
+ * with reflectivity zeroed and a procedural texture taking the place
+ * of the mirror sheen. Toggling R swaps materials between the two
+ * states in-place. */
+#define RACER_MAX_SWAPS 8
+typedef struct {
+    int idx;
+    scene_material on_state, off_state;
+} mat_swap;
+static mat_swap SWAPS[RACER_MAX_SWAPS];
+static int SWAP_COUNT = 0;
+
+static void register_swap(scene *s, int mat_idx, scene_material off_state) {
+    if (SWAP_COUNT >= RACER_MAX_SWAPS) return;
+    SWAPS[SWAP_COUNT].idx = mat_idx;
+    SWAPS[SWAP_COUNT].on_state = s->materials[mat_idx];
+    SWAPS[SWAP_COUNT].off_state = off_state;
+    SWAP_COUNT++;
+}
+
+static void apply_reflections(scene *s, int on) {
+    for (int i = 0; i < SWAP_COUNT; i++) {
+        s->materials[SWAPS[i].idx] = on ? SWAPS[i].on_state : SWAPS[i].off_state;
+    }
+}
 
 /* ----- Track spline -------------------------------------------------------
  *
@@ -291,6 +318,40 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
     });
     int m_strip = scene_add_material(s, (scene_material){
         .albedo = {255, 180, 90}, .unlit = 1,
+    });
+
+    /* Register "reflections-off" replacements for each reflective
+     * material — reflectivity drops to 0 and a procedural texture
+     * fills in for the mirror sheen. */
+    register_swap(s, m_track, (scene_material){
+        .albedo = {30, 35, 45}, .albedo2 = {18, 20, 28},
+        .tex_kind = SCENE_TEX_STRIPES, .tex_scale = 4.0f,
+        .reflectivity = 0.0f,
+    });
+    register_swap(s, m_water, (scene_material){
+        .albedo = {30, 60, 95}, .albedo2 = {10, 20, 35},
+        .tex_kind = SCENE_TEX_NOISE, .tex_scale = 5.0f,
+        .reflectivity = 0.0f,
+    });
+    register_swap(s, m_ship, (scene_material){
+        .albedo = {210, 35, 45}, .albedo2 = {130, 25, 30},
+        .tex_kind = SCENE_TEX_SPOTS, .tex_scale = 0.3f,
+        .reflectivity = 0.0f,
+    });
+    register_swap(s, m_canopy, (scene_material){
+        .albedo = {25, 30, 60}, .albedo2 = {110, 150, 220},
+        .tex_kind = SCENE_TEX_CELLS, .tex_scale = 0.3f,
+        .reflectivity = 0.0f,
+    });
+    register_swap(s, m_wing, (scene_material){
+        .albedo = {180, 180, 195}, .albedo2 = {130, 130, 150},
+        .tex_kind = SCENE_TEX_STRIPES, .tex_scale = 0.6f,
+        .reflectivity = 0.0f,
+    });
+    register_swap(s, m_tunnel, (scene_material){
+        .albedo = {55, 65, 95}, .albedo2 = {30, 40, 65},
+        .tex_kind = SCENE_TEX_BRICKS, .tex_scale = 2.0f,
+        .reflectivity = 0.0f, .unlit = 1,
     });
 
     /* World water plane below the track */
@@ -550,7 +611,8 @@ int main(int argc, char *argv[]) {
     float  strafe_v = 0.0f;
     float  boost    = 1.0f;
     float  cam_zoom = 1.0f;     /* scales chase distance + height; -/= adjust */
-    int    interlace_on = 1;    /* I toggles; CPU only */
+    int    interlace_on  = 1;   /* I toggles; CPU only */
+    int    reflections_on = 1;  /* R toggles; swap to procedural tex when off */
 
     int running = 1;
     Uint32 fps_last = SDL_GetTicks();
@@ -603,6 +665,12 @@ int main(int argc, char *argv[]) {
                      * prior mode don't ghost when switching. */
                     memset(pixels, 0, (size_t)(render_w * render_h) * sizeof(uint32_t));
                     fprintf(stderr, "Interlace: %s\n", interlace_on ? "on" : "off");
+                }
+                if (k == SDLK_r) {
+                    reflections_on = !reflections_on;
+                    apply_reflections(scn, reflections_on);
+                    fprintf(stderr, "Reflections: %s\n",
+                            reflections_on ? "on" : "off");
                 }
                 if (k >= SDLK_1 && k <= SDLK_6) {
                     int idx = k - SDLK_1;
