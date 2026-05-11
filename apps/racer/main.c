@@ -38,6 +38,7 @@
 #include "plane.h"
 #include "box.h"
 #include "torus.h"
+#include "cylinder.h"
 #include "mesh.h"
 #include "postfx.h"
 #include <SDL2/SDL.h>
@@ -90,12 +91,14 @@ static const pixel_preset PRESETS[] = {
 
 #define TRACK_SEG_LEN       2.5f   /* approximate; segments overlap slightly */
 
-/* Tunnel wraps the banked turn for the photogenic reflection moment. */
+/* Tunnel wraps the banked turn for the photogenic reflection moment.
+ * Built from one cylinder per segment (axis = tangent) so the cross-
+ * section is a true circle that follows the spline + banking. */
 #define TUNNEL_S_START      TRACK_S_TURN_START
 #define TUNNEL_S_END        TRACK_S_STR2_START
-#define TUNNEL_HEIGHT       4.0f
-#define TUNNEL_WALL_THK     0.30f
-#define TUNNEL_LIGHT_SPACE  4.0f    /* emissive strip every Nm along each wall */
+#define TUNNEL_RADIUS       3.5f
+#define TUNNEL_CENTER_OFF   3.0f    /* up-offset of cylinder center from track */
+#define TUNNEL_LIGHT_SPACE  4.0f    /* emissive strip every Nm along each side */
 
 #define BASE_SPEED      24.0f
 #define MAX_BOOST       1.6f
@@ -273,9 +276,6 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
     int m_barrier = scene_add_material(s, (scene_material){
         .albedo = {120, 220, 255}, .unlit = 1,
     });
-    int m_pickup = scene_add_material(s, (scene_material){
-        .albedo = {255, 220, 80}, .unlit = 1,
-    });
     int m_sky = scene_add_material(s, (scene_material){
         .albedo = {35, 30, 75}, .albedo2 = {200, 110, 70},
         .tex_kind = SCENE_TEX_CLOUDS, .tex_scale = 30.0f,
@@ -299,13 +299,11 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
     });
 
     /* Track surface — chain of slightly overlapping OBBs along the spline.
-     * In the tunnel range we also add left/right walls and a ceiling per
-     * segment so the enclosure follows banking and curvature. */
+     * In the tunnel range we add one cylinder per segment so the
+     * enclosure is a true circular cross-section that follows banking. */
     int num_segs = (int)(TRACK_TOTAL / TRACK_SEG_LEN) + 1;
     float seg_len = TRACK_TOTAL / (float)num_segs;
     float seg_half_z = seg_len * 0.55f;     /* ~10% overlap into next seg */
-    float wall_half_x = TUNNEL_WALL_THK * 0.5f;
-    float wall_x_off  = TRACK_WIDTH * 0.5f + wall_half_x;
     for (int i = 0; i < num_segs; i++) {
         float s_mid = (i + 0.5f) * seg_len;
         track_frame f = track_frame_at(s_mid);
@@ -318,51 +316,36 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         scene_add_box(s, surface);
 
         if (s_mid >= TUNNEL_S_START && s_mid <= TUNNEL_S_END) {
-            scene_box left_wall = {
-                .center = local_to_world(f.pos, f.right, f.up, f.tangent,
-                          (vector){-wall_x_off, TUNNEL_HEIGHT * 0.5f, 0}),
-                .half_extents = {wall_half_x, TUNNEL_HEIGHT * 0.5f, seg_half_z},
-                .ux = f.right, .uy = f.up, .uz = f.tangent,
+            scene_add_cylinder(s, (scene_cylinder){
+                .center = vector_add(f.pos,
+                                     vector_scale(f.up, TUNNEL_CENTER_OFF)),
+                .axis = f.tangent,
+                .radius = TUNNEL_RADIUS,
+                .half_height = seg_half_z,
                 .material = m_tunnel,
-            };
-            scene_box right_wall = {
-                .center = local_to_world(f.pos, f.right, f.up, f.tangent,
-                          (vector){ wall_x_off, TUNNEL_HEIGHT * 0.5f, 0}),
-                .half_extents = {wall_half_x, TUNNEL_HEIGHT * 0.5f, seg_half_z},
-                .ux = f.right, .uy = f.up, .uz = f.tangent,
-                .material = m_tunnel,
-            };
-            scene_box ceiling = {
-                .center = local_to_world(f.pos, f.right, f.up, f.tangent,
-                          (vector){0, TUNNEL_HEIGHT + wall_half_x, 0}),
-                .half_extents = {wall_x_off, wall_half_x, seg_half_z},
-                .ux = f.right, .uy = f.up, .uz = f.tangent,
-                .material = m_tunnel,
-            };
-            scene_add_box(s, left_wall);
-            scene_add_box(s, right_wall);
-            scene_add_box(s, ceiling);
+            });
         }
     }
 
-    /* Emissive light strips along the tunnel walls. Reflective walls
-     * bounce these into the tunnel interior so it doesn't feel dead
-     * (no point lights in the engine — emissive + recursive reflection
-     * is how we fake it). */
+    /* Emissive strips on the upper-side of the tunnel interior.
+     * Reflective cylinder bounces them into the rest of the tube so it
+     * doesn't feel dead. */
     for (float sp = TUNNEL_S_START; sp <= TUNNEL_S_END; sp += TUNNEL_LIGHT_SPACE) {
         track_frame f = track_frame_at(sp);
-        vector strip_he = {0.05f, 0.20f, 0.30f};
-        float inside_x = TRACK_WIDTH * 0.5f - 0.08f;
+        vector strip_he = {0.05f, 0.18f, 0.30f};
+        /* Place strips at ~60° up-and-out along the cylinder interior. */
+        float strip_lat = TUNNEL_RADIUS * 0.78f;     /* sin(60°) ≈ 0.866 — clear of the wall */
+        float strip_up  = TUNNEL_CENTER_OFF + TUNNEL_RADIUS * 0.55f;
         scene_box left_strip = {
             .center = local_to_world(f.pos, f.right, f.up, f.tangent,
-                      (vector){-inside_x, TUNNEL_HEIGHT * 0.6f, 0}),
+                      (vector){-strip_lat, strip_up, 0}),
             .half_extents = strip_he,
             .ux = f.right, .uy = f.up, .uz = f.tangent,
             .material = m_strip,
         };
         scene_box right_strip = {
             .center = local_to_world(f.pos, f.right, f.up, f.tangent,
-                      (vector){ inside_x, TUNNEL_HEIGHT * 0.6f, 0}),
+                      (vector){ strip_lat, strip_up, 0}),
             .half_extents = strip_he,
             .ux = f.right, .uy = f.up, .uz = f.tangent,
             .material = m_strip,
@@ -372,7 +355,7 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
     }
 
     /* Barriers every 8m on both edges, oriented with the local frame.
-     * Skipped inside the tunnel section — the walls take over. */
+     * Skipped inside the tunnel section — the cylinder takes over. */
     for (float sp = 0.0f; sp < TRACK_TOTAL; sp += 8.0f) {
         if (sp >= TUNNEL_S_START && sp <= TUNNEL_S_END) continue;
         track_frame f = track_frame_at(sp);
@@ -389,17 +372,6 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
                          .material = m_barrier };
         scene_add_box(s, bl);
         scene_add_box(s, br);
-    }
-
-    /* Glowing pickup rings down the center */
-    for (float sp = 25.0f; sp < TRACK_TOTAL; sp += 30.0f) {
-        track_frame f = track_frame_at(sp);
-        scene_add_torus(s, (scene_torus){
-            .center = vector_add(f.pos, vector_scale(f.up, 1.4f)),
-            .axis = f.tangent,
-            .major_radius = 1.1f, .minor_radius = 0.10f,
-            .material = m_pickup,
-        });
     }
 
     /* Ship parts — record indices and local offsets so we can

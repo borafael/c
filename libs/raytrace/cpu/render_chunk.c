@@ -418,6 +418,12 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             vector hp = vector_add(ro, vector_scale(rd, t));
             h.point = hp;
             h.normal = rt_normal_cylinder(hp, &scene->cylinders[i]);
+            /* Two-sided so inside-view (camera enclosed by the cylinder)
+             * shades and reflects against the inner wall — matches the
+             * disc convention above. Without this, racer-style tunnels
+             * built from cylinders go pitch-black inside. */
+            if (vector_dot(h.normal, rd) > 0.0f)
+                h.normal = vector_scale(h.normal, -1.0f);
             float u, v;
             uv_cylinder(hp, &scene->cylinders[i], &u, &v);
             const scene_material *m = &scene->materials[scene->cylinders[i].material];
