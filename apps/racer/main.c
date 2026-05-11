@@ -22,6 +22,7 @@
  *
  * Controls:
  *   ESC          quit
+ *   F11          toggle fullscreen
  *   TAB          toggle CPU/OpenGL backend (OpenGL has no interlace)
  *   A / D        strafe
  *   W / S        boost / brake
@@ -236,6 +237,7 @@ int main(int argc, char *argv[]) {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     int window_w = INIT_WINDOW_W, window_h = INIT_WINDOW_H;
+    int fullscreen = 0;
     SDL_Window *window = SDL_CreateWindow("Racer",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         window_w, window_h, SDL_WINDOW_OPENGL);
@@ -320,6 +322,12 @@ int main(int argc, char *argv[]) {
                     if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
                     else if (active == gpu_rnd && cpu_rnd) active = cpu_rnd;
                     fprintf(stderr, "Active: %s\n", rt_renderer_name(active));
+                }
+                if (k == SDLK_F11) {
+                    fullscreen = !fullscreen;
+                    SDL_SetWindowFullscreen(window,
+                        fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                    SDL_GetWindowSize(window, &window_w, &window_h);
                 }
             }
         }
