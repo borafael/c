@@ -62,7 +62,10 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   Reports avg/best/worst ms, FPS, rays/sec —
 │   │                     #   used to estimate the floor of host CPUs the
 │   │                     #   raytracer can hit real-time on.
-│   └── barrier/          # Game prototype using battleforge (ECS + sprites + maps)
+│   ├── barrier/          # Game prototype using battleforge (ECS + sprites + maps)
+│   └── racer/            # Anti-grav racer prototype (Hi Octane / Wipeout vibe).
+│                         #   Reflective track, glowing torus pickups, chase cam,
+│                         #   interlaced 320x240 + chromatic/vignette/grain postfx
 ├── scripts/              # build-windows.sh (MinGW cross-compile, all apps), Blender sprite tools
 └── docs/                 # slice-sprite-guide.md, ideas/, plans/, superpowers/
 ```
@@ -119,6 +122,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 # Other
 ./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
 ./apps/barrier/barrier                   # Game prototype
+./apps/racer/racer                       # Anti-grav racer prototype (A/D strafe, W/S boost/brake)
 ./apps/lowspec/lowspec --threads 1       # Headless CPU-raytrace bench (no SDL); --res, --interlace, --out
 ```
 
