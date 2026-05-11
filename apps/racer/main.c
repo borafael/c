@@ -298,34 +298,66 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         .material = m_water,
     });
 
-    /* Track surface — chain of slightly overlapping OBBs along the spline.
-     * In the tunnel range we add one cylinder per segment so the
-     * enclosure is a true circular cross-section that follows banking. */
-    int num_segs = (int)(TRACK_TOTAL / TRACK_SEG_LEN) + 1;
-    float seg_len = TRACK_TOTAL / (float)num_segs;
-    float seg_half_z = seg_len * 0.55f;     /* ~10% overlap into next seg */
-    for (int i = 0; i < num_segs; i++) {
-        float s_mid = (i + 0.5f) * seg_len;
+    /* Track surface — straights are single long OBBs (frame is constant
+     * along their length, so no segmentation needed); the arc and the
+     * corkscrew are segmented because their frames vary continuously.
+     * Tunnel cylinders ride the arc segments. */
+
+    /* Helper macro for the straight sections. */
+    #define ADD_STRAIGHT(SMID, LEN) do {                                    \
+        track_frame f = track_frame_at(SMID);                               \
+        scene_box b = {                                                     \
+            .center = vector_add(f.pos, vector_scale(f.up, -0.25f)),        \
+            .half_extents = {TRACK_WIDTH * 0.5f, 0.25f, (LEN) * 0.5f},      \
+            .ux = f.right, .uy = f.up, .uz = f.tangent,                     \
+            .material = m_track,                                            \
+        };                                                                  \
+        scene_add_box(s, b);                                                \
+    } while (0)
+
+    ADD_STRAIGHT(TRACK_STRAIGHT1 * 0.5f, TRACK_STRAIGHT1);
+
+    int arc_segs = (int)(TRACK_ARC_LEN / TRACK_SEG_LEN) + 1;
+    float arc_seg_len = TRACK_ARC_LEN / (float)arc_segs;
+    float arc_seg_half_z = arc_seg_len * 0.55f;
+    for (int i = 0; i < arc_segs; i++) {
+        float s_mid = TRACK_S_TURN_START + (i + 0.5f) * arc_seg_len;
         track_frame f = track_frame_at(s_mid);
         scene_box surface = {
             .center = vector_add(f.pos, vector_scale(f.up, -0.25f)),
-            .half_extents = {TRACK_WIDTH * 0.5f, 0.25f, seg_half_z},
+            .half_extents = {TRACK_WIDTH * 0.5f, 0.25f, arc_seg_half_z},
             .ux = f.right, .uy = f.up, .uz = f.tangent,
             .material = m_track,
         };
         scene_add_box(s, surface);
-
-        if (s_mid >= TUNNEL_S_START && s_mid <= TUNNEL_S_END) {
-            scene_add_cylinder(s, (scene_cylinder){
-                .center = vector_add(f.pos,
-                                     vector_scale(f.up, TUNNEL_CENTER_OFF)),
-                .axis = f.tangent,
-                .radius = TUNNEL_RADIUS,
-                .half_height = seg_half_z,
-                .material = m_tunnel,
-            });
-        }
+        scene_add_cylinder(s, (scene_cylinder){
+            .center = vector_add(f.pos, vector_scale(f.up, TUNNEL_CENTER_OFF)),
+            .axis = f.tangent,
+            .radius = TUNNEL_RADIUS,
+            .half_height = arc_seg_half_z,
+            .material = m_tunnel,
+        });
     }
+
+    ADD_STRAIGHT(TRACK_S_STR2_START + TRACK_STRAIGHT2 * 0.5f, TRACK_STRAIGHT2);
+
+    int cork_segs = (int)(TRACK_CORK_LEN / TRACK_SEG_LEN) + 1;
+    float cork_seg_len = TRACK_CORK_LEN / (float)cork_segs;
+    float cork_seg_half_z = cork_seg_len * 0.55f;
+    for (int i = 0; i < cork_segs; i++) {
+        float s_mid = TRACK_S_CORK_START + (i + 0.5f) * cork_seg_len;
+        track_frame f = track_frame_at(s_mid);
+        scene_box surface = {
+            .center = vector_add(f.pos, vector_scale(f.up, -0.25f)),
+            .half_extents = {TRACK_WIDTH * 0.5f, 0.25f, cork_seg_half_z},
+            .ux = f.right, .uy = f.up, .uz = f.tangent,
+            .material = m_track,
+        };
+        scene_add_box(s, surface);
+    }
+
+    ADD_STRAIGHT(TRACK_S_STR3_START + TRACK_STRAIGHT3 * 0.5f, TRACK_STRAIGHT3);
+    #undef ADD_STRAIGHT
 
     /* Emissive strips on the upper-side of the tunnel interior.
      * Reflective cylinder bounces them into the rest of the tube so it
