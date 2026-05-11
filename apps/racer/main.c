@@ -31,7 +31,9 @@
  *   - / =        zoom camera out / in
  *   A / D        strafe
  *   W / S        boost / brake
- *   SPACE        reset to start
+ *   SPACE        reset to start (resets lap counter too)
+ *
+ * HUD: lap counter in the top-left, speed (km/h) in the top-right.
  */
 
 #include "renderer.h"
@@ -105,6 +107,80 @@ static const pixel_preset PRESETS[] = {
 #define STRAFE_DAMP     6.0f
 #define MAX_STRAFE_V    14.0f
 #define STRAFE_CLAMP    (TRACK_WIDTH * 0.40f)
+
+/* ----- HUD font (5x7 bitmap) ---------------------------------------------
+ *
+ * Each glyph is 7 rows × 5 cols, stored as 7 bytes (low 5 bits used,
+ * MSB = leftmost pixel). hud_draw_text scales per-pixel for the
+ * current resolution. */
+static const uint8_t HUD_FONT[][7] = {
+    /* digits 0..9 */
+    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, /* 0 */
+    {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}, /* 1 */
+    {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, /* 2 */
+    {0x1F,0x02,0x04,0x02,0x01,0x11,0x0E}, /* 3 */
+    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, /* 4 */
+    {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E}, /* 5 */
+    {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}, /* 6 */
+    {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}, /* 7 */
+    {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, /* 8 */
+    {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}, /* 9 */
+    /* letters A,H,K,L,M,P (in this order) */
+    {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}, /* A */
+    {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}, /* H */
+    {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, /* K */
+    {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}, /* L */
+    {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}, /* M */
+    {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}, /* P */
+    /* punctuation: '/' ':' ' ' */
+    {0x01,0x02,0x02,0x04,0x08,0x08,0x10}, /* / */
+    {0x00,0x04,0x04,0x00,0x04,0x04,0x00}, /* : */
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* space */
+};
+
+static int hud_font_index(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    switch (c) {
+        case 'A': return 10;
+        case 'H': return 11;
+        case 'K': return 12;
+        case 'L': return 13;
+        case 'M': return 14;
+        case 'P': return 15;
+        case '/': return 16;
+        case ':': return 17;
+        case ' ': return 18;
+        default:  return -1;
+    }
+}
+
+static void hud_draw_text(uint32_t *pixels, int W, int H,
+                          int x, int y, const char *str,
+                          int scale, uint32_t color) {
+    for (const char *p = str; *p; p++) {
+        int idx = hud_font_index(*p);
+        if (idx >= 0) {
+            const uint8_t *glyph = HUD_FONT[idx];
+            for (int row = 0; row < 7; row++) {
+                for (int col = 0; col < 5; col++) {
+                    if (!(glyph[row] & (1u << (4 - col)))) continue;
+                    int px0 = x + col * scale;
+                    int py0 = y + row * scale;
+                    for (int dy = 0; dy < scale; dy++) {
+                        int py = py0 + dy;
+                        if (py < 0 || py >= H) continue;
+                        for (int dx = 0; dx < scale; dx++) {
+                            int px = px0 + dx;
+                            if (px < 0 || px >= W) continue;
+                            pixels[py * W + px] = color;
+                        }
+                    }
+                }
+            }
+        }
+        x += 6 * scale;     /* 5 cols + 1 spacing */
+    }
+}
 
 /* Ship is a primitive composite expressed in a local frame:
  *   +z = forward (tangent), +x = right, +y = up.
@@ -728,6 +804,7 @@ int main(int argc, char *argv[]) {
     float  strafe_v = 0.0f;
     float  boost    = 1.0f;
     float  cam_zoom = 1.0f;     /* scales chase distance + height; -/= adjust */
+    int    lap      = 1;        /* incremented each time ship_s wraps */
     int    interlace_on  = 1;   /* I toggles; CPU only */
     int    reflections_on = 1;  /* R toggles; swap to procedural tex when off */
     int    postfx_on = 1;       /* P toggles chromatic+vignette+grain stack */
@@ -754,6 +831,7 @@ int main(int argc, char *argv[]) {
                 if (k == SDLK_SPACE) {
                     ship_s = 0.0f; ship_lat = 0.0f;
                     strafe_v = 0.0f; boost = 1.0f;
+                    lap = 1;
                 }
                 if (k == SDLK_TAB) {
                     if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
@@ -844,7 +922,11 @@ int main(int argc, char *argv[]) {
         ship_s   += BASE_SPEED * boost * dt;
         if (ship_lat >  STRAFE_CLAMP) { ship_lat =  STRAFE_CLAMP; strafe_v = 0; }
         if (ship_lat < -STRAFE_CLAMP) { ship_lat = -STRAFE_CLAMP; strafe_v = 0; }
-        ship_s = track_wrap_s(ship_s);
+        while (ship_s >= TRACK_TOTAL_LEN) {
+            ship_s -= TRACK_TOTAL_LEN;
+            lap++;
+        }
+        while (ship_s < 0.0f) ship_s += TRACK_TOTAL_LEN;
 
         /* Resolve to world */
         track_frame sf = track_frame_at(ship_s);
@@ -874,6 +956,26 @@ int main(int argc, char *argv[]) {
             postfx_vignette_apply (pixels, render_w, render_h, &vig_cfg);
             grain_cfg.seed = frame_now;
             postfx_grain_apply    (pixels, render_w, render_h, &grain_cfg);
+        }
+
+        /* HUD: drawn after postfx so digits stay crisp. Scale with
+         * render height so glyphs are legible at every preset. Color
+         * is the same warm amber used by the tunnel light strips. */
+        {
+            int hud_scale = render_h / 120;
+            if (hud_scale < 1) hud_scale = 1;
+            uint32_t hud_color = 0xFFFFB450u;  /* amber, ARGB */
+            int speed_kmh = (int)(BASE_SPEED * boost * 3.6f + 0.5f);
+            char lap_buf[16], spd_buf[16];
+            snprintf(lap_buf, sizeof(lap_buf), "LAP %d", lap);
+            snprintf(spd_buf, sizeof(spd_buf), "%d KM/H", speed_kmh);
+            int pad = 4 * hud_scale;
+            int spd_w = (int)strlen(spd_buf) * 6 * hud_scale;
+            hud_draw_text(pixels, render_w, render_h,
+                          pad, pad, lap_buf, hud_scale, hud_color);
+            hud_draw_text(pixels, render_w, render_h,
+                          render_w - spd_w - pad, pad, spd_buf,
+                          hud_scale, hud_color);
         }
         Uint32 fx_done = SDL_GetTicks();
 
