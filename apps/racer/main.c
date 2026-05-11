@@ -993,6 +993,20 @@ int main(int argc, char *argv[]) {
         rt_renderer_render(active, scn, cam, &viewport, pixels, NULL);
         Uint32 r_done = SDL_GetTicks();
 
+        /* When interlace is on, the skipped rows hold content from
+         * earlier frames. Without clearing them, every postfx pass
+         * (chromatic, vignette, grain) compounds on those stale rows
+         * each frame — they progressively darken, shift colors, and
+         * pick up grain. Zero them here so postfx sees clean
+         * "content + black" alternating rows (true scanline look,
+         * no accumulation). */
+        if (interlace_on) {
+            for (int y = 1; y < render_h; y += 2) {
+                memset(&pixels[y * render_w], 0,
+                       (size_t)render_w * sizeof(uint32_t));
+            }
+        }
+
         if (postfx_on) {
             postfx_chromatic_apply(chrom, pixels, render_w, render_h, &chrom_cfg);
             postfx_vignette_apply (pixels, render_w, render_h, &vig_cfg);
