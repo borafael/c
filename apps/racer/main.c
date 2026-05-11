@@ -24,6 +24,7 @@
  *   ESC          quit
  *   F11          toggle fullscreen
  *   TAB          toggle CPU/OpenGL backend (OpenGL has no interlace)
+ *   1..4         resolution preset (160x120 / 320x240 / 480x360 / 640x480)
  *   A / D        strafe
  *   W / S        boost / brake
  *   SPACE        reset to start
@@ -50,9 +51,17 @@
 
 #define INIT_WINDOW_W   960
 #define INIT_WINDOW_H   720
-#define RENDER_W        320
-#define RENDER_H        240
 #define FOV             (M_PI / 3.0f)
+
+typedef struct { int w, h; const char *name; } pixel_preset;
+static const pixel_preset PRESETS[] = {
+    { 160, 120, "160x120" },   /* chunky pixel */
+    { 320, 240, "320x240" },   /* default */
+    { 480, 360, "480x360" },   /* medium */
+    { 640, 480, "640x480" },   /* sharp */
+};
+#define PRESET_COUNT  ((int)(sizeof(PRESETS) / sizeof(PRESETS[0])))
+#define PRESET_DEFAULT 1
 
 #define TRACK_WIDTH         6.0f
 #define TRACK_Y             0.0f
@@ -203,8 +212,8 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         .albedo = {255, 220, 80}, .unlit = 1,
     });
     int m_sky = scene_add_material(s, (scene_material){
-        .albedo = {120, 60, 80}, .albedo2 = {28, 20, 40},
-        .tex_kind = SCENE_TEX_CLOUDS, .tex_scale = 80.0f,
+        .albedo = {35, 30, 75}, .albedo2 = {200, 110, 70},
+        .tex_kind = SCENE_TEX_CLOUDS, .tex_scale = 30.0f,
         .unlit = 1,
     });
     int m_sun = scene_add_material(s, (scene_material){
@@ -400,7 +409,8 @@ int main(int argc, char *argv[]) {
     scene_camera *cam;
     build_scene(&scn, &cam);
 
-    int render_w = RENDER_W, render_h = RENDER_H;
+    int preset = PRESET_DEFAULT;
+    int render_w = PRESETS[preset].w, render_h = PRESETS[preset].h;
     rt_viewport viewport = { render_w, render_h, FOV };
     uint32_t *pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
 
@@ -457,6 +467,25 @@ int main(int argc, char *argv[]) {
                     SDL_SetWindowFullscreen(window,
                         fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
                     SDL_GetWindowSize(window, &window_w, &window_h);
+                }
+                if (k >= SDLK_1 && k <= SDLK_4) {
+                    int idx = k - SDLK_1;
+                    if (idx < PRESET_COUNT && idx != preset) {
+                        preset = idx;
+                        render_w = PRESETS[preset].w;
+                        render_h = PRESETS[preset].h;
+                        free(pixels);
+                        pixels = calloc((size_t)(render_w * render_h),
+                                        sizeof(uint32_t));
+                        viewport = (rt_viewport){ render_w, render_h, FOV };
+                        postfx_chromatic_destroy(chrom);
+                        chrom = postfx_chromatic_create(render_w, render_h);
+                        glBindTexture(GL_TEXTURE_2D, display_tex);
+                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                                     render_w, render_h, 0,
+                                     GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+                        fprintf(stderr, "Preset: %s\n", PRESETS[preset].name);
+                    }
                 }
             }
         }
