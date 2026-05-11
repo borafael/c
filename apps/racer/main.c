@@ -273,9 +273,6 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
     int m_wing = scene_add_material(s, (scene_material){
         .albedo = {180, 180, 195}, .reflectivity = 0.45f,
     });
-    int m_barrier = scene_add_material(s, (scene_material){
-        .albedo = {120, 220, 255}, .unlit = 1,
-    });
     int m_sky = scene_add_material(s, (scene_material){
         .albedo = {35, 30, 75}, .albedo2 = {200, 110, 70},
         .tex_kind = SCENE_TEX_CLOUDS, .tex_scale = 30.0f,
@@ -355,26 +352,6 @@ static void build_scene(scene **scn_out, scene_camera **cam_out) {
         };
         scene_add_box(s, left_strip);
         scene_add_box(s, right_strip);
-    }
-
-    /* Barriers every 8m on both edges, oriented with the local frame.
-     * Skipped inside the tunnel section — the cylinder takes over. */
-    for (float sp = 0.0f; sp < TRACK_TOTAL; sp += 8.0f) {
-        if (sp >= TUNNEL_S_START && sp <= TUNNEL_S_END) continue;
-        track_frame f = track_frame_at(sp);
-        vector bar_half = {0.22f, 0.25f, 0.25f};
-        vector left_c  = local_to_world(f.pos, f.right, f.up, f.tangent,
-                          (vector){-(TRACK_WIDTH * 0.5f + bar_half.x), 0.25f, 0});
-        vector right_c = local_to_world(f.pos, f.right, f.up, f.tangent,
-                          (vector){ (TRACK_WIDTH * 0.5f + bar_half.x), 0.25f, 0});
-        scene_box bl = { .center = left_c,  .half_extents = bar_half,
-                         .ux = f.right, .uy = f.up, .uz = f.tangent,
-                         .material = m_barrier };
-        scene_box br = { .center = right_c, .half_extents = bar_half,
-                         .ux = f.right, .uy = f.up, .uz = f.tangent,
-                         .material = m_barrier };
-        scene_add_box(s, bl);
-        scene_add_box(s, br);
     }
 
     /* Ship parts — record indices and local offsets so we can
