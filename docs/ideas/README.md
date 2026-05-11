@@ -36,6 +36,7 @@ Most target the "low-spec" theme (ranging from 286-class to modern Raspberry Pi 
 |---|---|---|---|
 | [`origami-armies/`](origami-armies/) | Dark Omen / Shogun-style regimental tactics with polygonal low-poly soldiers — tiny origami armies | `flat-poly/` | seeded |
 | [`barnstorm/`](barnstorm/) | Corncob 3D / F-19-style low-altitude flight combat, flat-shaded polygonal | `flat-poly/` | seeded |
+| [`anti-grav-racer/`](anti-grav-racer/) | Hi Octane / Wipeout 2097-style anti-grav racing — reflective tracks, banked turns, corkscrews, tunnels | `libs/raytrace` | **prototype** in `apps/racer/` |
 
 ## The shared architectural pattern
 
