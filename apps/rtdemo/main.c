@@ -428,12 +428,19 @@ int main(int argc, char *argv[]) {
 
     fprintf(stderr, "GL version: %s\n", (const char *)glGetString(GL_VERSION));
 
-    rt_renderer *cpu_rnd = rt_renderer_available(RT_BACKEND_CPU)
-                         ? rt_renderer_create(RT_BACKEND_CPU) : NULL;
-    rt_renderer *gpu_rnd = rt_renderer_available(RT_BACKEND_OPENGL)
-                         ? rt_renderer_create(RT_BACKEND_OPENGL) : NULL;
+    rt_renderer *backends[3] = {0};
+    int backend_count = 0;
+    /* Order matters: OpenGL first so it's the default when present, then
+     * CPU, then Vulkan (currently a clear-only stub). TAB cycles. */
+    const rt_backend try_order[] = { RT_BACKEND_OPENGL, RT_BACKEND_CPU, RT_BACKEND_VULKAN };
+    for (size_t i = 0; i < sizeof(try_order)/sizeof(try_order[0]); ++i) {
+        if (rt_renderer_available(try_order[i])) {
+            rt_renderer *r = rt_renderer_create(try_order[i]);
+            if (r) backends[backend_count++] = r;
+        }
+    }
 
-    if (!cpu_rnd && !gpu_rnd) {
+    if (backend_count == 0) {
         fprintf(stderr, "No renderers available\n");
         SDL_GL_DeleteContext(gl_ctx);
         SDL_DestroyWindow(window);
@@ -441,9 +448,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    rt_renderer *active = gpu_rnd ? gpu_rnd : cpu_rnd;
-    fprintf(stderr, "Active: %s (press TAB to toggle)\n",
-            rt_renderer_name(active));
+    int active_idx = 0;
+    rt_renderer *active = backends[active_idx];
+    fprintf(stderr, "Active: %s (press TAB to cycle %d backend%s)\n",
+            rt_renderer_name(active), backend_count,
+            backend_count == 1 ? "" : "s");
 
     scene *scene;
     scene_camera *camera;
@@ -488,8 +497,8 @@ int main(int argc, char *argv[]) {
             if (e.type == SDL_KEYDOWN) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
                 if (e.key.keysym.sym == SDLK_TAB) {
-                    if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
-                    else if (active == gpu_rnd && cpu_rnd) active = cpu_rnd;
+                    active_idx = (active_idx + 1) % backend_count;
+                    active = backends[active_idx];
                     fprintf(stderr, "Active: %s\n", rt_renderer_name(active));
                 }
                 if (e.key.keysym.sym == SDLK_F11) {
@@ -577,8 +586,7 @@ int main(int argc, char *argv[]) {
 
     glDeleteFramebuffers(1, &display_fbo);
     glDeleteTextures(1, &display_tex);
-    if (cpu_rnd) rt_renderer_destroy(cpu_rnd);
-    if (gpu_rnd) rt_renderer_destroy(gpu_rnd);
+    for (int i = 0; i < backend_count; ++i) rt_renderer_destroy(backends[i]);
     free(pixels);
     scene_camera_destroy(camera);
     scene_destroy(scene);
