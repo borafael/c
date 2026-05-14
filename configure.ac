@@ -93,6 +93,32 @@ if test "x$have_opengl_backend" = "xyes"; then
 fi
 AM_CONDITIONAL([BUILD_OPENGL_BACKEND], [test "x$have_opengl_backend" = "xyes"])
 
+# Vulkan compute backend in libraytrace. Detection is auto by default;
+# pass --enable-vulkan to fail configure if the loader is missing, or
+# --disable-vulkan to skip the backend entirely.
+#
+# The stub currently issues an image clear via the transfer queue —
+# enough to prove instance/device/queue/command-buffer/readback plumbing.
+# Replace with a compute pipeline + SPIR-V module when porting the
+# raytracer shader from libs/raytrace/opengl/renderer.c.
+AC_ARG_ENABLE([vulkan],
+    AS_HELP_STRING([--enable-vulkan], [Enable Vulkan compute backend (default: auto)]),
+    [enable_vulkan=$enableval],
+    [enable_vulkan=auto])
+
+have_vulkan_backend=no
+if test "x$enable_vulkan" != "xno"; then
+    PKG_CHECK_MODULES([VULKAN], [vulkan],
+        [have_vulkan_backend=yes],
+        [if test "x$enable_vulkan" = "xyes"; then
+             AC_MSG_ERROR([Vulkan backend requested but vulkan.pc not found])
+         fi])
+fi
+if test "x$have_vulkan_backend" = "xyes"; then
+    AC_DEFINE([RT_HAVE_VULKAN_BACKEND], [1], [Vulkan compute backend is available])
+fi
+AM_CONDITIONAL([BUILD_VULKAN_BACKEND], [test "x$have_vulkan_backend" = "xyes"])
+
 # Terminal renderer (libs/term + apps/sshorb) — uses POSIX termios,
 # fcntl O_NONBLOCK on stdin, ioctl(TIOCGWINSZ), and SIGWINCH. None of
 # those work on MinGW so the term/sshorb subdirs are skipped on Windows.

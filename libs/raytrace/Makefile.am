@@ -28,3 +28,9 @@ libraytrace_la_SOURCES += opengl/renderer.c
 libraytrace_la_CPPFLAGS += $(GL_CFLAGS)
 libraytrace_la_LIBADD += $(GL_LIBS)
 endif
+
+if BUILD_VULKAN_BACKEND
+libraytrace_la_SOURCES += vulkan/renderer.c
+libraytrace_la_CPPFLAGS += $(VULKAN_CFLAGS)
+libraytrace_la_LIBADD += $(VULKAN_LIBS)
+endif
