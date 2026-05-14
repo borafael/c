@@ -31,6 +31,15 @@ endif
 
 if BUILD_VULKAN_BACKEND
 libraytrace_la_SOURCES += vulkan/renderer.c
-libraytrace_la_CPPFLAGS += $(VULKAN_CFLAGS)
+libraytrace_la_CPPFLAGS += $(VULKAN_CFLAGS) -I$(builddir)/vulkan
 libraytrace_la_LIBADD += $(VULKAN_LIBS)
+BUILT_SOURCES = vulkan/raytrace_spv.h
+CLEANFILES = vulkan/raytrace.spv vulkan/raytrace_spv.h
+
+vulkan/raytrace.spv: $(srcdir)/vulkan/raytrace.comp
+	@$(MKDIR_P) vulkan
+	$(GLSLC) --target-env=vulkan1.1 -fshader-stage=compute -O -o $@ $<
+
+vulkan/raytrace_spv.h: vulkan/raytrace.spv
+	xxd -i -name raytrace_spv $< > $@
 endif

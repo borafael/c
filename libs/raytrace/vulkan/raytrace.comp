@@ -1,0 +1,1268 @@
+#version 460
+
+/* Ported from libs/raytrace/opengl/renderer.c — see that file for the
+ * authoritative GLSL. This file is the Vulkan-flavoured copy with three
+ * differences:
+ *   - All bindings are namespaced by descriptor set (images / UBO in
+ *     set 0, SSBOs in set 1, samplers in set 2).
+ *   - Loose uniforms (camera, counts, ambient, gbuf toggle) live in a
+ *     single UBO block at set=0, binding=4. Vulkan SPIR-V has no loose
+ *     uniforms — they must be in a block.
+ *   - SSBO binding numbers are renumbered to 0..15 (the OpenGL backend
+ *     skipped 11/12 to leave room for image bindings). */
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, rgba8)   uniform writeonly image2D   outputImage;
+/* G-buffer images. Host only writes them when u_have_gbuf=1. */
+layout(set = 0, binding = 1, r32ui)   uniform writeonly uimage2D  gObjectId;
+layout(set = 0, binding = 2, r32f)    uniform writeonly image2D   gDepth;
+layout(set = 0, binding = 3, rgba32f) uniform writeonly image2D   gNormal;
+
+layout(set = 0, binding = 4, std140) uniform Globals {
+    int   u_have_gbuf;
+    vec3  u_cam_origin;
+    vec3  u_cam_forward;
+    vec3  u_cam_right;
+    vec3  u_cam_up;
+    float u_fov;
+    float u_ambient;
+    int   u_sphere_count;
+    int   u_plane_count;
+    int   u_disc_count;
+    int   u_cylinder_count;
+    int   u_cone_count;
+    int   u_torus_count;
+    int   u_triangle_count;
+    int   u_box_count;
+    int   u_sprite_count;
+    int   u_heightfield_count;
+    int   u_light_count;
+    int   u_mesh_count;
+    int   u_material_count;
+};
+
+
+struct Sphere   { vec4 center_radius; ivec4 mat; };
+struct Plane    { vec4 point; vec4 normal; ivec4 mat; };
+struct Disc     { vec4 center_radius; vec4 normal; ivec4 mat; };
+struct Cylinder { vec4 center_hh; vec4 axis_radius; ivec4 mat; };
+/* Finite cone: apex_h.xyz = apex, apex_h.w = height; axis_r.xyz = unit
+ * axis from apex toward base, axis_r.w = base radius. */
+struct Cone     { vec4 apex_h; vec4 axis_r; ivec4 mat; };
+/* Torus: center_R.xyz = center, center_R.w = major radius;
+ * axis_r.xyz = unit axis (normal to the swept plane), axis_r.w = minor
+ * radius. */
+struct Torus    { vec4 center_R; vec4 axis_r; ivec4 mat; };
+/* Triangle: positions in v0..v2.xyz, per-vertex u in v0..v2.w, vertex
+ * normals in n0..n2.xyz, per-vertex v in n0..n2.w. mat.x = material
+ * index, mat.y = 1 if per-vertex normals/uvs are valid (mesh tris),
+ * 0 to use face normal + planar UV (scene tris). */
+struct Triangle {
+    vec4  v0; vec4 v1; vec4 v2;
+    vec4  n0; vec4 n1; vec4 n2;
+    ivec4 mat;
+};
+/* Oriented box: center / half_extents / orthonormal basis (ux,uy,uz)
+ * matching scene_box. ux/uy/uz are world-space directions of the
+ * box's local axes; for an AABB they are (1,0,0)/(0,1,0)/(0,0,1). */
+struct Box      { vec4 center; vec4 he; vec4 ux; vec4 uy; vec4 uz; ivec4 mat; };
+struct Sprite   { vec4 position_w; vec4 direction_h; ivec4 frame_info; };
+struct Light    { vec4 direction_intensity; };
+/* Per-mesh descriptor for BVH traversal. Triangles for each mesh live in
+ * the triangle SSBO at [tri_start, tri_start+tri_count). Leaf tri_start
+ * is LOCAL to the mesh; the absolute index is mesh.tri_start +
+ * leaf.tri_start + k.
+ *
+ * world_inv (rows wi0..wi3) is the per-mesh world-from-local inverse:
+ * the shader transforms ro/rd into mesh-local space before BVH
+ * traversal, then maps the resulting normal back to world via the
+ * inverse-transpose rule. wi3 is always (0,0,0,1) — affine. */
+struct Mesh     {
+    vec4  bounds;
+    ivec4 info;
+    vec4  wi0; vec4 wi1; vec4 wi2; vec4 wi3;
+};
+struct BvhNode  { vec4 aabb_min; vec4 aabb_max; ivec4 info; };
+                                                /* info: (tri_start_local,
+                                                          tri_count,
+                                                          second_child_offset, _) */
+struct Material {
+    vec4  albedo;   /* tile A / base color */
+    vec4  albedo2;  /* tile B (checker) */
+    ivec4 kind;     /* .x = scene_tex_kind, .y = tex_index */
+    vec4  scale;    /* .x = tex_scale, .y = reflectivity */
+};
+struct Texture { ivec4 size; };  /* .x = real_w, .y = real_h */
+struct Heightfield {
+    vec4  origin_world;   /* origin_x, origin_z, world_w, world_d */
+    vec4  grid;           /* rows, cols, max_h, 0 */
+    ivec4 offsets;        /* heights_off, normals_off, colors_off, material_idx (-1 = raw colors) */
+};
+
+layout(set = 1, binding = 0, std430) readonly buffer SphereBuf   { Sphere   spheres[];    };
+layout(set = 1, binding = 1, std430) readonly buffer PlaneBuf    { Plane    planes[];     };
+layout(set = 1, binding = 2, std430) readonly buffer DiscBuf     { Disc     discs[];      };
+layout(set = 1, binding = 3, std430) readonly buffer CylBuf      { Cylinder cylinders[];  };
+layout(set = 1, binding = 4, std430) readonly buffer TriBuf      { Triangle triangles[];  };
+layout(set = 1, binding = 5, std430) readonly buffer BoxBuf      { Box      boxes[];      };
+layout(set = 1, binding = 6, std430) readonly buffer SpriteBuf   { Sprite   sprites[];    };
+layout(set = 1, binding = 7, std430) readonly buffer LightBuf    { Light    lights[];     };
+layout(set = 1, binding = 8, std430) readonly buffer HfBuf       { Heightfield heightfields[]; };
+/* Heights, normals, and colors are concatenated into one buffer to keep us
+ * under GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS (commonly 16). Heights and
+ * normals are floats reinterpreted via uintBitsToFloat; colors are uint
+ * channels (0..255). offsets.x/y/z point into this single buffer. */
+layout(set = 1, binding = 9, std430) readonly buffer HfDataBuf   { uint hf_data[]; };
+layout(set = 1, binding = 10, std430) readonly buffer MatBuf      { Material materials[];  };
+layout(set = 1, binding = 11, std430) readonly buffer TexBuf      { Texture  textures[];   };
+layout(set = 1, binding = 12, std430) readonly buffer MeshBuf     { Mesh     meshes[];     };
+layout(set = 1, binding = 13, std430) readonly buffer BvhBuf      { BvhNode  bvh_nodes[];  };
+layout(set = 1, binding = 14, std430) readonly buffer ConeBuf     { Cone     cones[];      };
+layout(set = 1, binding = 15, std430) readonly buffer TorusBuf    { Torus    toruses[];    };
+
+/* Sampler for sprite frames: all frames packed into one texture array */
+layout(set = 2, binding = 0) uniform sampler2DArray u_sprite_atlas;
+/* Sampler for image textures: one layer per material image texture */
+layout(set = 2, binding = 1) uniform sampler2DArray u_tex_atlas;
+
+/* ---- Ray-primitive intersections ------------------------------------- */
+
+float isect_sphere(vec3 ro, vec3 rd, Sphere s) {
+    vec3 oc = ro - s.center_radius.xyz;
+    float r = s.center_radius.w;
+    float b = 2.0 * dot(oc, rd);
+    float c = dot(oc, oc) - r * r;
+    float disc = b * b - 4.0 * c;
+    if (disc < 0.0) return -1.0;
+    float sq = sqrt(disc);
+    float t0 = (-b - sq) * 0.5;
+    if (t0 > 0.0) return t0;
+    float t1 = (-b + sq) * 0.5;
+    return (t1 > 0.0) ? t1 : -1.0;
+}
+
+float isect_plane(vec3 ro, vec3 rd, Plane p) {
+    float denom = dot(rd, p.normal.xyz);
+    if (abs(denom) < 1e-6) return -1.0;
+    float t = dot(p.point.xyz - ro, p.normal.xyz) / denom;
+    return (t > 0.0) ? t : -1.0;
+}
+
+float isect_disc(vec3 ro, vec3 rd, Disc d) {
+    float denom = dot(rd, d.normal.xyz);
+    if (abs(denom) < 1e-6) return -1.0;
+    float t = dot(d.center_radius.xyz - ro, d.normal.xyz) / denom;
+    if (t <= 0.0) return -1.0;
+    vec3 hp = ro + rd * t;
+    vec3 diff = hp - d.center_radius.xyz;
+    if (dot(diff, diff) > d.center_radius.w * d.center_radius.w) return -1.0;
+    return t;
+}
+
+float isect_cylinder(vec3 ro, vec3 rd, Cylinder c, out vec3 hp_out) {
+    vec3  center = c.center_hh.xyz;
+    float hh     = c.center_hh.w;
+    vec3  axis   = c.axis_radius.xyz;
+    float radius = c.axis_radius.w;
+    vec3 oc = ro - center;
+    float rd_dot_a = dot(rd, axis);
+    float oc_dot_a = dot(oc, axis);
+    vec3 rd_perp = rd - axis * rd_dot_a;
+    vec3 oc_perp = oc - axis * oc_dot_a;
+    float a = dot(rd_perp, rd_perp);
+    float b = 2.0 * dot(oc_perp, rd_perp);
+    float cc = dot(oc_perp, oc_perp) - radius * radius;
+    float disc = b * b - 4.0 * a * cc;
+    if (disc < 0.0) return -1.0;
+    float sq = sqrt(disc);
+    float t0 = (-b - sq) / (2.0 * a);
+    float t1 = (-b + sq) / (2.0 * a);
+    for (int i = 0; i < 2; i++) {
+        float t = (i == 0) ? t0 : t1;
+        if (t < 0.0) continue;
+        float h = oc_dot_a + t * rd_dot_a;
+        if (h >= -hh && h <= hh) { hp_out = ro + rd * t; return t; }
+    }
+    return -1.0;
+}
+
+vec3 normal_cylinder(vec3 hp, Cylinder c) {
+    vec3 diff = hp - c.center_hh.xyz;
+    float proj = dot(diff, c.axis_radius.xyz);
+    vec3 on_axis = c.center_hh.xyz + c.axis_radius.xyz * proj;
+    return normalize(hp - on_axis);
+}
+
+/* Finite cone (lateral surface). Implicit equation
+ *   ((P-apex).axis)^2 = cosa2 * |P-apex|^2,
+ * with cosa2 = h^2 / (h^2 + r^2). Same algebra as the CPU path. */
+float isect_cone(vec3 ro, vec3 rd, Cone c, out vec3 hp_out) {
+    vec3  apex   = c.apex_h.xyz;
+    float height = c.apex_h.w;
+    vec3  axis   = c.axis_r.xyz;
+    float radius = c.axis_r.w;
+    float h2     = height * height;
+    float r2     = radius * radius;
+    float cosa2  = h2 / (h2 + r2);
+    vec3  oa     = ro - apex;
+    float k1     = dot(oa, axis);
+    float k2     = dot(rd, axis);
+    float a = k2*k2 - cosa2 * dot(rd, rd);
+    float b = 2.0 * (k1*k2 - cosa2 * dot(rd, oa));
+    float cc = k1*k1 - cosa2 * dot(oa, oa);
+    if (abs(a) < 1e-8) return -1.0;
+    float disc = b*b - 4.0*a*cc;
+    if (disc < 0.0) return -1.0;
+    float sq = sqrt(disc);
+    float t0 = (-b - sq) / (2.0 * a);
+    float t1 = (-b + sq) / (2.0 * a);
+    if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }
+    for (int i = 0; i < 2; i++) {
+        float t = (i == 0) ? t0 : t1;
+        if (t < 0.0) continue;
+        float proj = k1 + t * k2;
+        if (proj >= 0.0 && proj <= height) { hp_out = ro + rd * t; return t; }
+    }
+    return -1.0;
+}
+
+vec3 normal_cone(vec3 hp, Cone c) {
+    vec3  apex   = c.apex_h.xyz;
+    float height = c.apex_h.w;
+    vec3  axis   = c.axis_r.xyz;
+    float radius = c.axis_r.w;
+    float cosa2  = (height*height) / (height*height + radius*radius);
+    vec3  cp     = hp - apex;
+    return normalize(cp * cosa2 - axis * dot(cp, axis));
+}
+
+/* Signed-distance function for a torus given by center, axis, R, r. */
+float torus_sdf(vec3 P, vec3 center, vec3 A, float R, float r) {
+    vec3 cp = P - center;
+    float ay = dot(cp, A);
+    vec3  perp = cp - A * ay;
+    float ax = length(perp);
+    return length(vec2(ax - R, ay)) - r;
+}
+
+/* Sphere-traced torus intersection. Replaces the closed-form quartic
+   because the polynomial coefficients span ~7 orders of magnitude when
+   the camera is tens of units from a small torus, and float-only Ferrari
+   on consumer GPU drivers cannot resolve the roots reliably (visible as
+   a noisy speckle on the surface). The CPU torus uses the closed-form in
+   double precision and stays clean. */
+float isect_torus(vec3 ro, vec3 rd, Torus tor) {
+    float R = tor.center_R.w;
+    float r = tor.axis_r.w;
+    vec3  C = tor.center_R.xyz;
+    vec3  A = tor.axis_r.xyz;
+    /* Bound the search by the torus' bounding sphere so we skip empty
+       space cheaply. The torus fits inside a sphere of radius R+r. */
+    vec3  oc = ro - C;
+    float bd = dot(oc, rd);
+    float disc = bd*bd - dot(oc, oc) + (R + r)*(R + r);
+    if (disc < 0.0) return -1.0;
+    float sq = sqrt(disc);
+    float t_in  = max(-bd - sq, 1e-4);
+    float t_out = -bd + sq;
+    if (t_out <= 1e-4) return -1.0;
+
+    float ts = t_in;
+    for (int i = 0; i < 96; i++) {
+        vec3  P  = ro + rd * ts;
+        float d  = torus_sdf(P, C, A, R, r);
+        float eps = 1e-4 * max(1.0, ts);
+        if (d < eps) return ts;
+        ts += max(d, eps);
+        if (ts > t_out) return -1.0;
+    }
+    return -1.0;
+}
+
+vec3 normal_torus(vec3 hp, Torus t) {
+    vec3 cp = hp - t.center_R.xyz;
+    vec3 A  = t.axis_r.xyz;
+    float ax = dot(cp, A);
+    vec3 perp = cp - A * ax;
+    float plen = length(perp);
+    if (plen < 1e-8) return normalize(A);
+    vec3 closest = t.center_R.xyz + perp * (t.center_R.w / plen);
+    return normalize(hp - closest);
+}
+
+float isect_triangle_bary(vec3 ro, vec3 rd, Triangle tri,
+                           out float bu, out float bv) {
+    vec3 e1 = tri.v1.xyz - tri.v0.xyz;
+    vec3 e2 = tri.v2.xyz - tri.v0.xyz;
+    vec3 pvec = cross(rd, e2);
+    float det = dot(e1, pvec);
+    if (abs(det) < 1e-6) return -1.0;
+    float inv_det = 1.0 / det;
+    vec3 tvec = ro - tri.v0.xyz;
+    float u = dot(tvec, pvec) * inv_det;
+    if (u < 0.0 || u > 1.0) return -1.0;
+    vec3 qvec = cross(tvec, e1);
+    float v = dot(rd, qvec) * inv_det;
+    if (v < 0.0 || u + v > 1.0) return -1.0;
+    float t = dot(e2, qvec) * inv_det;
+    if (t <= 0.0) return -1.0;
+    bu = u; bv = v;
+    return t;
+}
+
+float isect_triangle(vec3 ro, vec3 rd, Triangle tri) {
+    float bu, bv;
+    return isect_triangle_bary(ro, rd, tri, bu, bv);
+}
+
+vec3 normal_triangle(Triangle tri) {
+    return normalize(cross(tri.v1.xyz - tri.v0.xyz, tri.v2.xyz - tri.v0.xyz));
+}
+
+/* Per-mesh affine transforms (row-major mat4 stored as 4 vec4 rows). */
+vec3 mesh_xform_point(Mesh m, vec3 p) {
+    return vec3(dot(m.wi0.xyz, p) + m.wi0.w,
+                dot(m.wi1.xyz, p) + m.wi1.w,
+                dot(m.wi2.xyz, p) + m.wi2.w);
+}
+vec3 mesh_xform_dir(Mesh m, vec3 d) {
+    return vec3(dot(m.wi0.xyz, d), dot(m.wi1.xyz, d), dot(m.wi2.xyz, d));
+}
+/* Local-space normal back to world: transpose(world_inv_3x3) * n. */
+vec3 mesh_xform_normal(Mesh m, vec3 n) {
+    return vec3(m.wi0.x*n.x + m.wi1.x*n.y + m.wi2.x*n.z,
+                m.wi0.y*n.x + m.wi1.y*n.y + m.wi2.y*n.z,
+                m.wi0.z*n.x + m.wi1.z*n.y + m.wi2.z*n.z);
+}
+
+/* Project the ray into the box's local frame and run a slab test
+ * against (-he, +he). Writes the world hit point and the local-space
+ * hit point (used by normal_box / uv_box_face). t is preserved across
+ * the rigid basis change, so it can be returned directly. */
+float isect_box(vec3 ro, vec3 rd, Box b, out vec3 hp_out, out vec3 lhp_out) {
+    vec3 od = ro - b.center.xyz;
+    vec3 lo = vec3(dot(od, b.ux.xyz), dot(od, b.uy.xyz), dot(od, b.uz.xyz));
+    vec3 ld = vec3(dot(rd, b.ux.xyz), dot(rd, b.uy.xyz), dot(rd, b.uz.xyz));
+    vec3 h  = b.he.xyz;
+    float tmin = -1e30;
+    float tmax =  1e30;
+    for (int i = 0; i < 3; i++) {
+        if (abs(ld[i]) > 1e-6) {
+            float t0 = (-h[i] - lo[i]) / ld[i];
+            float t1 = ( h[i] - lo[i]) / ld[i];
+            if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }
+            if (t0 > tmin) tmin = t0;
+            if (t1 < tmax) tmax = t1;
+        } else if (lo[i] < -h[i] || lo[i] > h[i]) return -1.0;
+    }
+    if (tmin > tmax) return -1.0;
+    float t = (tmin > 0.0) ? tmin : tmax;
+    if (t <= 0.0) return -1.0;
+    hp_out  = ro + rd * t;
+    lhp_out = lo + ld * t;
+    return t;
+}
+
+vec3 normal_box(vec3 lhp, Box b) {
+    vec3 h = b.he.xyz;
+    float dx = h.x - abs(lhp.x);
+    float dy = h.y - abs(lhp.y);
+    float dz = h.z - abs(lhp.z);
+    if (dx <= dy && dx <= dz) return b.ux.xyz * (lhp.x >= 0.0 ? 1.0 : -1.0);
+    if (dy <= dz)             return b.uy.xyz * (lhp.y >= 0.0 ? 1.0 : -1.0);
+    return b.uz.xyz * (lhp.z >= 0.0 ? 1.0 : -1.0);
+}
+
+/* Sprite: billboard facing camera, axis-aligned-up. */
+float isect_sprite(vec3 ro, vec3 rd, Sprite s,
+                   out vec3 hp_out, out vec3 right_out,
+                   out vec3 up_out, out vec3 normal_out) {
+    vec3 to_cam = u_cam_origin - s.position_w.xyz;
+    vec3 n = normalize(to_cam);
+    float denom = dot(rd, n);
+    if (abs(denom) < 1e-6) return -1.0;
+    float t = dot(s.position_w.xyz - ro, n) / denom;
+    if (t < 0.0) return -1.0;
+    vec3 world_up = vec3(0.0, 1.0, 0.0);
+    vec3 r = cross(n, world_up);
+    if (length(r) < 1e-3) r = cross(n, vec3(0.0, 0.0, 1.0));
+    r = normalize(r);
+    vec3 u = cross(r, n);
+    vec3 hp = ro + rd * t;
+    vec3 diff = hp - s.position_w.xyz;
+    float lx = dot(diff, r);
+    float ly = dot(diff, u);
+    float hw = s.position_w.w * 0.5;
+    float hh = s.direction_h.w * 0.5;
+    if (lx < -hw || lx > hw || ly < -hh || ly > hh) return -1.0;
+    hp_out = hp;
+    right_out = r;
+    up_out = u;
+    normal_out = n;
+    return t;
+}
+
+int sprite_select_frame(Sprite s) {
+    int fc = s.frame_info.x;
+    if (fc <= 1) return 0;
+    vec3 to_cam = u_cam_origin - s.position_w.xyz;
+    if (length(to_cam.xz) < 1e-4) return 0;
+    float a = atan(to_cam.x, to_cam.z) - atan(s.direction_h.x, s.direction_h.z);
+    const float TAU = 6.28318530718;
+    a = mod(a + TAU, TAU);
+    float sector = TAU / float(fc);
+    int idx = int(floor(a / sector + 0.5)) % fc;
+    return idx;
+}
+
+vec4 sprite_sample(Sprite s, vec3 hp, vec3 r, vec3 u, int frame) {
+    vec3 diff = hp - s.position_w.xyz;
+    float lx = dot(diff, r);
+    float ly = dot(diff, u);
+    float tu = (lx / s.position_w.w) + 0.5;
+    float tv = 0.5 - (ly / s.direction_h.w);
+    int layer = s.frame_info.y + frame;
+    /* texture() with sampler2DArray does bilinear; we want nearest to
+     * match CPU sampling. Use textureLod with integer coords. */
+    ivec2 sz = ivec2(s.frame_info.z, s.frame_info.w);
+    int px = clamp(int(tu * float(sz.x)), 0, sz.x - 1);
+    int py = clamp(int(tv * float(sz.y)), 0, sz.y - 1);
+    return texelFetch(u_sprite_atlas, ivec3(px, py, layer), 0);
+}
+
+/* Heightfield: AABB + DDA grid traversal with triangulated cells */
+int hf_aabb_test(Heightfield hf, vec3 ro, vec3 rd, out float t_enter, out float t_exit) {
+    float xmin = hf.origin_world.x;
+    float xmax = hf.origin_world.x + hf.origin_world.z;
+    float ymin = 0.0;
+    float ymax = hf.grid.z;
+    float zmin = hf.origin_world.y;
+    float zmax = hf.origin_world.y + hf.origin_world.w;
+    float tmin = -1e30;
+    float tmax =  1e30;
+    float mn[3] = float[3](xmin, ymin, zmin);
+    float mx[3] = float[3](xmax, ymax, zmax);
+    for (int i = 0; i < 3; i++) {
+        float rdi = rd[i];
+        float roi = ro[i];
+        if (abs(rdi) > 1e-6) {
+            float t0 = (mn[i] - roi) / rdi;
+            float t1 = (mx[i] - roi) / rdi;
+            if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }
+            if (t0 > tmin) tmin = t0;
+            if (t1 < tmax) tmax = t1;
+        } else if (roi < mn[i] || roi > mx[i]) return 0;
+    }
+    if (tmin > tmax) return 0;
+    if (tmax < 0.0) return 0;
+    t_enter = max(tmin, 0.0);
+    t_exit  = tmax;
+    return 1;
+}
+
+vec3 hf_vertex_pos(Heightfield hf, int r, int c) {
+    int rows = int(hf.grid.x);
+    int cols = int(hf.grid.y);
+    float cw = hf.origin_world.z / float(cols - 1);
+    float cd = hf.origin_world.w / float(rows - 1);
+    float h = uintBitsToFloat(hf_data[hf.offsets.x + r * cols + c]);
+    return vec3(hf.origin_world.x + float(c) * cw, h, hf.origin_world.y + float(r) * cd);
+}
+
+vec3 hf_vertex_normal(Heightfield hf, int r, int c) {
+    int cols = int(hf.grid.y);
+    int base = hf.offsets.y + (r * cols + c) * 3;
+    return vec3(uintBitsToFloat(hf_data[base]),
+                uintBitsToFloat(hf_data[base + 1]),
+                uintBitsToFloat(hf_data[base + 2]));
+}
+
+float hf_tri(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, out float uu, out float vv) {
+    vec3 e1 = v1 - v0;
+    vec3 e2 = v2 - v0;
+    vec3 pvec = cross(rd, e2);
+    float det = dot(e1, pvec);
+    if (abs(det) < 1e-6) return -1.0;
+    float inv_det = 1.0 / det;
+    vec3 tvec = ro - v0;
+    float u = dot(tvec, pvec) * inv_det;
+    if (u < 0.0 || u > 1.0) return -1.0;
+    vec3 qvec = cross(tvec, e1);
+    float v = dot(rd, qvec) * inv_det;
+    if (v < 0.0 || u + v > 1.0) return -1.0;
+    float t = dot(e2, qvec) * inv_det;
+    if (t < 0.0) return -1.0;
+    uu = u; vv = v;
+    return t;
+}
+
+int isect_heightfield(Heightfield hf, vec3 ro, vec3 rd,
+                      out float best_t, out vec3 best_n,
+                      out int best_cr, out int best_cc) {
+    float te, tx;
+    if (hf_aabb_test(hf, ro, rd, te, tx) == 0) return 0;
+    int rows = int(hf.grid.x);
+    int cols = int(hf.grid.y);
+    int cells_x = cols - 1;
+    int cells_z = rows - 1;
+    float cw = hf.origin_world.z / float(cells_x);
+    float cd = hf.origin_world.w / float(cells_z);
+    float eps = 1e-4;
+    vec3 entry = ro + rd * (te + eps);
+    float gx = (entry.x - hf.origin_world.x) / cw;
+    float gz = (entry.z - hf.origin_world.y) / cd;
+    int cx = int(floor(gx));
+    int cz = int(floor(gz));
+    cx = clamp(cx, 0, cells_x - 1);
+    cz = clamp(cz, 0, cells_z - 1);
+    int step_x = (rd.x >= 0.0) ? 1 : -1;
+    int step_z = (rd.z >= 0.0) ? 1 : -1;
+    float t_delta_x = (abs(rd.x) > 1e-6) ? abs(cw / rd.x) : 1e30;
+    float t_delta_z = (abs(rd.z) > 1e-6) ? abs(cd / rd.z) : 1e30;
+    float next_xb = hf.origin_world.x + float((rd.x >= 0.0) ? (cx + 1) : cx) * cw;
+    float next_zb = hf.origin_world.y + float((rd.z >= 0.0) ? (cz + 1) : cz) * cd;
+    float t_max_x = (abs(rd.x) > 1e-6) ? (next_xb - ro.x) / rd.x : 1e30;
+    float t_max_z = (abs(rd.z) > 1e-6) ? (next_zb - ro.z) / rd.z : 1e30;
+    best_t = 1e30;
+    best_n = vec3(0.0, 1.0, 0.0);
+    best_cr = -1; best_cc = -1;
+    int max_steps = cells_x + cells_z + 2;
+    for (int step = 0; step < max_steps; step++) {
+        if (cx < 0 || cx >= cells_x || cz < 0 || cz >= cells_z) break;
+        vec3 v00 = hf_vertex_pos(hf, cz,     cx);
+        vec3 v10 = hf_vertex_pos(hf, cz + 1, cx);
+        vec3 v01 = hf_vertex_pos(hf, cz,     cx + 1);
+        vec3 v11 = hf_vertex_pos(hf, cz + 1, cx + 1);
+        vec3 n00 = hf_vertex_normal(hf, cz,     cx);
+        vec3 n10 = hf_vertex_normal(hf, cz + 1, cx);
+        vec3 n01 = hf_vertex_normal(hf, cz,     cx + 1);
+        vec3 n11 = hf_vertex_normal(hf, cz + 1, cx + 1);
+        float u, v;
+        float t = hf_tri(ro, rd, v00, v10, v01, u, v);
+        if (t > 0.0 && t < best_t) {
+            float w = 1.0 - u - v;
+            best_t = t;
+            best_n = normalize(w * n00 + u * n10 + v * n01);
+            best_cr = cz; best_cc = cx;
+        }
+        t = hf_tri(ro, rd, v10, v11, v01, u, v);
+        if (t > 0.0 && t < best_t) {
+            float w = 1.0 - u - v;
+            best_t = t;
+            best_n = normalize(w * n10 + u * n11 + v * n01);
+            best_cr = cz; best_cc = cx;
+        }
+        if (best_t < 1e30 && best_t <= min(t_max_x, t_max_z) + eps) break;
+        if (t_max_x < t_max_z) { cx += step_x; t_max_x += t_delta_x; }
+        else                   { cz += step_z; t_max_z += t_delta_z; }
+    }
+    return (best_t < 1e30) ? 1 : 0;
+}
+
+/* ---- UV computation per primitive type ------------------------------ */
+
+const float RT_PI = 3.14159265358979323846;
+
+void rt_tangent_basis(vec3 n, out vec3 t, out vec3 b) {
+    vec3 up = (abs(n.y) < 0.999) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    t = normalize(cross(up, n));
+    b = cross(n, t);
+}
+
+vec2 uv_sphere(vec3 hp, vec3 center) {
+    vec3 n = normalize(hp - center);
+    return vec2(atan(n.z, n.x) / (2.0 * RT_PI) + 0.5,
+                acos(clamp(n.y, -1.0, 1.0)) / RT_PI);
+}
+
+vec2 uv_planar(vec3 hp, vec3 anchor, vec3 normal) {
+    vec3 t, b;
+    rt_tangent_basis(normal, t, b);
+    vec3 d = hp - anchor;
+    return vec2(dot(d, t), dot(d, b));
+}
+
+vec2 uv_cyl(vec3 hp, Cylinder c) {
+    vec3 axis = normalize(c.axis_radius.xyz);
+    vec3 ohp = hp - c.center_hh.xyz;
+    float h = dot(ohp, axis);
+    vec3 radial = ohp - axis * h;
+    vec3 ta, tb;
+    rt_tangent_basis(axis, ta, tb);
+    return vec2(atan(dot(radial, tb), dot(radial, ta)) / (2.0 * RT_PI) + 0.5,
+                (h + c.center_hh.w) / (2.0 * c.center_hh.w));
+}
+
+vec2 uv_cone(vec3 hp, Cone c) {
+    vec3  apex   = c.apex_h.xyz;
+    float height = c.apex_h.w;
+    vec3  axis   = c.axis_r.xyz;
+    vec3 cp = hp - apex;
+    float h = dot(cp, axis);
+    vec3 radial = cp - axis * h;
+    vec3 ta, tb;
+    rt_tangent_basis(axis, ta, tb);
+    return vec2(atan(dot(radial, tb), dot(radial, ta)) / (2.0 * RT_PI) + 0.5,
+                (height > 0.0) ? (h / height) : 0.0);
+}
+
+vec2 uv_torus(vec3 hp, Torus t) {
+    vec3 cp = hp - t.center_R.xyz;
+    vec3 A  = t.axis_r.xyz;
+    float ax = dot(cp, A);
+    vec3 radial = cp - A * ax;
+    vec3 ta, tb;
+    rt_tangent_basis(A, ta, tb);
+    float x = dot(radial, ta);
+    float z = dot(radial, tb);
+    float radial_len = sqrt(x*x + z*z);
+    return vec2(atan(z, x) / (2.0 * RT_PI) + 0.5,
+                atan(ax, radial_len - t.center_R.w) / (2.0 * RT_PI) + 0.5);
+}
+
+vec2 uv_box_face(vec3 lhp, Box b) {
+    vec3 h = b.he.xyz;
+    float dx = h.x - abs(lhp.x);
+    float dy = h.y - abs(lhp.y);
+    float dz = h.z - abs(lhp.z);
+    if (dx <= dy && dx <= dz)      return vec2(lhp.z, lhp.y);
+    else if (dy <= dz)             return vec2(lhp.x, lhp.z);
+    else                           return vec2(lhp.x, lhp.y);
+}
+
+/* ---- Procedural noise (matches libs/raytrace/cpu/render_chunk.c) ---- */
+
+uint noise_hash(int x, int y, int z) {
+    uint n = (uint(x) * 73856093u)
+           ^ (uint(y) * 19349663u)
+           ^ (uint(z) * 83492791u);
+    n = n * 2654435761u;
+    n = n ^ (n >> 13);
+    n = n * 2654435761u;
+    return n;
+}
+
+float noise_rand(int x, int y, int z) {
+    return float(noise_hash(x, y, z) & 0xFFFFFFu) / 16777216.0;
+}
+
+float noise_smooth(float t) { return t * t * (3.0 - 2.0 * t); }
+float noise_lerp(float a, float b, float t) { return a + (b - a) * t; }
+float noise_smoothstep(float e0, float e1, float x) {
+    float t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+float noise3d(vec3 p) {
+    int ix = int(floor(p.x));
+    int iy = int(floor(p.y));
+    int iz = int(floor(p.z));
+    float fx = p.x - float(ix);
+    float fy = p.y - float(iy);
+    float fz = p.z - float(iz);
+    float u = noise_smooth(fx);
+    float v = noise_smooth(fy);
+    float w = noise_smooth(fz);
+    float n000 = noise_rand(ix,     iy,     iz);
+    float n100 = noise_rand(ix + 1, iy,     iz);
+    float n010 = noise_rand(ix,     iy + 1, iz);
+    float n110 = noise_rand(ix + 1, iy + 1, iz);
+    float n001 = noise_rand(ix,     iy,     iz + 1);
+    float n101 = noise_rand(ix + 1, iy,     iz + 1);
+    float n011 = noise_rand(ix,     iy + 1, iz + 1);
+    float n111 = noise_rand(ix + 1, iy + 1, iz + 1);
+    float nx00 = noise_lerp(n000, n100, u);
+    float nx10 = noise_lerp(n010, n110, u);
+    float nx01 = noise_lerp(n001, n101, u);
+    float nx11 = noise_lerp(n011, n111, u);
+    float nxy0 = noise_lerp(nx00, nx10, v);
+    float nxy1 = noise_lerp(nx01, nx11, v);
+    return noise_lerp(nxy0, nxy1, w);
+}
+
+void voronoi3d(vec3 p, out float f1_out, out float f2_out) {
+    ivec3 base = ivec3(int(floor(p.x)), int(floor(p.y)), int(floor(p.z)));
+    float f1 = 1e20;
+    float f2 = 1e20;
+    for (int dz = -1; dz <= 1; dz++) {
+    for (int dy = -1; dy <= 1; dy++) {
+    for (int dx = -1; dx <= 1; dx++) {
+        int cx = base.x + dx;
+        int cy = base.y + dy;
+        int cz = base.z + dz;
+        float ox = float(cx) + noise_rand(cx,        cy,        cz);
+        float oy = float(cy) + noise_rand(cx + 1013, cy + 1013, cz + 1013);
+        float oz = float(cz) + noise_rand(cx + 2027, cy + 2027, cz + 2027);
+        float rx = ox - p.x;
+        float ry = oy - p.y;
+        float rz = oz - p.z;
+        float d  = sqrt(rx*rx + ry*ry + rz*rz);
+        if (d < f1)      { f2 = f1; f1 = d; }
+        else if (d < f2) { f2 = d; }
+    }}}
+    f1_out = f1;
+    f2_out = f2;
+}
+
+float turbulence(vec3 p, int octaves) {
+    float total = 0.0;
+    float amp = 1.0;
+    float sum = 0.0;
+    for (int i = 0; i < octaves; i++) {
+        float f = float(1 << i);
+        total += amp * noise3d(p * f);
+        sum += amp;
+        amp *= 0.5;
+    }
+    return total / sum;
+}
+
+vec3 color_lerp(vec3 a, vec3 b, float t) {
+    t = clamp(t, 0.0, 1.0);
+    return a + (b - a) * t;
+}
+
+/* ---- Material sampling ---------------------------------------------- */
+
+vec3 material_sample(int midx, vec3 p, vec2 uv) {
+    Material m = materials[midx];
+    if (m.kind.x == 1) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        const float eps = 1e-4;
+        int ix = int(floor(p.x / s + eps));
+        int iy = int(floor(p.y / s + eps));
+        int iz = int(floor(p.z / s + eps));
+        return ((ix + iy + iz) & 1) != 0 ? m.albedo2.rgb : m.albedo.rgb;
+    }
+    if (m.kind.x == 2 && m.kind.y >= 0) {
+        int tidx = m.kind.y;
+        Texture tx = textures[tidx];
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        float uu = uv.x / s; uu = uu - floor(uu);
+        float vv = uv.y / s; vv = vv - floor(vv);
+        int sx = tx.size.x, sy = tx.size.y;
+        int px = clamp(int(uu * float(sx)), 0, sx - 1);
+        int py = clamp(int(vv * float(sy)), 0, sy - 1);
+        return texelFetch(u_tex_atlas, ivec3(px, py, tidx), 0).rgb;
+    }
+    if (m.kind.x == 3) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, p.y / s);
+    }
+    if (m.kind.x == 4) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        float t = noise3d(p / s);
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, t);
+    }
+    if (m.kind.x == 5) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        float turb = turbulence(p * 0.5, 4) * 0.8;
+        float r = length(vec2(p.x, p.z)) / s;
+        float rings = 0.5 + 0.5 * sin((r + turb) * 6.2831853);
+        float t = rings * rings;
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, t);
+    }
+    if (m.kind.x == 6) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        float turb = turbulence(p, 5) * 5.0;
+        float t = 0.5 + 0.5 * sin(p.x / s + turb);
+        t = t * t * t * t;
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, t);
+    }
+    if (m.kind.x == 7) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        float f1; float f2; voronoi3d(p / s, f1, f2);
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, f1);
+    }
+    if (m.kind.x == 8) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        float f1; float f2; voronoi3d(p / s, f1, f2);
+        float edge = f2 - f1;
+        float e = clamp(edge / 0.12, 0.0, 1.0);
+        float t = 1.0 - e * e * (3.0 - 2.0 * e);
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, t);
+    }
+    if (m.kind.x == 9) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        int ix = int(floor(p.x / s + 1e-4));
+        float t = ((ix & 1) != 0) ? 1.0 : 0.0;
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, t);
+    }
+    if (m.kind.x == 10) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        float ux = p.x / s; float uz = p.z / s;
+        float lx = ux - floor(ux) - 0.5;
+        float lz = uz - floor(uz) - 0.5;
+        float d = sqrt(lx * lx + lz * lz);
+        float t = 1.0 - noise_smoothstep(0.26, 0.30, d);
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, t);
+    }
+    if (m.kind.x == 11) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        float bz = p.z / s;
+        int row = int(floor(bz));
+        float offset = ((row & 1) != 0) ? 0.5 : 0.0;
+        float bx = p.x / (2.0 * s) + offset;
+        float lx = bx - floor(bx);
+        float lz = bz - floor(bz);
+        float mortar = 0.04;
+        bool in_mortar = (lx < mortar) || (lx > 1.0 - mortar)
+                      || (lz < mortar) || (lz > 1.0 - mortar);
+        float t = in_mortar ? 1.0 : 0.0;
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, t);
+    }
+    if (m.kind.x == 12) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        float t = turbulence(p / s, 4);
+        t = noise_smoothstep(0.40, 0.70, t);
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, t);
+    }
+    if (m.kind.x == 13) {
+        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
+        float n = noise3d(p / s);
+        float t = noise_smoothstep(0.55, 0.60, n);
+        return color_lerp(m.albedo.rgb, m.albedo2.rgb, t);
+    }
+    return m.albedo.rgb;
+}
+
+/* ---- Closest-hit + bounce loop -------------------------------------- */
+
+/* G-buffer object-id kinds (must match cpu/render_chunk.c). */
+const uint RT_OBJ_KIND_SPHERE      = 1u;
+const uint RT_OBJ_KIND_PLANE       = 2u;
+const uint RT_OBJ_KIND_DISC        = 3u;
+const uint RT_OBJ_KIND_CYLINDER    = 4u;
+const uint RT_OBJ_KIND_TRIANGLE    = 5u;
+const uint RT_OBJ_KIND_MESH        = 6u;
+const uint RT_OBJ_KIND_BOX         = 7u;
+const uint RT_OBJ_KIND_SPRITE      = 8u;
+const uint RT_OBJ_KIND_HEIGHTFIELD = 9u;
+const uint RT_OBJ_KIND_CONE        = 10u;
+const uint RT_OBJ_KIND_TORUS       = 11u;
+
+struct HitInfo {
+    bool  hit;
+    bool  unlit;
+    vec3  point;
+    vec3  normal;
+    vec3  albedo;
+    float reflectivity;
+    float distance;
+    uint  object_id;
+};
+
+HitInfo closest_hit(vec3 ro, vec3 rd) {
+    HitInfo h;
+    h.hit = false;
+    h.unlit = false;
+    h.point = vec3(0.0);
+    h.normal = vec3(0.0);
+    h.albedo = vec3(0.0);
+    h.reflectivity = 0.0;
+    h.distance = 0.0;
+    h.object_id = 0u;
+    float closest_t = 1e30;
+
+    for (int i = 0; i < u_sphere_count; i++) {
+        float t = isect_sphere(ro, rd, spheres[i]);
+        if (t > 0.0 && t < closest_t) {
+            closest_t = t;
+            vec3 hp = ro + rd * t;
+            h.point  = hp;
+            h.normal = normalize(hp - spheres[i].center_radius.xyz);
+            vec2 uv  = uv_sphere(hp, spheres[i].center_radius.xyz);
+            int midx = spheres[i].mat.x;
+            h.albedo = material_sample(midx, hp, uv);
+            h.reflectivity = materials[midx].scale.y;
+            h.unlit = (materials[midx].kind.z != 0);
+            h.hit = true;
+            h.distance = t;
+            h.object_id = (RT_OBJ_KIND_SPHERE << 24) | (uint(i) & 0x00FFFFFFu);
+        }
+    }
+    for (int i = 0; i < u_plane_count; i++) {
+        float t = isect_plane(ro, rd, planes[i]);
+        if (t > 0.0 && t < closest_t) {
+            closest_t = t;
+            vec3 hp = ro + rd * t;
+            h.point  = hp;
+            h.normal = planes[i].normal.xyz;
+            vec2 uv  = uv_planar(hp, planes[i].point.xyz, h.normal);
+            int midx = planes[i].mat.x;
+            h.albedo = material_sample(midx, hp, uv);
+            h.reflectivity = materials[midx].scale.y;
+            h.unlit = (materials[midx].kind.z != 0);
+            h.hit = true;
+            h.distance = t;
+            h.object_id = (RT_OBJ_KIND_PLANE << 24) | (uint(i) & 0x00FFFFFFu);
+        }
+    }
+    for (int i = 0; i < u_disc_count; i++) {
+        float t = isect_disc(ro, rd, discs[i]);
+        if (t > 0.0 && t < closest_t) {
+            closest_t = t;
+            vec3 hp = ro + rd * t;
+            h.point  = hp;
+            h.normal = discs[i].normal.xyz;
+            /* Discs are double-sided: flip to face the camera. */
+            if (dot(h.normal, rd) > 0.0) h.normal = -h.normal;
+            vec2 uv  = uv_planar(hp, discs[i].center_radius.xyz, h.normal);
+            int midx = discs[i].mat.x;
+            h.albedo = material_sample(midx, hp, uv);
+            h.reflectivity = materials[midx].scale.y;
+            h.unlit = (materials[midx].kind.z != 0);
+            h.hit = true;
+            h.distance = t;
+            h.object_id = (RT_OBJ_KIND_DISC << 24) | (uint(i) & 0x00FFFFFFu);
+        }
+    }
+    for (int i = 0; i < u_cylinder_count; i++) {
+        vec3 hp;
+        float t = isect_cylinder(ro, rd, cylinders[i], hp);
+        if (t > 0.0 && t < closest_t) {
+            closest_t = t;
+            h.point  = hp;
+            h.normal = normal_cylinder(hp, cylinders[i]);
+            vec2 uv  = uv_cyl(hp, cylinders[i]);
+            int midx = cylinders[i].mat.x;
+            h.albedo = material_sample(midx, hp, uv);
+            h.reflectivity = materials[midx].scale.y;
+            h.unlit = (materials[midx].kind.z != 0);
+            h.hit = true;
+            h.distance = t;
+            h.object_id = (RT_OBJ_KIND_CYLINDER << 24) | (uint(i) & 0x00FFFFFFu);
+        }
+    }
+    for (int i = 0; i < u_cone_count; i++) {
+        vec3 hp;
+        float t = isect_cone(ro, rd, cones[i], hp);
+        if (t > 0.0 && t < closest_t) {
+            closest_t = t;
+            h.point  = hp;
+            h.normal = normal_cone(hp, cones[i]);
+            vec2 uv  = uv_cone(hp, cones[i]);
+            int midx = cones[i].mat.x;
+            h.albedo = material_sample(midx, hp, uv);
+            h.reflectivity = materials[midx].scale.y;
+            h.unlit = (materials[midx].kind.z != 0);
+            h.hit = true;
+            h.distance = t;
+            h.object_id = (RT_OBJ_KIND_CONE << 24) | (uint(i) & 0x00FFFFFFu);
+        }
+    }
+    for (int i = 0; i < u_torus_count; i++) {
+        float t = isect_torus(ro, rd, toruses[i]);
+        if (t > 0.0 && t < closest_t) {
+            closest_t = t;
+            vec3 hp = ro + rd * t;
+            h.point  = hp;
+            h.normal = normal_torus(hp, toruses[i]);
+            vec2 uv  = uv_torus(hp, toruses[i]);
+            int midx = toruses[i].mat.x;
+            h.albedo = material_sample(midx, hp, uv);
+            h.reflectivity = materials[midx].scale.y;
+            h.unlit = (materials[midx].kind.z != 0);
+            h.hit = true;
+            h.distance = t;
+            h.object_id = (RT_OBJ_KIND_TORUS << 24) | (uint(i) & 0x00FFFFFFu);
+        }
+    }
+    for (int i = 0; i < u_triangle_count; i++) {
+        float t = isect_triangle(ro, rd, triangles[i]);
+        if (t > 0.0 && t < closest_t) {
+            closest_t = t;
+            vec3 hp = ro + rd * t;
+            h.point  = hp;
+            h.normal = normal_triangle(triangles[i]);
+            /* Scene triangles are double-sided: flip to face the camera. */
+            if (dot(h.normal, rd) > 0.0) h.normal = -h.normal;
+            vec2 uv  = uv_planar(hp, triangles[i].v0.xyz, h.normal);
+            int midx = triangles[i].mat.x;
+            h.albedo = material_sample(midx, hp, uv);
+            h.reflectivity = materials[midx].scale.y;
+            h.unlit = (materials[midx].kind.z != 0);
+            h.hit = true;
+            h.distance = t;
+            h.object_id = (RT_OBJ_KIND_TRIANGLE << 24) | (uint(i) & 0x00FFFFFFu);
+        }
+    }
+    /* --- Mesh triangles via per-mesh BVH (mesh-local space) ----------- */
+    for (int mi = 0; mi < u_mesh_count; mi++) {
+        Mesh mesh = meshes[mi];
+
+        /* Push the ray into mesh-local space; bounds and BVH live there. */
+        vec3 ro_l = mesh_xform_point(mesh, ro);
+        vec3 rd_l = mesh_xform_dir(mesh, rd);
+
+        /* Bounding-sphere outer reject. With non-uniform local rd we need
+         * to compare against |rd_l|^2 * r^2, not r^2. */
+        if (mesh.bounds.w > 0.0) {
+            vec3 oc = ro_l - mesh.bounds.xyz;
+            float b = dot(oc, rd_l);
+            float rd2 = dot(rd_l, rd_l);
+            float r2 = mesh.bounds.w * mesh.bounds.w;
+            float cs = dot(oc, oc) - r2;
+            if (cs > 0.0 && b > 0.0) continue;
+            if (b * b - rd2 * cs < 0.0) continue;
+        }
+
+        vec3 inv_rd_l;
+        inv_rd_l.x = (abs(rd_l.x) > 1e-20) ? 1.0 / rd_l.x : (rd_l.x >= 0.0 ? 1e30 : -1e30);
+        inv_rd_l.y = (abs(rd_l.y) > 1e-20) ? 1.0 / rd_l.y : (rd_l.y >= 0.0 ? 1e30 : -1e30);
+        inv_rd_l.z = (abs(rd_l.z) > 1e-20) ? 1.0 / rd_l.z : (rd_l.z >= 0.0 ? 1e30 : -1e30);
+
+        int bvh_base  = mesh.info.x;
+        int bvh_count = mesh.info.y;
+        int tri_base  = mesh.info.z;
+        int tri_count = mesh.info.w;
+
+        /* Local-space best, applied back to world after the per-mesh loop. */
+        float best_t = closest_t;
+        vec3  best_n_l = vec3(0.0);
+        vec2  best_uv  = vec2(0.0);
+        int   best_mat = -1;
+        bool  hit_this_mesh = false;
+
+        if (bvh_count <= 0) {
+            int end = tri_base + tri_count;
+            for (int ti = tri_base; ti < end; ti++) {
+                float bu, bv;
+                float t = isect_triangle_bary(ro_l, rd_l, triangles[ti], bu, bv);
+                if (t > 0.0 && t < best_t) {
+                    best_t = t;
+                    float bw = 1.0 - bu - bv;
+                    Triangle tr = triangles[ti];
+                    vec3 n = bw * tr.n0.xyz + bu * tr.n1.xyz + bv * tr.n2.xyz;
+                    if (dot(n, n) < 1e-12) n = cross(tr.v1.xyz - tr.v0.xyz, tr.v2.xyz - tr.v0.xyz);
+                    best_n_l = normalize(n);
+                    best_uv  = vec2(bw * tr.v0.w + bu * tr.v1.w + bv * tr.v2.w,
+                                    bw * tr.n0.w + bu * tr.n1.w + bv * tr.n2.w);
+                    best_mat = tr.mat.x;
+                    hit_this_mesh = true;
+                }
+            }
+        } else {
+            int stack[32];
+            int sp = 0;
+            stack[sp++] = 0;
+            while (sp > 0) {
+                int idx = stack[--sp];
+                BvhNode node = bvh_nodes[bvh_base + idx];
+                vec3 t0 = (node.aabb_min.xyz - ro_l) * inv_rd_l;
+                vec3 t1 = (node.aabb_max.xyz - ro_l) * inv_rd_l;
+                vec3 tmin3 = min(t0, t1);
+                vec3 tmax3 = max(t0, t1);
+                float tmn = max(max(tmin3.x, tmin3.y), tmin3.z);
+                float tmx = min(min(tmax3.x, tmax3.y), tmax3.z);
+                if (tmx < 0.0 || tmn > tmx) continue;
+                float t_enter = max(tmn, 0.0);
+                if (t_enter > best_t) continue;
+                int ncount = node.info.y;
+                if (ncount > 0) {
+                    int start = tri_base + node.info.x;
+                    int end   = start + ncount;
+                    for (int ti = start; ti < end; ti++) {
+                        float bu, bv;
+                        float t = isect_triangle_bary(ro_l, rd_l, triangles[ti], bu, bv);
+                        if (t > 0.0 && t < best_t) {
+                            best_t = t;
+                            float bw = 1.0 - bu - bv;
+                            Triangle tr = triangles[ti];
+                            vec3 n = bw * tr.n0.xyz + bu * tr.n1.xyz + bv * tr.n2.xyz;
+                            if (dot(n, n) < 1e-12) n = cross(tr.v1.xyz - tr.v0.xyz, tr.v2.xyz - tr.v0.xyz);
+                            best_n_l = normalize(n);
+                            best_uv  = vec2(bw * tr.v0.w + bu * tr.v1.w + bv * tr.v2.w,
+                                            bw * tr.n0.w + bu * tr.n1.w + bv * tr.n2.w);
+                            best_mat = tr.mat.x;
+                            hit_this_mesh = true;
+                        }
+                    }
+                } else {
+                    if (sp + 2 <= 32) {
+                        stack[sp++] = idx + 1;
+                        stack[sp++] = idx + node.info.z;
+                    }
+                }
+            }
+        }
+
+        if (hit_this_mesh) {
+            closest_t = best_t;
+            /* t is preserved across the linear ray transform, so the
+             * world-space hit point is just ro + rd * t. */
+            h.point  = ro + rd * best_t;
+            h.normal = normalize(mesh_xform_normal(mesh, best_n_l));
+            int midx = best_mat;
+            if (midx < 0 || midx >= u_material_count) {
+                h.albedo = vec3(200.0/255.0);
+                h.reflectivity = 0.0;
+                h.unlit = false;
+            } else {
+                h.albedo = material_sample(midx, h.point, best_uv);
+                h.reflectivity = materials[midx].scale.y;
+                h.unlit = (materials[midx].kind.z != 0);
+            }
+            h.hit = true;
+            h.distance = best_t;
+            h.object_id = (RT_OBJ_KIND_MESH << 24) | (uint(mi) & 0x00FFFFFFu);
+        }
+    }
+    for (int i = 0; i < u_box_count; i++) {
+        vec3 hp, lhp;
+        float t = isect_box(ro, rd, boxes[i], hp, lhp);
+        if (t > 0.0 && t < closest_t) {
+            closest_t = t;
+            h.point  = hp;
+            h.normal = normal_box(lhp, boxes[i]);
+            vec2 uv  = uv_box_face(lhp, boxes[i]);
+            int midx = boxes[i].mat.x;
+            h.albedo = material_sample(midx, hp, uv);
+            h.reflectivity = materials[midx].scale.y;
+            h.unlit = (materials[midx].kind.z != 0);
+            h.hit = true;
+            h.distance = t;
+            h.object_id = (RT_OBJ_KIND_BOX << 24) | (uint(i) & 0x00FFFFFFu);
+        }
+    }
+    for (int i = 0; i < u_sprite_count; i++) {
+        vec3 hp, sright, sup, snormal;
+        float t = isect_sprite(ro, rd, sprites[i], hp, sright, sup, snormal);
+        if (t > 0.0 && t < closest_t) {
+            int frame = sprite_select_frame(sprites[i]);
+            vec4 px = sprite_sample(sprites[i], hp, sright, sup, frame);
+            if (px.a > 0.0) {
+                closest_t = t;
+                h.point  = hp;
+                h.normal = snormal;
+                h.albedo = px.rgb;
+                h.reflectivity = 0.0;
+                h.unlit = false;
+                h.hit = true;
+                h.distance = t;
+                h.object_id = (RT_OBJ_KIND_SPRITE << 24) | (uint(i) & 0x00FFFFFFu);
+            }
+        }
+    }
+    for (int i = 0; i < u_heightfield_count; i++) {
+        float t; vec3 hn; int cr, cc;
+        if (isect_heightfield(heightfields[i], ro, rd, t, hn, cr, cc) == 1) {
+            if (t > 0.0 && t < closest_t) {
+                closest_t = t;
+                vec3 hp = ro + rd * t;
+                h.point  = hp;
+                h.normal = hn;
+                int cells_per_row = int(heightfields[i].grid.y) - 1;
+                int ci = heightfields[i].offsets.z + (cr * cells_per_row + cc) * 3;
+                vec3 cell = vec3(
+                    float(hf_data[ci])     / 255.0,
+                    float(hf_data[ci + 1]) / 255.0,
+                    float(hf_data[ci + 2]) / 255.0
+                );
+                int hf_mat = heightfields[i].offsets.w;
+                if (hf_mat >= 0 && hf_mat < u_material_count) {
+                    /* Match CPU: sample material at hit point with UV =
+                     * (hp.x, hp.z), modulate per-cell biome color, take
+                     * material reflectivity + unlit. */
+                    vec3 tex = material_sample(hf_mat, hp, vec2(hp.x, hp.z));
+                    h.albedo = cell * tex;
+                    h.reflectivity = materials[hf_mat].scale.y;
+                    h.unlit = (materials[hf_mat].kind.z != 0);
+                } else {
+                    h.albedo = cell;
+                    h.reflectivity = 0.0;
+                    h.unlit = false;
+                }
+                h.hit = true;
+                h.distance = t;
+                h.object_id = (RT_OBJ_KIND_HEIGHTFIELD << 24) | (uint(i) & 0x00FFFFFFu);
+            }
+        }
+    }
+    return h;
+}
+
+const int RT_MAX_BOUNCES = 4;
+
+/* ---- Main ------------------------------------------------------------ */
+
+const float RT_GBUF_MIRROR_THRESHOLD = 0.5;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(outputImage);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    float half_w = float(size.x) * 0.5;
+    float half_h = float(size.y) * 0.5;
+    float fov_factor = float(size.y) / (2.0 * tan(u_fov * 0.5));
+    float sx = (float(pixel.x) - half_w) / fov_factor;
+    float sy = -(float(pixel.y) - half_h) / fov_factor;
+    vec3 ro = u_cam_origin;
+    vec3 rd = normalize(u_cam_forward + u_cam_right * sx + u_cam_up * sy);
+
+    vec3 result     = vec3(0.0);
+    vec3 throughput = vec3(1.0);
+    bool  gbuf_done = false;
+    float gbuf_depth_acc = 0.0;
+
+    for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {
+        HitInfo h = closest_hit(ro, rd);
+
+        /* Match CPU: capture G-buffer at first non-mirror surface.
+         * Accumulate path length so the depth channel reflects how far
+         * the eye actually 'looked' through any mirror chain. */
+        if (u_have_gbuf != 0 && !gbuf_done) {
+            if (h.hit) gbuf_depth_acc += h.distance;
+            bool capture = (!h.hit) ||
+                           (h.reflectivity <= RT_GBUF_MIRROR_THRESHOLD);
+            if (capture) {
+                if (h.hit) {
+                    imageStore(gObjectId, pixel, uvec4(h.object_id, 0u, 0u, 0u));
+                    imageStore(gDepth,    pixel, vec4(gbuf_depth_acc, 0.0, 0.0, 0.0));
+                    imageStore(gNormal,   pixel, vec4(h.normal, 0.0));
+                } else {
+                    imageStore(gObjectId, pixel, uvec4(0u, 0u, 0u, 0u));
+                    /* 1e30 is the same 'sky' sentinel CPU uses (FLT_MAX). */
+                    imageStore(gDepth,    pixel, vec4(1e30, 0.0, 0.0, 0.0));
+                    imageStore(gNormal,   pixel, vec4(0.0, 0.0, 0.0, 0.0));
+                }
+                gbuf_done = true;
+            }
+        }
+
+        if (!h.hit) break;
+
+        float shade;
+        if (h.unlit) {
+            shade = 1.0;
+        } else {
+            shade = u_ambient;
+            for (int i = 0; i < u_light_count; i++) {
+                float d = dot(h.normal, lights[i].direction_intensity.xyz);
+                if (d > 0.0) shade += d * lights[i].direction_intensity.w;
+            }
+            shade = min(shade, 1.0);
+        }
+
+        vec3 direct = h.albedo * shade;
+        result += throughput * (1.0 - h.reflectivity) * direct;
+
+        if (h.reflectivity <= 0.0) break;
+
+        throughput *= h.reflectivity;
+        rd = reflect(rd, h.normal);
+        ro = h.point + h.normal * 1e-4;
+    }
+
+    /* Bounce budget exhausted while still inside mirrors — treat as sky
+     * for the G-buffer so the edge filter has consistent miss values. */
+    if (u_have_gbuf != 0 && !gbuf_done) {
+        imageStore(gObjectId, pixel, uvec4(0u, 0u, 0u, 0u));
+        imageStore(gDepth,    pixel, vec4(1e30, 0.0, 0.0, 0.0));
+        imageStore(gNormal,   pixel, vec4(0.0, 0.0, 0.0, 0.0));
+    }
+
+    imageStore(outputImage, pixel, vec4(min(result, vec3(1.0)), 1.0));
+}

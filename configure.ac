@@ -113,11 +113,21 @@ if test "x$enable_vulkan" != "xno"; then
         [if test "x$enable_vulkan" = "xyes"; then
              AC_MSG_ERROR([Vulkan backend requested but vulkan.pc not found])
          fi])
+    if test "x$have_vulkan_backend" = "xyes"; then
+        AC_CHECK_PROG([GLSLC], [glslc], [glslc], [no])
+        if test "x$GLSLC" = "xno"; then
+            if test "x$enable_vulkan" = "xyes"; then
+                AC_MSG_ERROR([Vulkan backend requires glslc (apt install glslc)])
+            fi
+            have_vulkan_backend=no
+        fi
+    fi
 fi
 if test "x$have_vulkan_backend" = "xyes"; then
     AC_DEFINE([RT_HAVE_VULKAN_BACKEND], [1], [Vulkan compute backend is available])
 fi
 AM_CONDITIONAL([BUILD_VULKAN_BACKEND], [test "x$have_vulkan_backend" = "xyes"])
+AC_SUBST([GLSLC])
 
 # Terminal renderer (libs/term + apps/sshorb) — uses POSIX termios,
 # fcntl O_NONBLOCK on stdin, ioctl(TIOCGWINSZ), and SIGWINCH. None of

@@ -126,7 +126,12 @@ libs/scene/tests/.dirstamp
 libs/scene/vendor/ufbx/.dirstamp
 libs/raytrace/cpu/.dirstamp
 libs/raytrace/opengl/.dirstamp
+libs/raytrace/vulkan/.dirstamp
 libs/ini/tests/.dirstamp
+
+# --- Generated SPIR-V ---
+libs/raytrace/vulkan/raytrace.spv
+libs/raytrace/vulkan/raytrace_spv.h
 
 # --- Cross-compilation ---
 deps/
