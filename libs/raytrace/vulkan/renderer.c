@@ -4,26 +4,28 @@
 
 #ifdef RT_HAVE_VULKAN_BACKEND
 
-/* Vulkan compute backend — Stage 1.
+/* Vulkan compute backend — Stage 2.
  *
- * Pipeline + descriptor sets + dispatch are real. SSBO uploads are not
- * — every primitive count in the UBO is set to 0 and the SSBO bindings
- * point at a single shared 64-byte zero buffer. The shader still runs
- * but every ray misses, producing a black frame. Camera and viewport
- * are honoured, so changes to either flow through correctly.
+ * Primitive uploads are live: spheres, planes, discs, cylinders, cones,
+ * toruses, scene-level triangles, boxes, lights, and materials all
+ * stream from the scene into per-binding host-coherent SSBOs each
+ * frame. The shader sees real counts and renders real geometry with
+ * lighting + reflections + procedural materials.
  *
- * Stage 2 will port the upload_* functions from
- * libs/raytrace/opengl/renderer.c and start filling those SSBOs with
- * real scene data. That's where colour shows up.
+ * Not yet ported (Stage 3):
+ *   - Image textures (the texture atlas + scene_texture metadata SSBO).
+ *     Image-textured materials sample a 1x1 dummy and look wrong.
+ *   - Sprites (need a 2D array texture atlas).
+ *   - Meshes + BVH (need a CPU-side rt_scene_accel resolve pass).
+ *   - Heightfields (packed heights/normals/colors buffer).
+ *   - G-buffer output (the bindings exist but u_have_gbuf stays 0).
  *
  * Descriptor layout (single pipeline, three sets to keep image / SSBO /
  * sampler bindings from colliding inside Vulkan's unified namespace):
- *   set 0 binding 0  storage image  outputImage      (rgba8)
- *   set 0 binding 1  storage image  gObjectId        (r32ui)
- *   set 0 binding 2  storage image  gDepth           (r32f)
- *   set 0 binding 3  storage image  gNormal          (rgba32f)
- *   set 0 binding 4  uniform buffer Globals          (std140)
- *   set 1 binding 0..15  storage buffers (scene data — dummy in Stage 1)
+ *   set 0 binding 0      storage image  outputImage      (rgba8)
+ *   set 0 binding 1..3   storage images gObjectId/Depth/Normal
+ *   set 0 binding 4      uniform buffer Globals          (std140)
+ *   set 1 binding 0..15  storage buffers (scene primitives, grown on demand)
  *   set 2 binding 0..1   combined image samplers (sprite/tex atlas — dummy 1x1) */
 
 #include "renderer.h"
@@ -75,6 +77,62 @@ typedef struct {
     int32_t material_count;
 } vk_globals;
 
+/* -- std430 GPU layouts (mirror libs/raytrace/opengl/renderer.c) ------- */
+
+typedef struct { float cr[4];        int32_t mat[4]; } vk_gpu_sphere;
+typedef struct { float point[4];     float normal[4];  int32_t mat[4]; } vk_gpu_plane;
+typedef struct { float cr[4];        float normal[4];  int32_t mat[4]; } vk_gpu_disc;
+typedef struct { float center_hh[4]; float axis_r[4];  int32_t mat[4]; } vk_gpu_cylinder;
+typedef struct { float apex_h[4];    float axis_r[4];  int32_t mat[4]; } vk_gpu_cone;
+typedef struct { float center_R[4];  float axis_r[4];  int32_t mat[4]; } vk_gpu_torus;
+typedef struct {
+    float v0[4]; float v1[4]; float v2[4];
+    float n0[4]; float n1[4]; float n2[4];
+    int32_t mat[4];
+} vk_gpu_triangle;
+typedef struct {
+    float center[4]; float he[4];
+    float ux[4]; float uy[4]; float uz[4];
+    int32_t mat[4];
+} vk_gpu_box;
+typedef struct { float dir_int[4]; } vk_gpu_light;
+typedef struct {
+    float   albedo[4];
+    float   albedo2[4];
+    int32_t kind[4];   /* .x = tex_kind, .y = tex_index, .z = unlit */
+    float   scale[4];  /* .x = tex_scale, .y = reflectivity */
+} vk_gpu_material;
+
+/* set 1 binding numbers — match raytrace.comp. */
+enum {
+    SET1_SPHERES      = 0,
+    SET1_PLANES       = 1,
+    SET1_DISCS        = 2,
+    SET1_CYLINDERS    = 3,
+    SET1_TRIANGLES    = 4,
+    SET1_BOXES        = 5,
+    SET1_SPRITES      = 6,
+    SET1_LIGHTS       = 7,
+    SET1_HEIGHTFIELDS = 8,
+    SET1_HF_DATA      = 9,
+    SET1_MATERIALS    = 10,
+    SET1_TEXTURES     = 11,
+    SET1_MESHES       = 12,
+    SET1_BVH_NODES    = 13,
+    SET1_CONES        = 14,
+    SET1_TORUSES      = 15,
+};
+
+/* One persistent host-visible SSBO per set-1 binding. The buffer holds
+ * up to `cap` bytes; resize (destroy/recreate + descriptor update) when
+ * a frame needs more. */
+typedef struct {
+    VkBuffer       buf;
+    VkDeviceMemory mem;
+    void          *mapped;
+    size_t         cap;
+} vk_dyn_buffer;
+
 typedef struct {
     VkImage         image;
     VkDeviceMemory  mem;
@@ -103,8 +161,7 @@ typedef struct {
     VkBuffer       ubo;
     VkDeviceMemory ubo_mem;
     void          *ubo_mapped;
-    VkBuffer       dummy_ssbo;
-    VkDeviceMemory dummy_ssbo_mem;
+    vk_dyn_buffer  dyn[SSBO_COUNT]; /* one host-visible SSBO per set-1 binding */
     vk_image       dummy_array;     /* 1x1x1 sampler2DArray placeholder */
     VkSampler      dummy_sampler;
 
@@ -232,6 +289,66 @@ static int create_buffer(vk_backend_data *d, VkDeviceSize size,
     return 0;
 }
 
+/* -- Small inline helpers for std430 packing -------------------------- */
+
+static inline void set_vec4(float *out, float x, float y, float z, float w) {
+    out[0] = x; out[1] = y; out[2] = z; out[3] = w;
+}
+
+static inline void set_mat_ivec4(int32_t *out, int mat) {
+    out[0] = (int32_t)mat; out[1] = 0; out[2] = 0; out[3] = 0;
+}
+
+/* -- Dynamic SSBO buffer management ----------------------------------- */
+
+static void write_set1_binding(vk_backend_data *d, uint32_t binding) {
+    VkDescriptorBufferInfo info = { d->dyn[binding].buf, 0, VK_WHOLE_SIZE };
+    VkWriteDescriptorSet w = {
+        .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet          = d->desc_sets[1],
+        .dstBinding      = binding,
+        .descriptorCount = 1,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .pBufferInfo     = &info,
+    };
+    vkUpdateDescriptorSets(d->device, 1, &w, 0, NULL);
+}
+
+/* Resize the dyn buffer at `binding` if it can't hold `need` bytes. On
+ * resize, the descriptor in set 1 is rewritten so the new VkBuffer is
+ * what the shader sees. Caller must ensure the device is idle (we are —
+ * upload_scene runs before any command buffer is recorded for this
+ * frame, and last frame's submit fence has already been waited on). */
+static int ensure_dyn_buffer(vk_backend_data *d, uint32_t binding, size_t need) {
+    if (need < 16) need = 16;
+    vk_dyn_buffer *dyn = &d->dyn[binding];
+    if (need <= dyn->cap && dyn->buf) return 0;
+
+    /* Grow geometrically so a sequence of small increments doesn't
+     * thrash the allocator. */
+    size_t cap = dyn->cap ? dyn->cap : 64;
+    while (cap < need) cap *= 2;
+
+    if (dyn->mapped) vkUnmapMemory(d->device, dyn->mem);
+    if (dyn->buf)    vkDestroyBuffer(d->device, dyn->buf, NULL);
+    if (dyn->mem)    vkFreeMemory(d->device, dyn->mem, NULL);
+    dyn->mapped = NULL; dyn->buf = VK_NULL_HANDLE; dyn->mem = VK_NULL_HANDLE;
+
+    if (create_buffer(d, (VkDeviceSize)cap, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      &dyn->buf, &dyn->mem, &dyn->mapped) != 0) {
+        fprintf(stderr, "vulkan: dyn buffer alloc failed (binding %u, %zu B)\n",
+                binding, cap);
+        dyn->cap = 0;
+        return -1;
+    }
+    dyn->cap = cap;
+    memset(dyn->mapped, 0, cap);
+    write_set1_binding(d, binding);
+    return 0;
+}
+
 /* -- Descriptor writes ------------------------------------------------ */
 
 static void write_set0(vk_backend_data *d) {
@@ -264,14 +381,14 @@ static void write_set0(vk_backend_data *d) {
     vkUpdateDescriptorSets(d->device, 5, w, 0, NULL);
 }
 
-static void write_set1_dummy(vk_backend_data *d) {
-    /* Bind the same dummy zero buffer at every SSBO slot. The shader's
-     * count uniforms are all 0 in Stage 1, so the buffers are never
-     * read — but Vulkan validation still needs each binding populated. */
+static void write_set1_all(vk_backend_data *d) {
+    /* Writes set 1 descriptors from the current dyn[] buffers. Called
+     * once at startup; ensure_dyn_buffer rewrites individual bindings
+     * on resize. */
     VkDescriptorBufferInfo info[SSBO_COUNT];
     VkWriteDescriptorSet   w[SSBO_COUNT];
     for (int i = 0; i < SSBO_COUNT; ++i) {
-        info[i] = (VkDescriptorBufferInfo){ d->dummy_ssbo, 0, VK_WHOLE_SIZE };
+        info[i] = (VkDescriptorBufferInfo){ d->dyn[i].buf, 0, VK_WHOLE_SIZE };
         w[i] = (VkWriteDescriptorSet){
             .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet          = d->desc_sets[1],
@@ -373,6 +490,173 @@ static int ensure_size(vk_backend_data *d, int w, int h) {
     return 0;
 }
 
+/* -- Per-frame scene upload ------------------------------------------- */
+
+static void upload_spheres(vk_backend_data *d, const scene *s) {
+    int n = s->sphere_count;
+    if (ensure_dyn_buffer(d, SET1_SPHERES, (size_t)n * sizeof(vk_gpu_sphere)) != 0) return;
+    vk_gpu_sphere *buf = d->dyn[SET1_SPHERES].mapped;
+    for (int i = 0; i < n; ++i) {
+        set_vec4(buf[i].cr, s->spheres[i].center.x, s->spheres[i].center.y,
+                 s->spheres[i].center.z, s->spheres[i].radius);
+        set_mat_ivec4(buf[i].mat, s->spheres[i].material);
+    }
+}
+
+static void upload_planes(vk_backend_data *d, const scene *s) {
+    int n = s->plane_count;
+    if (ensure_dyn_buffer(d, SET1_PLANES, (size_t)n * sizeof(vk_gpu_plane)) != 0) return;
+    vk_gpu_plane *buf = d->dyn[SET1_PLANES].mapped;
+    for (int i = 0; i < n; ++i) {
+        set_vec4(buf[i].point,  s->planes[i].point.x,  s->planes[i].point.y,
+                 s->planes[i].point.z, 0.0f);
+        set_vec4(buf[i].normal, s->planes[i].normal.x, s->planes[i].normal.y,
+                 s->planes[i].normal.z, 0.0f);
+        set_mat_ivec4(buf[i].mat, s->planes[i].material);
+    }
+}
+
+static void upload_discs(vk_backend_data *d, const scene *s) {
+    int n = s->disc_count;
+    if (ensure_dyn_buffer(d, SET1_DISCS, (size_t)n * sizeof(vk_gpu_disc)) != 0) return;
+    vk_gpu_disc *buf = d->dyn[SET1_DISCS].mapped;
+    for (int i = 0; i < n; ++i) {
+        set_vec4(buf[i].cr,     s->discs[i].center.x, s->discs[i].center.y,
+                 s->discs[i].center.z, s->discs[i].radius);
+        set_vec4(buf[i].normal, s->discs[i].normal.x, s->discs[i].normal.y,
+                 s->discs[i].normal.z, 0.0f);
+        set_mat_ivec4(buf[i].mat, s->discs[i].material);
+    }
+}
+
+static void upload_cylinders(vk_backend_data *d, const scene *s) {
+    int n = s->cylinder_count;
+    if (ensure_dyn_buffer(d, SET1_CYLINDERS, (size_t)n * sizeof(vk_gpu_cylinder)) != 0) return;
+    vk_gpu_cylinder *buf = d->dyn[SET1_CYLINDERS].mapped;
+    for (int i = 0; i < n; ++i) {
+        const scene_cylinder *c = &s->cylinders[i];
+        set_vec4(buf[i].center_hh, c->center.x, c->center.y, c->center.z, c->half_height);
+        set_vec4(buf[i].axis_r,    c->axis.x,   c->axis.y,   c->axis.z,   c->radius);
+        set_mat_ivec4(buf[i].mat, c->material);
+    }
+}
+
+static void upload_cones(vk_backend_data *d, const scene *s) {
+    int n = s->cone_count;
+    if (ensure_dyn_buffer(d, SET1_CONES, (size_t)n * sizeof(vk_gpu_cone)) != 0) return;
+    vk_gpu_cone *buf = d->dyn[SET1_CONES].mapped;
+    for (int i = 0; i < n; ++i) {
+        const scene_cone *c = &s->cones[i];
+        set_vec4(buf[i].apex_h, c->apex.x, c->apex.y, c->apex.z, c->height);
+        set_vec4(buf[i].axis_r, c->axis.x, c->axis.y, c->axis.z, c->radius);
+        set_mat_ivec4(buf[i].mat, c->material);
+    }
+}
+
+static void upload_toruses(vk_backend_data *d, const scene *s) {
+    int n = s->torus_count;
+    if (ensure_dyn_buffer(d, SET1_TORUSES, (size_t)n * sizeof(vk_gpu_torus)) != 0) return;
+    vk_gpu_torus *buf = d->dyn[SET1_TORUSES].mapped;
+    for (int i = 0; i < n; ++i) {
+        const scene_torus *t = &s->toruses[i];
+        set_vec4(buf[i].center_R, t->center.x, t->center.y, t->center.z, t->major_radius);
+        set_vec4(buf[i].axis_r,   t->axis.x,   t->axis.y,   t->axis.z,   t->minor_radius);
+        set_mat_ivec4(buf[i].mat, t->material);
+    }
+}
+
+/* Scene triangles only — mesh tris land here in the OpenGL backend but
+ * Stage 2 doesn't support meshes yet (Stage 3). Scene tris get face
+ * normals + zero UVs; mat.y stays 0 so the shader uses planar UV. */
+static void upload_triangles(vk_backend_data *d, const scene *s) {
+    int n = s->triangle_count;
+    if (ensure_dyn_buffer(d, SET1_TRIANGLES, (size_t)n * sizeof(vk_gpu_triangle)) != 0) return;
+    vk_gpu_triangle *buf = d->dyn[SET1_TRIANGLES].mapped;
+    for (int i = 0; i < n; ++i) {
+        vector p0 = s->triangles[i].v0;
+        vector p1 = s->triangles[i].v1;
+        vector p2 = s->triangles[i].v2;
+        vector e1 = vector_sub(p1, p0);
+        vector e2 = vector_sub(p2, p0);
+        vector fn = vector_normalize(vector_cross(e1, e2));
+        set_vec4(buf[i].v0, p0.x, p0.y, p0.z, 0.0f);
+        set_vec4(buf[i].v1, p1.x, p1.y, p1.z, 0.0f);
+        set_vec4(buf[i].v2, p2.x, p2.y, p2.z, 0.0f);
+        set_vec4(buf[i].n0, fn.x, fn.y, fn.z, 0.0f);
+        set_vec4(buf[i].n1, fn.x, fn.y, fn.z, 0.0f);
+        set_vec4(buf[i].n2, fn.x, fn.y, fn.z, 0.0f);
+        buf[i].mat[0] = (int32_t)s->triangles[i].material;
+        buf[i].mat[1] = 0; buf[i].mat[2] = 0; buf[i].mat[3] = 0;
+    }
+}
+
+static void upload_boxes(vk_backend_data *d, const scene *s) {
+    int n = s->box_count;
+    if (ensure_dyn_buffer(d, SET1_BOXES, (size_t)n * sizeof(vk_gpu_box)) != 0) return;
+    vk_gpu_box *buf = d->dyn[SET1_BOXES].mapped;
+    for (int i = 0; i < n; ++i) {
+        const scene_box *b = &s->boxes[i];
+        set_vec4(buf[i].center, b->center.x,       b->center.y,       b->center.z,       0.0f);
+        set_vec4(buf[i].he,     b->half_extents.x, b->half_extents.y, b->half_extents.z, 0.0f);
+        set_vec4(buf[i].ux,     b->ux.x,           b->ux.y,           b->ux.z,           0.0f);
+        set_vec4(buf[i].uy,     b->uy.x,           b->uy.y,           b->uy.z,           0.0f);
+        set_vec4(buf[i].uz,     b->uz.x,           b->uz.y,           b->uz.z,           0.0f);
+        set_mat_ivec4(buf[i].mat, b->material);
+    }
+}
+
+static void upload_lights(vk_backend_data *d, const scene *s) {
+    int n = s->light_count;
+    if (ensure_dyn_buffer(d, SET1_LIGHTS, (size_t)n * sizeof(vk_gpu_light)) != 0) return;
+    vk_gpu_light *buf = d->dyn[SET1_LIGHTS].mapped;
+    for (int i = 0; i < n; ++i) {
+        set_vec4(buf[i].dir_int,
+                 s->lights[i].direction.x, s->lights[i].direction.y,
+                 s->lights[i].direction.z, s->lights[i].intensity);
+    }
+}
+
+static void upload_materials(vk_backend_data *d, const scene *s) {
+    int n = s->material_count;
+    if (ensure_dyn_buffer(d, SET1_MATERIALS, (size_t)n * sizeof(vk_gpu_material)) != 0) return;
+    vk_gpu_material *buf = d->dyn[SET1_MATERIALS].mapped;
+    for (int i = 0; i < n; ++i) {
+        const scene_material *m = &s->materials[i];
+        buf[i].albedo[0]  = (float)m->albedo.r  / 255.0f;
+        buf[i].albedo[1]  = (float)m->albedo.g  / 255.0f;
+        buf[i].albedo[2]  = (float)m->albedo.b  / 255.0f;
+        buf[i].albedo[3]  = 0.0f;
+        buf[i].albedo2[0] = (float)m->albedo2.r / 255.0f;
+        buf[i].albedo2[1] = (float)m->albedo2.g / 255.0f;
+        buf[i].albedo2[2] = (float)m->albedo2.b / 255.0f;
+        buf[i].albedo2[3] = 0.0f;
+        buf[i].kind[0]    = (int32_t)m->tex_kind;
+        buf[i].kind[1]    = (int32_t)m->tex_index;
+        buf[i].kind[2]    = m->unlit ? 1 : 0;
+        buf[i].kind[3]    = 0;
+        buf[i].scale[0]   = m->tex_scale;
+        buf[i].scale[1]   = m->reflectivity;
+        buf[i].scale[2]   = 0.0f;
+        buf[i].scale[3]   = 0.0f;
+    }
+}
+
+static void upload_scene(vk_backend_data *d, const scene *s) {
+    upload_spheres(d, s);
+    upload_planes(d, s);
+    upload_discs(d, s);
+    upload_cylinders(d, s);
+    upload_cones(d, s);
+    upload_toruses(d, s);
+    upload_triangles(d, s);
+    upload_boxes(d, s);
+    upload_lights(d, s);
+    upload_materials(d, s);
+    /* Sprites, heightfields, meshes, BVH, textures: Stage 3. Their dyn
+     * buffers remain at the 16-byte zero allocation and their counts
+     * stay 0 in the UBO, so the shader's per-type loops are skipped. */
+}
+
 /* -- Per-frame render ------------------------------------------------- */
 
 static void vulkan_render(rt_renderer *r,
@@ -385,7 +669,12 @@ static void vulkan_render(rt_renderer *r,
     vk_backend_data *d = r->backend_data;
     if (ensure_size(d, viewport->width, viewport->height) != 0) return;
 
-    /* Update UBO: camera + ambient + viewport, all counts forced to 0. */
+    /* Upload scene SSBOs before recording the command buffer — resize
+     * paths in ensure_dyn_buffer touch descriptors, which must not race
+     * with an in-flight dispatch. Last frame's fence has already been
+     * waited on at this point. */
+    upload_scene(d, scene_in);
+
     vector origin, forward, right, up;
     scene_camera_get_basis(camera, &origin, &forward, &right, &up);
     vk_globals g = {0};
@@ -396,8 +685,21 @@ static void vulkan_render(rt_renderer *r,
     g.cam_up[0]       = up.x;      g.cam_up[1]       = up.y;      g.cam_up[2]       = up.z;
     g.fov             = viewport->fov;
     g.ambient         = scene_in->ambient;
-    /* Stage 2 will populate counts + SSBOs. Until then everything misses
-     * and the frame is the bare miss-path output. */
+    g.sphere_count    = scene_in->sphere_count;
+    g.plane_count     = scene_in->plane_count;
+    g.disc_count      = scene_in->disc_count;
+    g.cylinder_count  = scene_in->cylinder_count;
+    g.cone_count      = scene_in->cone_count;
+    g.torus_count     = scene_in->torus_count;
+    g.triangle_count  = scene_in->triangle_count;
+    g.box_count       = scene_in->box_count;
+    g.light_count     = scene_in->light_count;
+    g.material_count  = scene_in->material_count;
+    /* Stage 3 territory: sprites, heightfields, meshes. Counts forced
+     * to 0 so the shader doesn't read the unbacked SSBOs. */
+    g.sprite_count      = 0;
+    g.heightfield_count = 0;
+    g.mesh_count        = 0;
     memcpy(d->ubo_mapped, &g, sizeof(g));
 
     vkResetCommandBuffer(d->cmd, 0);
@@ -463,8 +765,11 @@ static void vulkan_destroy(rt_renderer *r) {
         free_per_size(d);
         if (d->dummy_sampler)  vkDestroySampler(d->device, d->dummy_sampler, NULL);
         destroy_image(d->device, &d->dummy_array);
-        if (d->dummy_ssbo)     vkDestroyBuffer(d->device, d->dummy_ssbo, NULL);
-        if (d->dummy_ssbo_mem) vkFreeMemory(d->device, d->dummy_ssbo_mem, NULL);
+        for (int i = 0; i < SSBO_COUNT; ++i) {
+            if (d->dyn[i].mapped) vkUnmapMemory(d->device, d->dyn[i].mem);
+            if (d->dyn[i].buf)    vkDestroyBuffer(d->device, d->dyn[i].buf, NULL);
+            if (d->dyn[i].mem)    vkFreeMemory(d->device, d->dyn[i].mem, NULL);
+        }
         if (d->ubo_mapped)     vkUnmapMemory(d->device, d->ubo_mem);
         if (d->ubo)            vkDestroyBuffer(d->device, d->ubo, NULL);
         if (d->ubo_mem)        vkFreeMemory(d->device, d->ubo_mem, NULL);
@@ -491,6 +796,33 @@ static int pick_physical_device(vk_backend_data *d) {
     if (n == 0) return -1;
     VkPhysicalDevice *devs = calloc(n, sizeof(*devs));
     vkEnumeratePhysicalDevices(d->instance, &n, devs);
+
+    /* RT_VK_DEVICE_INDEX=<int> forces a specific device (0-based). */
+    const char *idx_env = getenv("RT_VK_DEVICE_INDEX");
+    if (idx_env) {
+        int idx = atoi(idx_env);
+        if (idx >= 0 && (uint32_t)idx < n) {
+            VkPhysicalDeviceProperties pp;
+            vkGetPhysicalDeviceProperties(devs[idx], &pp);
+            fprintf(stderr, "vulkan: RT_VK_DEVICE_INDEX=%d -> %s\n",
+                    idx, pp.deviceName);
+            uint32_t qn = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(devs[idx], &qn, NULL);
+            VkQueueFamilyProperties *qfs = calloc(qn, sizeof(*qfs));
+            vkGetPhysicalDeviceQueueFamilyProperties(devs[idx], &qn, qfs);
+            for (uint32_t q = 0; q < qn; ++q) {
+                if (qfs[q].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+                    d->phys = devs[idx];
+                    d->queue_family = q;
+                    break;
+                }
+            }
+            free(qfs);
+            free(devs);
+            return d->phys == VK_NULL_HANDLE ? -1 : 0;
+        }
+    }
+
     d->phys = VK_NULL_HANDLE;
     d->queue_family = UINT32_MAX;
     for (uint32_t pass = 0; pass < 2 && d->phys == VK_NULL_HANDLE; ++pass) {
@@ -693,10 +1025,19 @@ rt_renderer *rt_vulkan_renderer_create(void) {
                       &d->ubo, &d->ubo_mem, &d->ubo_mapped) != 0) goto fail;
     memset(d->ubo_mapped, 0, sizeof(vk_globals));
 
-    /* Dummy SSBO — bound to every set-1 slot in Stage 1. */
-    if (create_buffer(d, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                      &d->dummy_ssbo, &d->dummy_ssbo_mem, NULL) != 0) goto fail;
+    /* Allocate every set-1 SSBO at a minimum size — descriptors need a
+     * valid buffer even when the scene has zero of that primitive. The
+     * per-frame upload functions grow these as needed via
+     * ensure_dyn_buffer. */
+    for (int i = 0; i < SSBO_COUNT; ++i) {
+        if (create_buffer(d, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          &d->dyn[i].buf, &d->dyn[i].mem, &d->dyn[i].mapped) != 0)
+            goto fail;
+        d->dyn[i].cap = 64;
+        memset(d->dyn[i].mapped, 0, 64);
+    }
 
     if (create_dummy_array(d) != 0) goto fail;
 
@@ -723,8 +1064,10 @@ rt_renderer *rt_vulkan_renderer_create(void) {
     if (vkAllocateDescriptorSets(d->device, &dsai, d->desc_sets) != VK_SUCCESS) goto fail;
 
     /* Writes that don't depend on size happen now; set 0 (which includes
-     * the storage images) is written from ensure_size. */
-    write_set1_dummy(d);
+     * the storage images) is written from ensure_size, and individual
+     * set 1 bindings get rewritten by ensure_dyn_buffer when scenes grow
+     * past the current capacity. */
+    write_set1_all(d);
     write_set2_dummy(d);
 
     r->destroy_fn       = vulkan_destroy;
