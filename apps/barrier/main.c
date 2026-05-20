@@ -293,6 +293,25 @@ int main(int argc, char *argv[]) {
         .tex_scale    = 0.3f,
         .reflectivity = 0.0f,
     };
+    /* Ophan (singular; the plural "ophanim" is the choir) —
+     * biblically-accurate angel. Three perpendicular wheels whose axes
+     * precess at different rates around a single staring eye.
+     *
+     * Battleforge overrides tex_kind to SCENE_TEX_IMAGE pointing at the
+     * tapestry texture for rings (4x2 grid of small eyes per tile) and
+     * the single-eye texture for the core. tex_scale here controls the
+     * UV tiling: smaller = more eye repeats. On the rings, 1.0 yields
+     * exactly one tapestry-tile around the rim (4 eyes around the major
+     * axis, 2 around the tube). On the core sphere, 1.0 wraps a single
+     * eye across the whole orb. unlit on the ring keeps eyes glowing on
+     * the shadowed side; the core stays lit so it reads as a sphere. */
+    scene_material ophan_ring_material = {
+        .tex_scale = 0.5f,
+        .unlit     = 1,
+    };
+    scene_material ophan_core_material = {
+        .tex_scale = 1.0f,
+    };
     float unit_radius = 1.0f;
 
     g_terrain_material = (scene_material){
@@ -340,9 +359,20 @@ int main(int argc, char *argv[]) {
             .kind = BF_VIS_TORUS,
             .torus = { .major_radius = 0.9f, .minor_radius = 0.35f,
                        .material = donut_material } } },
+        { .base_speed = 2.0f, .has_selection = 1, .visual = {
+            .kind = BF_VIS_OPHAN,
+            /* ring_minor is the tube thickness. The three rings live at
+             * major radii ring_major × {1.0, 0.84, 0.68}; consecutive
+             * centers are 0.192·ring_major apart, so 2·ring_minor must
+             * stay under that for the wheels to remain distinct as their
+             * axes precess. 0.08 leaves a small clearance. */
+            .ophan = { .ring_major = 1.2f, .ring_minor = 0.08f,
+                       .core_radius = 0.45f, .spin_rate = 1.3f,
+                       .ring_material = ophan_ring_material,
+                       .core_material = ophan_core_material } } },
     };
     static const char *unit_names[] = {
-        "orb", "cube", "pillar", "spire", "donut"
+        "orb", "cube", "pillar", "spire", "donut", "ophan"
     };
     #define NUM_UNIT_TYPES ((int)(sizeof(unit_defs) / sizeof(unit_defs[0])))
     #define ARMY_SIZE      NUM_UNIT_TYPES

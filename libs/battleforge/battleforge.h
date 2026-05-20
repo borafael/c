@@ -37,6 +37,7 @@ typedef enum {
     BF_VIS_TRIANGLE = 6,
     BF_VIS_CONE     = 7,
     BF_VIS_TORUS    = 8,
+    BF_VIS_OPHAN  = 9,
 } bf_visual_kind;
 
 typedef struct {
@@ -63,6 +64,16 @@ typedef struct {
          * the tube clears the ground. */
         struct { float major_radius; float minor_radius;
                  scene_material material; } torus;
+        /* Ophan (singular of ophanim — Hebrew "wheel"): two co-centered
+         * rings whose axes precess at different rates, plus a central
+         * sphere. Hovers at ring_major + ring_minor above the footprint
+         * so the rings clear the ground. spin_rate is the base angular
+         * speed in rad/s; the second ring desyncs by a fixed irrational
+         * ratio so the pair never resynchronizes. */
+        struct { float ring_major; float ring_minor;
+                 float core_radius; float spin_rate;
+                 scene_material ring_material;
+                 scene_material core_material; } ophan;
     };
 } bf_visual_desc;
 
@@ -123,6 +134,9 @@ typedef struct {
     int anim_frame;
     float frame_timer;
     float anim_fps;
+    /* Per-instance rotation phase, in seconds since spawn. Read by visuals
+       that animate via continuous rotation (currently BF_VIS_OPHAN). */
+    float spin_phase;
 } bf_visual;
 typedef enum { BF_LOCO_LINEAR, BF_LOCO_PARABOLIC, BF_LOCO_INSTANT } bf_loco_type;
 typedef struct { vector origin; vector target; float speed; float progress; } bf_trajectory_linear;

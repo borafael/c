@@ -466,6 +466,106 @@ static scene_torus bf_make_torus(const bf_visual_desc *d, vector pos, vector up,
     };
 }
 
+/* Eye textures for the ophan: ARGB8888 buffers drawn once on first use.
+ *
+ *   bf_eye_pixels        — 64x64 with one large centered eye, used on the
+ *                          core sphere (one big eye filling the orb).
+ *   bf_tapestry_pixels   — 256x128 with a 4x2 grid of smaller eyes, used
+ *                          on the ring tubes. The texture is wider than
+ *                          tall to compensate for the rim's aspect
+ *                          (major circumference >> tube circumference);
+ *                          this keeps the rendered eyes roughly square
+ *                          instead of stretched ribbons.
+ *
+ * Both are sampled as SCENE_TEX_IMAGE via the engine's UV maps (sphere =
+ * lat/lon, torus = around-axis + around-tube). The background is filled
+ * with sclera color so adjacent tiles seam without visible boundaries. */
+#define BF_EYE_W       64
+#define BF_EYE_H       64
+#define BF_TAPESTRY_W  256
+#define BF_TAPESTRY_H  128
+#define BF_TAPESTRY_GRID_X 4
+#define BF_TAPESTRY_GRID_Y 2
+static uint32_t bf_eye_pixels[BF_EYE_W * BF_EYE_H];
+static uint32_t bf_tapestry_pixels[BF_TAPESTRY_W * BF_TAPESTRY_H];
+static int bf_eye_initialized = 0;
+
+/* Paint one eye onto an ARGB buffer at (cx, cy) with the given iris radius.
+ * Pixels outside the iris are left untouched so the caller can prefill
+ * the background (sclera) once. */
+static void bf_draw_eye(uint32_t *px, int W, int H,
+                        float cx, float cy, float r_iris) {
+    const uint32_t IRIS   = 0xFFEBB450;
+    const uint32_t PUPIL  = 0xFF0A0808;
+    const uint32_t HILITE = 0xFFFFFFFF;
+    float r_pupil = 0.44f * r_iris;
+    float r_high  = 0.14f * r_iris;
+    float hcx = cx + 0.28f * r_iris;
+    float hcy = cy - 0.28f * r_iris;
+    int x0 = (int)(cx - r_iris) - 1, x1 = (int)(cx + r_iris) + 2;
+    int y0 = (int)(cy - r_iris) - 1, y1 = (int)(cy + r_iris) + 2;
+    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+    if (x1 > W) x1 = W; if (y1 > H) y1 = H;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            float dx = x - cx, dy = y - cy;
+            float r = sqrtf(dx * dx + dy * dy);
+            if (r >= r_iris) continue;
+            uint32_t c = IRIS;
+            if (r < r_pupil) c = PUPIL;
+            float hdx = x - hcx, hdy = y - hcy;
+            if (sqrtf(hdx * hdx + hdy * hdy) < r_high) c = HILITE;
+            px[y * W + x] = c;
+        }
+    }
+}
+
+static void bf_ophan_init_eye(void) {
+    if (bf_eye_initialized) return;
+    const uint32_t SCLERA = 0xFFEBE1C8;
+
+    /* Single large eye for the core sphere. */
+    for (int i = 0; i < BF_EYE_W * BF_EYE_H; i++) bf_eye_pixels[i] = SCLERA;
+    bf_draw_eye(bf_eye_pixels, BF_EYE_W, BF_EYE_H,
+                (BF_EYE_W - 1) * 0.5f, (BF_EYE_H - 1) * 0.5f,
+                0.36f * BF_EYE_W);
+
+    /* Tapestry: a grid of small eyes for the ring rims. */
+    for (int i = 0; i < BF_TAPESTRY_W * BF_TAPESTRY_H; i++)
+        bf_tapestry_pixels[i] = SCLERA;
+    float cell_w = (float)BF_TAPESTRY_W / (float)BF_TAPESTRY_GRID_X;
+    float cell_h = (float)BF_TAPESTRY_H / (float)BF_TAPESTRY_GRID_Y;
+    float r_small = 0.38f * (cell_w < cell_h ? cell_w : cell_h);
+    for (int gy = 0; gy < BF_TAPESTRY_GRID_Y; gy++) {
+        for (int gx = 0; gx < BF_TAPESTRY_GRID_X; gx++) {
+            float ccx = (gx + 0.5f) * cell_w;
+            float ccy = (gy + 0.5f) * cell_h;
+            bf_draw_eye(bf_tapestry_pixels, BF_TAPESTRY_W, BF_TAPESTRY_H,
+                        ccx, ccy, r_small);
+        }
+    }
+
+    bf_eye_initialized = 1;
+}
+
+/* Ophan helpers. The three ring axes precess in three mutually
+ * perpendicular planes at different rates so the wheels-within-wheels
+ * never visually resync. The 0.61803 and 0.41421 multipliers are the
+ * inverse golden ratio and √2 - 1 respectively — both irrational, so
+ * the Lissajous of the axes is dense rather than periodic. */
+static vector bf_ophan_center(const bf_visual_desc *d, vector pos, vector up) {
+    float lift = d->ophan.ring_major + d->ophan.ring_minor;
+    return vector_add(pos, vector_scale(up, lift));
+}
+static void bf_ophan_axes(float phase, vector *a1, vector *a2, vector *a3) {
+    float t1 = phase;
+    float t2 = phase * 0.6180339887f + 1.2f;
+    float t3 = phase * 0.4142135624f + 2.7f;
+    *a1 = vector_normalize((vector){ sinf(t1), cosf(t1), 0.0f });
+    *a2 = vector_normalize((vector){ 0.0f, cosf(t2), sinf(t2) });
+    *a3 = vector_normalize((vector){ cosf(t3), 0.0f, sinf(t3) });
+}
+
 bf_engine *bf_create(bf_config config) {
     bf_engine *e = calloc(1, sizeof(bf_engine));
     if (!e) return NULL;
@@ -684,6 +784,7 @@ static void cmd_entity_create(bf_engine *e, const bf_cmd *cmd) {
         e->visuals[id].anim_frame = 0;
         e->visuals[id].frame_timer = 0.0f;
         e->visuals[id].anim_fps = 0.0f;
+        e->visuals[id].spin_phase = 0.0f;
         mask |= BF_COMP_VISUAL;
     }
 
@@ -951,6 +1052,9 @@ static void system_animation(bf_engine *e, float dt) {
     for (int i = 0; i < MAX_ENTITIES; i++) {
         if (!(e->component_masks[i] & BF_COMP_VISUAL)) continue;
         bf_visual *vis = &e->visuals[i];
+        /* Continuous rotation accumulator for spinning visuals. Sprite
+           visuals also pay this add but never read spin_phase. */
+        vis->spin_phase += dt;
         if (vis->desc.kind != BF_VIS_SPRITE) continue;
         if (vis->anim_index < 0) continue;
         int sheet_id = vis->desc.sprite.sheet_id;
@@ -1153,6 +1257,47 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
             scene_add_torus(e->scene, bf_make_torus(&vis->desc, pos, up, mat_id));
             break;
         }
+        case BF_VIS_OPHAN: {
+            const bf_visual_desc *d = &vis->desc;
+            bf_ophan_init_eye();
+            int core_eye_tex = scene_add_texture(e->scene, (scene_texture){
+                .pixels = bf_eye_pixels,
+                .width  = BF_EYE_W,
+                .height = BF_EYE_H });
+            int ring_eye_tex = scene_add_texture(e->scene, (scene_texture){
+                .pixels = bf_tapestry_pixels,
+                .width  = BF_TAPESTRY_W,
+                .height = BF_TAPESTRY_H });
+            scene_material ring_m = d->ophan.ring_material;
+            ring_m.tex_kind  = SCENE_TEX_IMAGE;
+            ring_m.tex_index = ring_eye_tex;
+            scene_material core_m = d->ophan.core_material;
+            core_m.tex_kind  = SCENE_TEX_IMAGE;
+            core_m.tex_index = core_eye_tex;
+            int ring_mat = scene_add_material(e->scene, ring_m);
+            int core_mat = scene_add_material(e->scene, core_m);
+            vector center = bf_ophan_center(d, pos, up);
+            vector a1, a2, a3;
+            bf_ophan_axes(vis->spin_phase * d->ophan.spin_rate, &a1, &a2, &a3);
+            const float radii[3] = {
+                d->ophan.ring_major,
+                d->ophan.ring_major * 0.84f,
+                d->ophan.ring_major * 0.68f,
+            };
+            const vector axes[3] = { a1, a2, a3 };
+            for (int r = 0; r < 3; r++) {
+                scene_add_torus(e->scene, (scene_torus){
+                    .center = center, .axis = axes[r],
+                    .major_radius = radii[r],
+                    .minor_radius = d->ophan.ring_minor,
+                    .material = ring_mat });
+            }
+            scene_add_sphere(e->scene, (scene_sphere){
+                .center = center,
+                .radius = d->ophan.core_radius,
+                .material = core_mat });
+            break;
+        }
         case BF_VIS_NONE:
             break;
         }
@@ -1259,6 +1404,19 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
         case BF_VIS_TORUS: {
             scene_torus tor = bf_make_torus(&vis->desc, pos, up, 0);
             t = rt_intersect_torus(origin, ray_dir, &tor);
+            if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
+            break;
+        }
+        case BF_VIS_OPHAN: {
+            /* Bounding sphere — picking the whole construct as one unit
+               rather than testing every ring + core individually. */
+            const bf_visual_desc *d = &vis->desc;
+            scene_sphere bs = {
+                .center = bf_ophan_center(d, pos, up),
+                .radius = d->ophan.ring_major + d->ophan.ring_minor,
+                .material = 0
+            };
+            t = rt_intersect_sphere(origin, ray_dir, &bs);
             if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
             break;
         }
