@@ -253,46 +253,8 @@ int main(int argc, char *argv[]) {
             bf_get_backend(engine) == RT_BACKEND_OPENGL ? "OpenGL" : "CPU");
 
     /* --- Placeholder visuals — tweak freely while iterating on look.
-     *     Swap reflectivity, tex_kind (see libs/raytrace/material.h for
-     *     the full set: CHECKER, MARBLE, CELLS, STRIPES, DOTS, BRICKS,
-     *     CLOUDS, SPOTS, etc.), colors — everything picks up the change
-     *     on the next build. Must be set before load_map_from_ini so
-     *     g_terrain_material flows into bf_map. --- */
-    scene_material orb_material = {
-        .albedo       = {220,  90,  80},   /* warm coral */
-        .albedo2      = {110,  30,  40},
-        .tex_kind     = SCENE_TEX_MARBLE,
-        .tex_scale    = 0.6f,
-        .reflectivity = 0.0f,
-    };
-    scene_material cube_material = {
-        .albedo       = {180, 140,  80},   /* sandy ochre */
-        .albedo2      = { 90,  60,  30},
-        .tex_kind     = SCENE_TEX_BRICKS,
-        .tex_scale    = 0.4f,
-        .reflectivity = 0.0f,
-    };
-    scene_material pillar_material = {
-        .albedo       = {120, 180, 120},   /* mossy green */
-        .albedo2      = { 50,  90,  60},
-        .tex_kind     = SCENE_TEX_CELLS,
-        .tex_scale    = 0.5f,
-        .reflectivity = 0.0f,
-    };
-    scene_material spire_material = {
-        .albedo       = { 80, 110, 200},   /* steel blue */
-        .albedo2      = { 30,  50, 110},
-        .tex_kind     = SCENE_TEX_STRIPES,
-        .tex_scale    = 0.35f,
-        .reflectivity = 0.0f,
-    };
-    scene_material donut_material = {
-        .albedo       = {230, 200,  90},   /* glaze yellow */
-        .albedo2      = {180,  70, 120},   /* sprinkle pink */
-        .tex_kind     = SCENE_TEX_DOTS,
-        .tex_scale    = 0.3f,
-        .reflectivity = 0.0f,
-    };
+     *     Must be set before load_map_from_ini so g_terrain_material
+     *     flows into bf_map. --- */
     /* Ophan (singular; the plural "ophanim" is the choir) —
      * biblically-accurate angel. Three perpendicular wheels whose axes
      * precess at different rates around a single staring eye.
@@ -312,7 +274,34 @@ int main(int argc, char *argv[]) {
     scene_material ophan_core_material = {
         .tex_scale = 1.0f,
     };
-    float unit_radius = 1.0f;
+
+    /* Sephirot-Trine — three iridescent globes orbiting an empty centroid.
+     * Each sphere is unlit so it radiates regardless of the sun direction,
+     * and uses SCENE_TEX_CLOUDS to keep the surface roiling rather than
+     * smoothly shaded — sells the "iridescent congeries" read. The albedo
+     * pair gives the soft color shift; the secondary color reads through
+     * the clouds. */
+    scene_material trine_mat_gold = {
+        .albedo    = {235, 200,  90},   /* warm gold */
+        .albedo2   = {255, 240, 180},   /* pale ivory */
+        .tex_kind  = SCENE_TEX_CLOUDS,
+        .tex_scale = 1.4f,
+        .unlit     = 1,
+    };
+    scene_material trine_mat_cyan = {
+        .albedo    = { 90, 200, 230},   /* electric cyan */
+        .albedo2   = {200, 240, 255},   /* pale blue */
+        .tex_kind  = SCENE_TEX_CLOUDS,
+        .tex_scale = 1.4f,
+        .unlit     = 1,
+    };
+    scene_material trine_mat_rose = {
+        .albedo    = {230, 110, 170},   /* rose */
+        .albedo2   = {255, 200, 230},   /* pink */
+        .tex_kind  = SCENE_TEX_CLOUDS,
+        .tex_scale = 1.4f,
+        .unlit     = 1,
+    };
 
     g_terrain_material = (scene_material){
         .albedo       = {235, 225, 200},   /* warm sand */
@@ -337,28 +326,7 @@ int main(int argc, char *argv[]) {
     /* Load default map via the command system (after materials are set). */
     load_map_from_ini("battlefield", engine, NULL);
 
-    /* One unit per 3D primitive kind; each gets its own non-reflective look. */
     bf_unit_def unit_defs[] = {
-        { .base_speed = 3.0f, .has_selection = 1, .visual = {
-            .kind = BF_VIS_SPHERE,
-            .sphere = { .radius = unit_radius, .material = orb_material } } },
-        { .base_speed = 3.0f, .has_selection = 1, .visual = {
-            .kind = BF_VIS_BOX,
-            .box = { .half_extents = {0.9f, 0.9f, 0.9f},
-                     .material    = cube_material } } },
-        { .base_speed = 3.0f, .has_selection = 1, .visual = {
-            .kind = BF_VIS_CYLINDER,
-            .cylinder = { .radius = 0.7f, .half_height = 1.0f,
-                          .axis = {0.0f, 1.0f, 0.0f},
-                          .material = pillar_material } } },
-        { .base_speed = 3.0f, .has_selection = 1, .visual = {
-            .kind = BF_VIS_CONE,
-            .cone = { .radius = 0.9f, .height = 2.0f,
-                      .material = spire_material } } },
-        { .base_speed = 3.0f, .has_selection = 1, .visual = {
-            .kind = BF_VIS_TORUS,
-            .torus = { .major_radius = 0.9f, .minor_radius = 0.35f,
-                       .material = donut_material } } },
         { .base_speed = 2.0f, .has_selection = 1, .visual = {
             .kind = BF_VIS_OPHAN,
             /* ring_minor is the tube thickness. The three rings live at
@@ -370,10 +338,22 @@ int main(int argc, char *argv[]) {
                        .core_radius = 0.45f, .spin_rate = 1.3f,
                        .ring_material = ophan_ring_material,
                        .core_material = ophan_core_material } } },
+        { .base_speed = 2.0f, .has_selection = 1, .visual = {
+            .kind = BF_VIS_TRINE,
+            /* hover_height keeps the centroid above the bob trough so the
+             * lowest globe still clears the ground (orbit_radius * 1.2 is
+             * comfortable). spin_rate is slower than the ophan to read as
+             * "drifting" rather than "spinning". */
+            .trine = { .count         = 9,
+                       .orbit_radius  = 1.3f,
+                       .sphere_radius = 0.26f,
+                       .hover_height  = 1.6f,
+                       .spin_rate     = 0.6f,
+                       .mat_a = trine_mat_gold,
+                       .mat_b = trine_mat_cyan,
+                       .mat_c = trine_mat_rose } } },
     };
-    static const char *unit_names[] = {
-        "orb", "cube", "pillar", "spire", "donut", "ophan"
-    };
+    static const char *unit_names[] = { "ophan", "trine" };
     #define NUM_UNIT_TYPES ((int)(sizeof(unit_defs) / sizeof(unit_defs[0])))
     #define ARMY_SIZE      NUM_UNIT_TYPES
 

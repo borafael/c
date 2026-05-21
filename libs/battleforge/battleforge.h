@@ -38,6 +38,7 @@ typedef enum {
     BF_VIS_CONE     = 7,
     BF_VIS_TORUS    = 8,
     BF_VIS_OPHAN  = 9,
+    BF_VIS_TRINE  = 10,
 } bf_visual_kind;
 
 typedef struct {
@@ -74,6 +75,19 @@ typedef struct {
                  float core_radius; float spin_rate;
                  scene_material ring_material;
                  scene_material core_material; } ophan;
+        /* Trine: a congeries of spheres orbiting a shared centroid at
+         * 360°/count offsets in the plane perpendicular to the surface
+         * normal, each with an independent vertical bob keyed by an
+         * irrational multiplier so they never lie in the same plane.
+         * Hovers at hover_height above the footprint. The three material
+         * slots cycle in order around the ring (sphere s uses
+         * mats[s % 3]) so the colour pattern repeats when count > 3. */
+        struct { int count;
+                 float orbit_radius; float sphere_radius;
+                 float hover_height; float spin_rate;
+                 scene_material mat_a;
+                 scene_material mat_b;
+                 scene_material mat_c; } trine;
     };
 } bf_visual_desc;
 
@@ -135,7 +149,7 @@ typedef struct {
     float frame_timer;
     float anim_fps;
     /* Per-instance rotation phase, in seconds since spawn. Read by visuals
-       that animate via continuous rotation (currently BF_VIS_OPHAN). */
+       that animate via continuous rotation (BF_VIS_OPHAN, BF_VIS_TRINE). */
     float spin_phase;
 } bf_visual;
 typedef enum { BF_LOCO_LINEAR, BF_LOCO_PARABOLIC, BF_LOCO_INSTANT } bf_loco_type;

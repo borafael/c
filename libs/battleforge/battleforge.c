@@ -566,6 +566,24 @@ static void bf_ophan_axes(float phase, vector *a1, vector *a2, vector *a3) {
     *a3 = vector_normalize((vector){ cosf(t3), 0.0f, sinf(t3) });
 }
 
+/* Trine helpers — three spheres orbiting an empty centroid. */
+static vector bf_trine_centroid(const bf_visual_desc *d, vector pos, vector up) {
+    return vector_add(pos, vector_scale(up, d->trine.hover_height));
+}
+/* Build an orthonormal basis in the plane perpendicular to `up`. The
+ * reference vector flips to world-X on near-vertical normals so the
+ * cross product never degenerates. */
+static void bf_trine_basis(vector up, vector *e1, vector *e2) {
+    vector ref = (fabsf(up.y) < 0.9f) ? (vector){0.0f, 1.0f, 0.0f}
+                                      : (vector){1.0f, 0.0f, 0.0f};
+    *e1 = vector_normalize(vector_cross(up, ref));
+    *e2 = vector_normalize(vector_cross(up, *e1));
+}
+/* Vertical bob amplitude as a fraction of orbit_radius. The picking
+ * bounding sphere widens by this same amount so a sphere at its peak
+ * stays inside the hit volume. */
+#define BF_TRINE_BOB_FRAC 0.12f
+
 bf_engine *bf_create(bf_config config) {
     bf_engine *e = calloc(1, sizeof(bf_engine));
     if (!e) return NULL;
@@ -1298,6 +1316,39 @@ void bf_render(bf_engine *e, uint32_t *pixel_buf) {
                 .material = core_mat });
             break;
         }
+        case BF_VIS_TRINE: {
+            const bf_visual_desc *d = &vis->desc;
+            int count = d->trine.count;
+            if (count <= 0) break;
+            vector centroid = bf_trine_centroid(d, pos, up);
+            vector e1, e2;
+            bf_trine_basis(up, &e1, &e2);
+            float phase = vis->spin_phase * d->trine.spin_rate;
+            scene_material mats[3] = {
+                d->trine.mat_a, d->trine.mat_b, d->trine.mat_c };
+            const float bob_amp = d->trine.orbit_radius * BF_TRINE_BOB_FRAC;
+            const float step = 2.0f * (float)M_PI / (float)count;
+            for (int s = 0; s < count; s++) {
+                float angle = phase + (float)s * step;
+                vector offset = vector_add(
+                    vector_scale(e1, cosf(angle) * d->trine.orbit_radius),
+                    vector_scale(e2, sinf(angle) * d->trine.orbit_radius));
+                /* Each sphere's bob frequency is golden-ratio-strided so the
+                 * spheres are equidistributed across [0.5, 1.5] Hz-multiples
+                 * of spin_rate; no two ever resync into a flat ring. */
+                float bob_k = 0.5f + fmodf((float)s * 0.6180339887f, 1.0f);
+                float bob = sinf(phase * bob_k + (float)s * 1.3f) * bob_amp;
+                vector center = vector_add(
+                    vector_add(centroid, offset),
+                    vector_scale(up, bob));
+                int mat_id = scene_add_material(e->scene, mats[s % 3]);
+                scene_add_sphere(e->scene, (scene_sphere){
+                    .center = center,
+                    .radius = d->trine.sphere_radius,
+                    .material = mat_id });
+            }
+            break;
+        }
         case BF_VIS_NONE:
             break;
         }
@@ -1414,6 +1465,18 @@ bf_pick_result bf_pick(bf_engine *e, int screen_x, int screen_y) {
             scene_sphere bs = {
                 .center = bf_ophan_center(d, pos, up),
                 .radius = d->ophan.ring_major + d->ophan.ring_minor,
+                .material = 0
+            };
+            t = rt_intersect_sphere(origin, ray_dir, &bs);
+            if (t > 0.0f) hp = vector_add(origin, vector_scale(ray_dir, t));
+            break;
+        }
+        case BF_VIS_TRINE: {
+            const bf_visual_desc *d = &vis->desc;
+            float bob_amp = d->trine.orbit_radius * BF_TRINE_BOB_FRAC;
+            scene_sphere bs = {
+                .center = bf_trine_centroid(d, pos, up),
+                .radius = d->trine.orbit_radius + d->trine.sphere_radius + bob_amp,
                 .material = 0
             };
             t = rt_intersect_sphere(origin, ray_dir, &bs);
