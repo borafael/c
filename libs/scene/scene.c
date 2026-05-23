@@ -34,6 +34,7 @@ scene_material scene_material_default(void) {
     m.tex_index    = 0;
     m.reflectivity = 0.0f;
     m.unlit        = 0;
+    m.portal_index = -1;
     return m;
 }
 
@@ -99,6 +100,7 @@ scene *scene_create(void) {
     s->heightfield_capacity  = SCENE_DEFAULT_CAPACITY;
     s->light_capacity        = SCENE_DEFAULT_CAPACITY;
     s->material_capacity     = SCENE_DEFAULT_CAPACITY;
+    s->portal_capacity       = SCENE_DEFAULT_CAPACITY;
     s->texture_capacity      = SCENE_DEFAULT_CAPACITY;
     s->mesh_capacity         = SCENE_DEFAULT_CAPACITY;
     s->skin_capacity         = SCENE_DEFAULT_CAPACITY;
@@ -118,6 +120,7 @@ scene *scene_create(void) {
     s->heightfields = malloc(sizeof(scene_heightfield) * s->heightfield_capacity);
     s->lights       = malloc(sizeof(scene_light)       * s->light_capacity);
     s->materials    = malloc(sizeof(scene_material)    * s->material_capacity);
+    s->portals      = malloc(sizeof(scene_portal)      * s->portal_capacity);
     s->textures     = malloc(sizeof(scene_texture)     * s->texture_capacity);
     s->meshes       = malloc(sizeof(scene_mesh)        * s->mesh_capacity);
     s->skins        = malloc(sizeof(scene_skin)        * s->skin_capacity);
@@ -126,8 +129,8 @@ scene *scene_create(void) {
 
     if (!s->spheres || !s->planes || !s->discs || !s->cylinders ||
         !s->cones || !s->toruses || !s->triangles || !s->boxes || !s->sprites ||
-        !s->heightfields || !s->lights || !s->materials || !s->textures ||
-        !s->meshes || !s->skins || !s->nodes || !s->animations) {
+        !s->heightfields || !s->lights || !s->materials || !s->portals ||
+        !s->textures || !s->meshes || !s->skins || !s->nodes || !s->animations) {
         scene_destroy(s);
         return NULL;
     }
@@ -189,6 +192,7 @@ void scene_clear(scene *s) {
     s->heightfield_count = 0;
     s->light_count       = 0;
     s->material_count    = 0;
+    s->portal_count      = 0;
     s->texture_count     = 0;
     s->mesh_count        = 0;
     s->skin_count        = 0;
@@ -213,6 +217,7 @@ void scene_destroy(scene *s) {
     free(s->heightfields);
     free(s->lights);
     free(s->materials);
+    free(s->portals);
     free(s->textures);
     free(s->meshes);
     free(s->skins);
@@ -303,6 +308,19 @@ int scene_add_material(scene *s, scene_material material) {
     GROW_IF_NEEDED(s->materials, s->material_count, s->material_capacity, scene_material);
     int idx = s->material_count;
     s->materials[s->material_count++] = material;
+    return idx;
+}
+
+int scene_add_portal(scene *s, scene_portal portal) {
+    GROW_IF_NEEDED(s->portals, s->portal_count, s->portal_capacity, scene_portal);
+    /* Only the FIXED kind uses target_normal — paired kinds read the
+     * partner primitive's normal each frame, so normalizing here would
+     * just touch a field the renderer ignores. */
+    if (portal.kind == SCENE_PORTAL_FIXED) {
+        portal.target_normal = vector_normalize(portal.target_normal);
+    }
+    int idx = s->portal_count;
+    s->portals[s->portal_count++] = portal;
     return idx;
 }
 

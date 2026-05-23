@@ -337,9 +337,25 @@ typedef struct {
     int hit;
     vector point;
     vector normal;
+    vector entry_center;  /* primitive's anchor for portal entry-frame math
+                           * (e.g. disc.center). Only meaningful when
+                           * portal_index >= 0; otherwise ignored. */
+    vector entry_normal;  /* primitive's AUTHORED normal — not flipped to
+                           * face the camera the way `normal` is. Used as
+                           * the portal entry frame's normal so that
+                           * back-side hits naturally produce back-side
+                           * exits. Only meaningful when portal_index >= 0. */
+    float  entry_u, entry_v;  /* normalized parametric coords of the hit
+                               * on the entry primitive, range [-1, 1]
+                               * centered. Disc: offset / radius. Sphere:
+                               * (phi/PI, 2*theta/PI - 1). Used by PARAMETRIC
+                               * portals to look up the matching point on the
+                               * partner. Only meaningful when portal_index
+                               * >= 0 and the entry primitive populates it. */
     scene_color albedo;
     float reflectivity;
     int unlit;
+    int portal_index;   /* -1 = not a portal; >= 0 indexes scene->portals */
     float distance;     /* closest_t at the primary hit; valid iff hit == 1 */
     uint32_t object_id; /* RT_OBJ_ID(kind, index); 0 on miss */
 } hit_info;
@@ -348,6 +364,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                             const mat4 *mesh_world_inv,
                             vector camera_origin) {
     hit_info h = {0};
+    h.portal_index = -1;
     float closest_t = FLT_MAX;
 
     for (int i = 0; i < scene->sphere_count; i++) {
@@ -363,6 +380,23 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
+            h.portal_index = m->portal_index;
+            h.entry_center = scene->spheres[i].center;
+            h.entry_normal = h.normal;   /* outward radial at hit; spheres
+                                          * don't flip (the surface is closed),
+                                          * so h.normal is the authored value. */
+            {
+                /* Normalized portal UV in [-1, 1]. Match the convention used
+                 * by inverse_sphere() in the PARAMETRIC dispatch so a hit at
+                 * the sphere's top (h.normal.y = 1) maps to v = -1, and a
+                 * hit at the bottom maps to v = +1. */
+                vector dA = h.normal;
+                float ny = dA.y; if (ny < -1.0f) ny = -1.0f; if (ny > 1.0f) ny = 1.0f;
+                float theta = acosf(ny);                  /* [0, PI]  */
+                float phi   = atan2f(dA.z, dA.x);         /* [-PI, PI]*/
+                h.entry_u = phi   / (float)M_PI;
+                h.entry_v = 2.0f * theta / (float)M_PI - 1.0f;
+            }
             h.hit = 1;
             h.distance = t;
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_SPHERE, i);
@@ -382,6 +416,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
+            h.portal_index = m->portal_index;
             h.hit = 1;
             h.distance = t;
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_PLANE, i);
@@ -394,7 +429,8 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             closest_t = t;
             vector hp = vector_add(ro, vector_scale(rd, t));
             h.point = hp;
-            h.normal = rt_normal_disc(&scene->discs[i]);
+            vector authored_n = rt_normal_disc(&scene->discs[i]);
+            h.normal = authored_n;
             /* Discs are double-sided: flip the authored normal to face
              * the camera so the back side shades and reflects. */
             if (vector_dot(h.normal, rd) > 0.0f)
@@ -405,6 +441,21 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
+            h.portal_index = m->portal_index;
+            h.entry_center = scene->discs[i].center;
+            h.entry_normal = authored_n;
+            {
+                /* Normalized portal UV: project (hit - center) onto the
+                 * disc's tangent basis, divide by radius. Range [-1, 1]
+                 * within the disc; matches the convention used by
+                 * inverse_disc() in the PARAMETRIC dispatch. */
+                vector etu, etv;
+                tangent_basis(authored_n, &etu, &etv);
+                vector offset = vector_sub(hp, scene->discs[i].center);
+                float r = scene->discs[i].radius > 0.0f ? scene->discs[i].radius : 1.0f;
+                h.entry_u = vector_dot(offset, etu) / r;
+                h.entry_v = vector_dot(offset, etv) / r;
+            }
             h.hit = 1;
             h.distance = t;
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_DISC, i);
@@ -430,6 +481,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
+            h.portal_index = m->portal_index;
             h.hit = 1;
             h.distance = t;
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_CYLINDER, i);
@@ -449,6 +501,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
+            h.portal_index = m->portal_index;
             h.hit = 1;
             h.distance = t;
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_CONE, i);
@@ -468,6 +521,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
+            h.portal_index = m->portal_index;
             h.hit = 1;
             h.distance = t;
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_TORUS, i);
@@ -491,6 +545,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
+            h.portal_index = m->portal_index;
             h.hit = 1;
             h.distance = t;
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_TRIANGLE, i);
@@ -511,11 +566,13 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                     h.albedo = (scene_color){200, 200, 200};
                     h.reflectivity = 0.0f;
                     h.unlit = 0;
+                    h.portal_index = -1;
                 } else {
                     const scene_material *m = &scene->materials[mat_idx];
                     h.albedo = material_sample(m, scene->textures, hp, mh.u, mh.v);
                     h.reflectivity = m->reflectivity;
                     h.unlit = m->unlit;
+                    h.portal_index = m->portal_index;
                 }
                 h.hit = 1;
                 h.distance = mh.t;
@@ -537,6 +594,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.albedo = material_sample(m, scene->textures, hp, u, v);
             h.reflectivity = m->reflectivity;
             h.unlit = m->unlit;
+            h.portal_index = m->portal_index;
             h.hit = 1;
             h.distance = t;
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_BOX, i);
@@ -564,6 +622,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.albedo.b =  pixel        & 0xFF;
             h.reflectivity = 0.0f;
             h.unlit = 0;
+            h.portal_index = -1;
             h.hit = 1;
             h.distance = t;
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_SPRITE, i);
@@ -596,10 +655,12 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                     h.albedo.b = (uint8_t)(((int)cell.b * (int)tex.b) / 255);
                     h.reflectivity = m->reflectivity;
                     h.unlit = m->unlit;
+                    h.portal_index = m->portal_index;
                 } else {
                     h.albedo = cell;
                     h.reflectivity = 0.0f;
                     h.unlit = 0;
+                    h.portal_index = -1;
                 }
                 h.hit = 1;
                 h.distance = t;
@@ -609,6 +670,60 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
     }
 
     return h;
+}
+
+/* Portal transform — pure math, shape-agnostic.
+ *
+ * Given a fully-resolved exit frame (`exit_point` + `exit_normal`) and the
+ * entry's AUTHORED normal (NOT the camera-facing flipped one — that would
+ * lose the "which side did we hit" information), produce the outgoing ray
+ * by re-expressing the incoming direction in the exit frame with the
+ * normal-axis component flipped ("going in becomes going out"). Because
+ * we use the authored normal, the sign of dz encodes which side we hit:
+ * front-hits emerge from the front, back-hits emerge from the back.
+ *
+ * Caller responsibilities (split out of this function so it stays pure):
+ *   - Compute exit_point appropriately for the portal kind:
+ *       FIXED      — stored target_position.
+ *       RIGID disc — partner.center + world-space (u,v) offset reproduced.
+ *       RIGID sph  — antipodal point on partner.
+ *       PARAMETRIC — partner's inverse-UV at the entry's (entry_u, entry_v).
+ *   - Compute exit_normal similarly (constant for discs, radial for spheres).
+ *
+ * The self-hit epsilon goes in the direction we're emerging, so front-exits
+ * clear the exit's front face and back-exits clear its back. */
+static void portal_transform(vector exit_point, vector exit_normal,
+                             vector entry_normal, vector in_dir,
+                             vector *out_origin, vector *out_dir) {
+    vector etu, etv;
+    tangent_basis(entry_normal, &etu, &etv);
+
+    float dx = vector_dot(in_dir, etu);
+    float dy = vector_dot(in_dir, etv);
+    float dz = vector_dot(in_dir, entry_normal);
+
+    vector xn = vector_normalize(exit_normal);
+    vector xtu, xtv;
+    tangent_basis(xn, &xtu, &xtv);
+
+    /* Flip the normal axis: "going in" becomes "going out". For front hits
+     * dz < 0, so the exit dz becomes positive (out of front); back hits
+     * have dz > 0, exit dz is negative (out of back). */
+    float exit_dz = -dz;
+    vector nd = vector_add(vector_add(vector_scale(xtu, dx),
+                                       vector_scale(xtv, dy)),
+                            vector_scale(xn, exit_dz));
+    nd = vector_normalize(nd);
+
+    /* Step slightly along the exit normal in the direction we're going
+     * (sign of exit_dz) so we clear the exit surface from the correct
+     * side regardless of which side of the entry we hit. */
+    float side = exit_dz >= 0.0f ? 1.0f : -1.0f;
+    vector no = vector_add(exit_point,
+                           vector_scale(xn, RT_REFLECT_EPSILON * side));
+
+    *out_origin = no;
+    *out_dir    = nd;
 }
 
 void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
@@ -658,6 +773,131 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
             for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {
                 hit_info h = closest_hit(ro, rd, scene, mesh_world_inv,
                                          camera->origin);
+
+                /* Portal branch: when the hit is on a portal surface, skip
+                 * shading and G-buffer capture (the portal is "see-through")
+                 * and continue tracing from the exit frame. Depth still
+                 * accumulates so a downstream G-buffer reflects the total
+                 * path length, not just the trip to the portal. The
+                 * RT_MAX_BOUNCES budget bounds infinite-portal chains. */
+                if (h.hit && h.portal_index >= 0 &&
+                    h.portal_index < scene->portal_count) {
+                    const scene_portal *p = &scene->portals[h.portal_index];
+                    vector exit_pos, exit_nrm;
+                    int portal_ok = 0;
+                    switch (p->kind) {
+                        case SCENE_PORTAL_FIXED:
+                            exit_pos = p->target_position;
+                            exit_nrm = p->target_normal;
+                            portal_ok = 1;
+                            break;
+                        case SCENE_PORTAL_PAIRED_RIGID:
+                            switch (p->partner_kind) {
+                                case SCENE_PRIM_DISC:
+                                    /* Same world-space (u, v) offset
+                                     * reproduced on the partner disc — a
+                                     * literal geometric pass-through that
+                                     * works cleanly when both discs share
+                                     * scale. */
+                                    if (p->partner_index >= 0 &&
+                                        p->partner_index < scene->disc_count) {
+                                        const scene_disc *pd =
+                                            &scene->discs[p->partner_index];
+                                        vector etu, etv;
+                                        tangent_basis(h.entry_normal, &etu, &etv);
+                                        vector off = vector_sub(h.point, h.entry_center);
+                                        float ou = vector_dot(off, etu);
+                                        float ov = vector_dot(off, etv);
+                                        vector xtu, xtv;
+                                        tangent_basis(pd->normal, &xtu, &xtv);
+                                        exit_pos = vector_add(pd->center,
+                                            vector_add(vector_scale(xtu, ou),
+                                                       vector_scale(xtv, ov)));
+                                        exit_nrm = pd->normal;
+                                        portal_ok = 1;
+                                    }
+                                    break;
+                                case SCENE_PRIM_SPHERE:
+                                    /* Antipodal correspondence: hit at
+                                     * angular direction dA on A → exit at
+                                     * -dA on B's surface, with the exit
+                                     * normal pointing outward (-dA) at that
+                                     * point. Combined with portal_transform's
+                                     * flip_z, this gives "exit direction =
+                                     * in direction" — the Portal-tube look:
+                                     * walk in any side of A, emerge from the
+                                     * opposite side of B going the same way. */
+                                    if (p->partner_index >= 0 &&
+                                        p->partner_index < scene->sphere_count) {
+                                        const scene_sphere *ps =
+                                            &scene->spheres[p->partner_index];
+                                        vector dA = h.entry_normal;
+                                        exit_pos = vector_sub(ps->center,
+                                            vector_scale(dA, ps->radius));
+                                        exit_nrm = vector_scale(dA, -1.0f);
+                                        portal_ok = 1;
+                                    }
+                                    break;
+                            }
+                            break;
+                        case SCENE_PORTAL_PAIRED_PARAMETRIC: {
+                            /* Same normalized (u, v) on the partner. The
+                             * entry's (entry_u, entry_v) was already
+                             * computed in the primitive's hit code; here we
+                             * invert it on the partner's shape to get the
+                             * exit point + normal. Works across mismatched
+                             * shapes: disc → sphere wraps the disc's circle
+                             * across the sphere's lat/long, sphere → disc
+                             * flattens the sphere's surface onto the disc. */
+                            switch (p->partner_kind) {
+                                case SCENE_PRIM_DISC:
+                                    if (p->partner_index >= 0 &&
+                                        p->partner_index < scene->disc_count) {
+                                        const scene_disc *pd =
+                                            &scene->discs[p->partner_index];
+                                        vector xtu, xtv;
+                                        tangent_basis(pd->normal, &xtu, &xtv);
+                                        exit_pos = vector_add(pd->center,
+                                            vector_add(vector_scale(xtu, h.entry_u * pd->radius),
+                                                       vector_scale(xtv, h.entry_v * pd->radius)));
+                                        exit_nrm = pd->normal;
+                                        portal_ok = 1;
+                                    }
+                                    break;
+                                case SCENE_PRIM_SPHERE:
+                                    if (p->partner_index >= 0 &&
+                                        p->partner_index < scene->sphere_count) {
+                                        const scene_sphere *ps =
+                                            &scene->spheres[p->partner_index];
+                                        float phi   = h.entry_u * (float)M_PI;
+                                        float theta = (h.entry_v + 1.0f) * (float)M_PI * 0.5f;
+                                        float st = sinf(theta), ct = cosf(theta);
+                                        float cp = cosf(phi),   sp = sinf(phi);
+                                        vector dB = { st * cp, ct, st * sp };
+                                        exit_pos = vector_add(ps->center,
+                                            vector_scale(dB, ps->radius));
+                                        exit_nrm = dB;
+                                        portal_ok = 1;
+                                    }
+                                    break;
+                            }
+                            break;
+                        }
+                    }
+                    if (portal_ok) {
+                        if (gbuf && !gbuf_done) gbuf_depth_acc += h.distance;
+                        vector new_ro, new_rd;
+                        portal_transform(exit_pos, exit_nrm,
+                                         h.entry_normal, rd,
+                                         &new_ro, &new_rd);
+                        ro = new_ro;
+                        rd = new_rd;
+                        continue;
+                    }
+                    /* Mis-authored portal (e.g. partner index out of range):
+                     * fall through and render the surface normally — better
+                     * than crashing or showing a black hole. */
+                }
 
                 if (gbuf && !gbuf_done) {
                     if (h.hit) gbuf_depth_acc += h.distance;

@@ -73,9 +73,65 @@ typedef struct {
     int            tex_index;     /* SCENE_TEX_IMAGE: index into scene->textures */
     float          reflectivity;  /* 0 = matte, 1 = perfect mirror */
     int            unlit;         /* 1 = skip shading, use raw albedo */
+    int            portal_index;  /* -1 = not a portal; >= 0 indexes scene->portals.
+                                   * When set, the surface acts as a portal:
+                                   * rays are teleported via the portal's exit
+                                   * frame rather than shaded/reflected. */
 } scene_material;
 
 scene_material scene_material_default(void);
+
+/* ============================== Portals ==================================
+ *
+ * A portal is a *material modifier*: any primitive carrying a material whose
+ * portal_index is set becomes a portal-shaped surface. The primitive defines
+ * the entry shape (a disc, a sphere, a mesh face); the portal record defines
+ * where rays come out and continue.
+ *
+ * Simplest kind — PORTAL_FIXED:
+ *   The exit is a static frame in world space (position + outward normal).
+ *   No partner primitive required; the exit can be anywhere.
+ *
+ * Geometry of the math (renderer-side, but recorded here so the data shape
+ * makes sense): at hit, an orthonormal entry frame is built from the
+ * primitive's local normal at the hit point, with a deterministic "up"
+ * derived from world Y. The hit's offset within that frame, plus the
+ * incoming direction expressed in it, is re-emitted from the matching exit
+ * frame derived the same way from `target_normal`. The direction component
+ * along the normal is flipped so "going in" becomes "going out."
+ */
+typedef enum {
+    SCENE_PORTAL_FIXED             = 0,  /* exit is a stored world-space frame */
+    SCENE_PORTAL_PAIRED_RIGID      = 1,  /* exit reads a partner primitive's pose;
+                                          * preserves world-space in-plane offset
+                                          * for discs (shape-matched), antipodal
+                                          * correspondence for spheres */
+    SCENE_PORTAL_PAIRED_PARAMETRIC = 2,  /* exit at the matching (u, v) on the
+                                          * partner, normalized to [-1, 1]. Works
+                                          * across mismatched shapes (disc ↔ sphere
+                                          * and any future pair that defines UV) */
+} scene_portal_kind;
+
+/* Which primitive array `partner_index` refers to. Only kinds listed here
+ * are portal-capable as exits. Extend the enum (and the renderer's dispatch)
+ * to support more shapes (boxes, cylinders, etc.) as needed. */
+typedef enum {
+    SCENE_PRIM_DISC   = 0,
+    SCENE_PRIM_SPHERE = 1,
+} scene_primitive_kind;
+
+typedef struct {
+    scene_portal_kind kind;
+    /* SCENE_PORTAL_FIXED: */
+    vector target_position;   /* where rays emerge, world space */
+    vector target_normal;     /* unit; exit "outward" direction */
+    /* SCENE_PORTAL_PAIRED_RIGID: */
+    scene_primitive_kind partner_kind;
+    int                  partner_index; /* index into the array selected by
+                                         * partner_kind (scene->discs or
+                                         * scene->spheres). Read each hit, so
+                                         * moving the partner moves the exit. */
+} scene_portal;
 
 /* ============================== Primitives =============================== */
 typedef struct {
@@ -400,6 +456,7 @@ typedef struct {
     scene_heightfield *heightfields; int heightfield_count, heightfield_capacity;
     scene_light       *lights;       int light_count,       light_capacity;
     scene_material    *materials;    int material_count,    material_capacity;
+    scene_portal      *portals;      int portal_count,      portal_capacity;
     scene_texture     *textures;     int texture_count,     texture_capacity;
     scene_mesh        *meshes;       int mesh_count,        mesh_capacity;
     scene_skin        *skins;        int skin_count,        skin_capacity;
@@ -436,6 +493,7 @@ int scene_add_sprite(scene *s, scene_sprite sprite);
 int scene_add_heightfield(scene *s, const scene_heightfield *hf);
 int scene_add_light(scene *s, scene_light light);
 int scene_add_material(scene *s, scene_material material);
+int scene_add_portal(scene *s, scene_portal portal);
 int scene_add_texture(scene *s, scene_texture texture);
 
 /* Load a PNG/JPG/etc. from disk into ARGB8888 pixels. The returned
