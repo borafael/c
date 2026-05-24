@@ -51,6 +51,54 @@
 #define INIT_WINDOW_H 600
 #define FOV (M_PI / 2.8f)
 
+/* Flat-shaded octahedron — 8 triangular faces, each with 3 unique
+ * vertices carrying the face normal. Owned by the scene after
+ * scene_add_mesh (vertices/indices freed by scene_destroy). */
+static scene_mesh make_octahedron_mesh(vector center, float radius,
+                                        int material) {
+    static const vector base_verts[6] = {
+        { 1, 0, 0}, {-1, 0, 0},
+        { 0, 1, 0}, { 0,-1, 0},
+        { 0, 0, 1}, { 0, 0,-1},
+    };
+    /* CCW from outside, four faces around the +Y apex, four around -Y. */
+    static const int face_idx[8][3] = {
+        {2, 0, 4}, {2, 4, 1}, {2, 1, 5}, {2, 5, 0},
+        {3, 4, 0}, {3, 1, 4}, {3, 5, 1}, {3, 0, 5},
+    };
+
+    int n_verts = 8 * 3;
+    scene_mesh m = {0};
+    m.vertices       = malloc(sizeof(scene_vertex) * (size_t)n_verts);
+    m.indices        = malloc(sizeof(uint32_t)    * (size_t)n_verts);
+    m.vertex_count   = n_verts;
+    m.index_count    = n_verts;
+    m.material_index = material;
+    m.skin_index     = -1;
+
+    int vi = 0;
+    for (int f = 0; f < 8; f++) {
+        vector v0 = vector_add(center,
+                    vector_scale(base_verts[face_idx[f][0]], radius));
+        vector v1 = vector_add(center,
+                    vector_scale(base_verts[face_idx[f][1]], radius));
+        vector v2 = vector_add(center,
+                    vector_scale(base_verts[face_idx[f][2]], radius));
+        vector n = vector_normalize(
+                    vector_cross(vector_sub(v1, v0),
+                                  vector_sub(v2, v0)));
+        m.vertices[vi+0] = (scene_vertex){.position = v0, .normal = n};
+        m.vertices[vi+1] = (scene_vertex){.position = v1, .normal = n};
+        m.vertices[vi+2] = (scene_vertex){.position = v2, .normal = n};
+        m.indices[vi+0]  = (uint32_t)(vi+0);
+        m.indices[vi+1]  = (uint32_t)(vi+1);
+        m.indices[vi+2]  = (uint32_t)(vi+2);
+        vi += 3;
+    }
+    scene_mesh_compute_bounds(&m);
+    return m;
+}
+
 /* Animation knobs for the traversing sphere. The sphere traces a circle
  * in the X-Z plane around the (-2, *, -2) corner where A and C meet, so
  * over one cycle the sphere actually PASSES THROUGH each portal rather
@@ -181,6 +229,21 @@ static void build_scene(scene **scene_out, scene_camera **camera_out) {
         .material     = m_traveler,
         .portal_disc1 = {disc_A_idx + 1, disc_C_idx + 1},    /* 1-based */
     });
+
+    /* --- Step 3: a static MESH straddling both A and C. ----
+     * Octahedron centered at the A/C corner, big enough to cross both
+     * portal planes. Demonstrates that the multi-portal clip + virtual
+     * copy logic also applies at BVH-leaf hits on triangle meshes — no
+     * change to the data model, just the same portal_disc1[] tag. */
+    int m_octa = scene_add_material(sc, (scene_material){
+        .albedo       = { 80, 220, 200},
+        .portal_index = -1,
+    });
+    scene_mesh octa = make_octahedron_mesh(
+        (vector){-2.0f, 0.5f, -2.0f}, 0.55f, m_octa);
+    octa.portal_disc1[0] = disc_A_idx + 1;
+    octa.portal_disc1[1] = disc_C_idx + 1;
+    scene_add_mesh(sc, octa);
 
     scene_set_ambient(sc, 0.3f);
     scene_add_light(sc, (scene_light){

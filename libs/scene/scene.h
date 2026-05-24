@@ -134,24 +134,26 @@ typedef struct {
 } scene_portal;
 
 /* ============================== Primitives =============================== */
-#define SCENE_SPHERE_MAX_PORTALS 4
+#define SCENE_MAX_PORTAL_TRAVERSALS 4
+
+/* Portal-traversal tag semantics (shared by scene_sphere and scene_mesh):
+ *
+ * Each slot in portal_disc1[] is 1-based so designated-initializer zero-init
+ * naturally means "unused":
+ *   0     = unused slot (default).
+ *   N + 1 = the primitive is straddling scene->discs[N], which must carry a
+ *           SCENE_PORTAL_PAIRED_RIGID portal whose partner is also a disc.
+ *
+ * Multiple non-zero slots stack: the renderer clips the original to the
+ * INTERSECTION of all tagged portals' front half-spaces, and emits one
+ * virtual copy at EACH portal's partner (each clipped to its own partner's
+ * front half-space). Slots can be filled in any order; zeros are skipped. */
 
 typedef struct {
     vector center;
     float  radius;
     int    material;
-    /* Portal-traversal tags. Each slot is 1-based so designated-initializer
-     * zero-init naturally means "unused":
-     *   0     = unused slot (default).
-     *   N + 1 = the sphere is straddling scene->discs[N], which must carry
-     *           a SCENE_PORTAL_PAIRED_RIGID portal whose partner is also a
-     *           disc.
-     * Multiple non-zero slots stack: the renderer clips the original to
-     * the INTERSECTION of all tagged portals' front half-spaces, and emits
-     * one virtual copy at EACH portal's partner (each clipped to its own
-     * partner's front half-space). Slots can be filled in any order; zeros
-     * are skipped. */
-    int    portal_disc1[SCENE_SPHERE_MAX_PORTALS];
+    int    portal_disc1[SCENE_MAX_PORTAL_TRAVERSALS];   /* see above */
 } scene_sphere;
 
 typedef struct {
@@ -305,6 +307,13 @@ typedef struct {
      * skinned mesh has its `vertices` rewritten each frame by
      * scene_apply_skinning from the skin's preserved rest pose. */
     int           skin_index;
+    /* Portal-traversal tags — same encoding as scene_sphere.portal_disc1.
+     * See the comment above scene_sphere. The renderer's mesh loop reads
+     * this slot the same way: original clipped to intersection of all
+     * tagged portals' front half-spaces, one virtual copy emitted per
+     * tagged slot (each at the partner disc, clipped to its front
+     * half-space). */
+    int           portal_disc1[SCENE_MAX_PORTAL_TRAVERSALS];
 } scene_mesh;
 
 /* Recompute bounds_center / bounds_radius from the current vertex positions.

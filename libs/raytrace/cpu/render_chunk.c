@@ -360,6 +360,48 @@ typedef struct {
     uint32_t object_id; /* RT_OBJ_ID(kind, index); 0 on miss */
 } hit_info;
 
+/* Forward portal map P_AB(p) as a mat4: decomposes (p - entry.center)
+ * in entry's tangent basis, flips the normal-axis component, and
+ * recomposes in exit's tangent basis around exit.center.
+ *
+ *   M_linear = xtu_exit * etu_entry^T + xtv_exit * etv_entry^T
+ *            - n_exit  * n_entry^T
+ *   T        = exit.center - M_linear * entry.center
+ *
+ * Used by the mesh portal-traversal path: passing P_BA = forward(exit,
+ * entry) as `world_inv` to rt_intersect_mesh pre-transforms the world
+ * ray into the original mesh's frame, so the existing BVH traversal
+ * intersects against unmodified vertex data — no per-frame vertex copy
+ * needed. */
+static inline mat4 build_portal_forward_map(const scene_disc *entry,
+                                             const scene_disc *exit) {
+    vector etu_e, etv_e;
+    tangent_basis(entry->normal, &etu_e, &etv_e);
+    vector xtu_x, xtv_x;
+    tangent_basis(exit->normal, &xtu_x, &xtv_x);
+
+    mat4 P = {0};
+    P.m[15] = 1.0f;
+
+    /* Linear part by row-col, expressed as outer-product sum. */
+    P.m[ 0] = xtu_x.x * etu_e.x + xtv_x.x * etv_e.x - exit->normal.x * entry->normal.x;
+    P.m[ 1] = xtu_x.x * etu_e.y + xtv_x.x * etv_e.y - exit->normal.x * entry->normal.y;
+    P.m[ 2] = xtu_x.x * etu_e.z + xtv_x.x * etv_e.z - exit->normal.x * entry->normal.z;
+    P.m[ 4] = xtu_x.y * etu_e.x + xtv_x.y * etv_e.x - exit->normal.y * entry->normal.x;
+    P.m[ 5] = xtu_x.y * etu_e.y + xtv_x.y * etv_e.y - exit->normal.y * entry->normal.y;
+    P.m[ 6] = xtu_x.y * etu_e.z + xtv_x.y * etv_e.z - exit->normal.y * entry->normal.z;
+    P.m[ 8] = xtu_x.z * etu_e.x + xtv_x.z * etv_e.x - exit->normal.z * entry->normal.x;
+    P.m[ 9] = xtu_x.z * etu_e.y + xtv_x.z * etv_e.y - exit->normal.z * entry->normal.y;
+    P.m[10] = xtu_x.z * etu_e.z + xtv_x.z * etv_e.z - exit->normal.z * entry->normal.z;
+
+    /* Translation: exit.center - M_linear * entry.center. */
+    vector m_ec = mat4_transform_dir(P, entry->center);
+    P.m[ 3] = exit->center.x - m_ec.x;
+    P.m[ 7] = exit->center.y - m_ec.y;
+    P.m[11] = exit->center.z - m_ec.z;
+    return P;
+}
+
 /* Given an entry disc that carries a paired-rigid disc->disc portal,
  * return the partner (exit) disc. NULL on any kind of misauthored
  * scene — caller should treat as "no virtual copy for this slot." */
@@ -440,7 +482,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             vector hp = vector_add(ro, vector_scale(rd, t));
             int keep = 1;
             for (int p = 0;
-                 p < SCENE_SPHERE_MAX_PORTALS && keep; p++) {
+                 p < SCENE_MAX_PORTAL_TRAVERSALS && keep; p++) {
                 int trav = sph->portal_disc1[p] - 1;
                 if (trav < 0 || trav >= scene->disc_count) continue;
                 const scene_disc *d = &scene->discs[trav];
@@ -454,7 +496,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
         }
 
         /* --- One virtual copy per tagged portal --- */
-        for (int p = 0; p < SCENE_SPHERE_MAX_PORTALS; p++) {
+        for (int p = 0; p < SCENE_MAX_PORTAL_TRAVERSALS; p++) {
             int trav = sph->portal_disc1[p] - 1;
             if (trav < 0 || trav >= scene->disc_count) continue;
             const scene_disc *entry_disc = &scene->discs[trav];
@@ -649,32 +691,88 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
     }
 
     for (int i = 0; i < scene->mesh_count; i++) {
-        rt_mesh_hit mh;
+        const scene_mesh *mesh = &scene->meshes[i];
         const mat4 *winv = mesh_world_inv ? &mesh_world_inv[i] : NULL;
-        if (rt_intersect_mesh(ro, rd, &scene->meshes[i], winv, &mh)) {
+
+        /* Helper macro: writes the hit to `h` from a mesh intersection
+         * (rt_mesh_hit `mh`, world hit point `hp`). Identical shape to
+         * the standalone hit path, just inlined for both the original
+         * and each virtual copy. */
+        #define MESH_FILL_HIT(mhv, hpv) do {                              \
+            h.point  = (hpv);                                             \
+            h.normal = (mhv).normal;                                      \
+            int _mat_idx = mesh->material_index;                          \
+            if (_mat_idx < 0 || _mat_idx >= scene->material_count) {      \
+                h.albedo = (scene_color){200, 200, 200};                  \
+                h.reflectivity = 0.0f;                                    \
+                h.unlit = 0;                                              \
+                h.portal_index = -1;                                      \
+            } else {                                                      \
+                const scene_material *_m = &scene->materials[_mat_idx];   \
+                h.albedo = material_sample(_m, scene->textures,           \
+                                            (hpv), (mhv).u, (mhv).v);     \
+                h.reflectivity = _m->reflectivity;                        \
+                h.unlit = _m->unlit;                                      \
+                h.portal_index = _m->portal_index;                        \
+            }                                                             \
+            h.hit = 1;                                                    \
+            h.distance = (mhv).t;                                         \
+            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_MESH, i);                 \
+        } while (0)
+
+        /* --- Original mesh, clipped to all tagged portal half-spaces --- */
+        rt_mesh_hit mh;
+        if (rt_intersect_mesh(ro, rd, mesh, winv, &mh)) {
             if (mh.t > 0.0f && mh.t < closest_t) {
-                closest_t = mh.t;
                 vector hp = vector_add(ro, vector_scale(rd, mh.t));
-                h.point = hp;
-                h.normal = mh.normal;
-                int mat_idx = scene->meshes[i].material_index;
-                if (mat_idx < 0 || mat_idx >= scene->material_count) {
-                    h.albedo = (scene_color){200, 200, 200};
-                    h.reflectivity = 0.0f;
-                    h.unlit = 0;
-                    h.portal_index = -1;
-                } else {
-                    const scene_material *m = &scene->materials[mat_idx];
-                    h.albedo = material_sample(m, scene->textures, hp, mh.u, mh.v);
-                    h.reflectivity = m->reflectivity;
-                    h.unlit = m->unlit;
-                    h.portal_index = m->portal_index;
+                int keep = 1;
+                for (int p = 0;
+                     p < SCENE_MAX_PORTAL_TRAVERSALS && keep; p++) {
+                    int trav = mesh->portal_disc1[p] - 1;
+                    if (trav < 0 || trav >= scene->disc_count) continue;
+                    const scene_disc *d = &scene->discs[trav];
+                    if (vector_dot(vector_sub(hp, d->center),
+                                    d->normal) < 0.0f)
+                        keep = 0;
                 }
-                h.hit = 1;
-                h.distance = mh.t;
-                h.object_id = RT_OBJ_ID(RT_OBJ_KIND_MESH, i);
+                if (keep) {
+                    closest_t = mh.t;
+                    MESH_FILL_HIT(mh, hp);
+                }
             }
         }
+
+        /* --- One virtual copy per tagged portal --- */
+        for (int p = 0; p < SCENE_MAX_PORTAL_TRAVERSALS; p++) {
+            int trav = mesh->portal_disc1[p] - 1;
+            if (trav < 0 || trav >= scene->disc_count) continue;
+            const scene_disc *entry_disc = &scene->discs[trav];
+            const scene_disc *exit_disc =
+                partner_disc_for_entry(scene, entry_disc);
+            if (!exit_disc) continue;
+
+            /* P_BA = forward(exit, entry): inverse portal map by symmetry.
+             * Compose with any existing mesh world-inv so a node-driven
+             * mesh's pose is still honored. */
+            mat4 P_BA = build_portal_forward_map(exit_disc, entry_disc);
+            mat4 virt_winv = winv ? mat4_mul(*winv, P_BA) : P_BA;
+
+            rt_mesh_hit mhv;
+            if (rt_intersect_mesh(ro, rd, mesh, &virt_winv, &mhv)) {
+                if (mhv.t > 0.0f && mhv.t < closest_t) {
+                    vector hpv = vector_add(ro, vector_scale(rd, mhv.t));
+                    float depth = vector_dot(
+                        vector_sub(hpv, exit_disc->center),
+                        exit_disc->normal);
+                    if (depth >= 0.0f) {
+                        closest_t = mhv.t;
+                        MESH_FILL_HIT(mhv, hpv);
+                    }
+                }
+            }
+        }
+
+        #undef MESH_FILL_HIT
     }
 
     for (int i = 0; i < scene->box_count; i++) {
