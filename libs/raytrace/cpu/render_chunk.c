@@ -419,6 +419,50 @@ static inline const scene_disc *partner_disc_for_entry(
     return &sc->discs[pp->partner_index];
 }
 
+/* Same idea for sphere portals: entry sphere → paired-rigid partner
+ * sphere, or NULL on a misauthored slot. */
+static inline const scene_sphere *partner_sphere_for_entry(
+    const scene *sc, const scene_sphere *entry_sphere) {
+    int mat_idx = entry_sphere->material;
+    if (mat_idx < 0 || mat_idx >= sc->material_count) return NULL;
+    int portal_idx = sc->materials[mat_idx].portal_index;
+    if (portal_idx < 0 || portal_idx >= sc->portal_count) return NULL;
+    const scene_portal *pp = &sc->portals[portal_idx];
+    if (pp->kind != SCENE_PORTAL_PAIRED_RIGID) return NULL;
+    if (pp->partner_kind != SCENE_PRIM_SPHERE) return NULL;
+    if (pp->partner_index < 0 ||
+        pp->partner_index >= sc->sphere_count) return NULL;
+    return &sc->spheres[pp->partner_index];
+}
+
+/* Sphere portal virtual-center map: rigid-translation approximation of
+ * the true radial-inversion + antipodal map.
+ *
+ *   dir     = (C - A.center) / |C - A.center|
+ *   vcenter = B.center + (|C - A.center| - A.radius - B.radius) * dir
+ *
+ * Sends A's surface to B's antipodal surface, smoothly transitions
+ * through the in/out crossing. The formula is only valid for r_C ≤
+ * R_A + R_B — beyond that, vcenter crosses to the FAR side of B where
+ * the "outside B" clip stops catching it (it'd render wrongly as a
+ * floating ghost). The threshold is exactly where vcenter coincides
+ * with B.center; past it we don't physically have a virtual to render.
+ *
+ * Returns 0 if the object is AT A's center (direction undefined) or
+ * beyond the valid range; caller should skip the virtual. */
+static inline int sphere_portal_virtual_center(
+    vector C, const scene_sphere *entry, const scene_sphere *exit_sph,
+    vector *out_vcenter) {
+    vector to_C = vector_sub(C, entry->center);
+    float  r_C  = vector_magnitude(to_C);
+    if (r_C < 1e-6f) return 0;                                  /* singular */
+    if (r_C > entry->radius + exit_sph->radius) return 0;       /* out of range */
+    vector dir  = vector_scale(to_C, 1.0f / r_C);
+    float  depth = r_C - entry->radius - exit_sph->radius;
+    *out_vcenter = vector_add(exit_sph->center, vector_scale(dir, depth));
+    return 1;
+}
+
 /* Fill a hit_info from a sphere intersection. Shared between the "normal"
  * sphere hit and the portal-traversal "virtual copy" hit — both have the
  * same fill logic, only the sphere data differs (the virtual copy passes
@@ -481,6 +525,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
         if (t > 0.0f && t < closest_t) {
             vector hp = vector_add(ro, vector_scale(rd, t));
             int keep = 1;
+            /* Disc clips: must be in front of every tagged disc. */
             for (int p = 0;
                  p < SCENE_MAX_PORTAL_TRAVERSALS && keep; p++) {
                 int trav = sph->portal_disc1[p] - 1;
@@ -489,13 +534,23 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                 if (vector_dot(vector_sub(hp, d->center), d->normal) < 0.0f)
                     keep = 0;
             }
+            /* Sphere clips: must be OUTSIDE every tagged sphere. */
+            for (int p = 0;
+                 p < SCENE_MAX_PORTAL_TRAVERSALS && keep; p++) {
+                int trav = sph->portal_sphere1[p] - 1;
+                if (trav < 0 || trav >= scene->sphere_count) continue;
+                const scene_sphere *s = &scene->spheres[trav];
+                vector d = vector_sub(hp, s->center);
+                if (vector_dot(d, d) < s->radius * s->radius)
+                    keep = 0;
+            }
             if (keep) {
                 closest_t = t;
                 fill_sphere_hit(&h, scene, sph, i, hp, t);
             }
         }
 
-        /* --- One virtual copy per tagged portal --- */
+        /* --- One virtual copy per tagged disc portal --- */
         for (int p = 0; p < SCENE_MAX_PORTAL_TRAVERSALS; p++) {
             int trav = sph->portal_disc1[p] - 1;
             if (trav < 0 || trav >= scene->disc_count) continue;
@@ -526,7 +581,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                 .center   = vcenter,
                 .radius   = sph->radius,
                 .material = sph->material,
-                /* portal_disc1[*] all zero by zero-init — virtual is plain */
+                /* portal_disc1[*] / portal_sphere1[*] all zero — no recursion */
             };
             float tv = rt_intersect_sphere(ro, rd, &virt);
             if (tv > 0.0f && tv < closest_t) {
@@ -534,6 +589,36 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                 float depth = vector_dot(vector_sub(hpv, exit_disc->center),
                                           exit_disc->normal);
                 if (depth >= 0.0f) {
+                    closest_t = tv;
+                    fill_sphere_hit(&h, scene, &virt, i, hpv, tv);
+                }
+            }
+        }
+
+        /* --- One virtual copy per tagged sphere portal --- */
+        for (int p = 0; p < SCENE_MAX_PORTAL_TRAVERSALS; p++) {
+            int trav = sph->portal_sphere1[p] - 1;
+            if (trav < 0 || trav >= scene->sphere_count) continue;
+            const scene_sphere *entry_sph = &scene->spheres[trav];
+            const scene_sphere *exit_sph =
+                partner_sphere_for_entry(scene, entry_sph);
+            if (!exit_sph) continue;
+
+            vector vcenter;
+            if (!sphere_portal_virtual_center(sph->center, entry_sph,
+                                               exit_sph, &vcenter))
+                continue;   /* singular — object at entry center */
+
+            scene_sphere virt = {
+                .center   = vcenter,
+                .radius   = sph->radius,
+                .material = sph->material,
+            };
+            float tv = rt_intersect_sphere(ro, rd, &virt);
+            if (tv > 0.0f && tv < closest_t) {
+                vector hpv = vector_add(ro, vector_scale(rd, tv));
+                vector d = vector_sub(hpv, exit_sph->center);
+                if (vector_dot(d, d) >= exit_sph->radius * exit_sph->radius) {
                     closest_t = tv;
                     fill_sphere_hit(&h, scene, &virt, i, hpv, tv);
                 }
@@ -726,6 +811,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             if (mh.t > 0.0f && mh.t < closest_t) {
                 vector hp = vector_add(ro, vector_scale(rd, mh.t));
                 int keep = 1;
+                /* Disc clips. */
                 for (int p = 0;
                      p < SCENE_MAX_PORTAL_TRAVERSALS && keep; p++) {
                     int trav = mesh->portal_disc1[p] - 1;
@@ -735,6 +821,16 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                                     d->normal) < 0.0f)
                         keep = 0;
                 }
+                /* Sphere clips: must be OUTSIDE every tagged sphere. */
+                for (int p = 0;
+                     p < SCENE_MAX_PORTAL_TRAVERSALS && keep; p++) {
+                    int trav = mesh->portal_sphere1[p] - 1;
+                    if (trav < 0 || trav >= scene->sphere_count) continue;
+                    const scene_sphere *s = &scene->spheres[trav];
+                    vector d = vector_sub(hp, s->center);
+                    if (vector_dot(d, d) < s->radius * s->radius)
+                        keep = 0;
+                }
                 if (keep) {
                     closest_t = mh.t;
                     MESH_FILL_HIT(mh, hp);
@@ -742,7 +838,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             }
         }
 
-        /* --- One virtual copy per tagged portal --- */
+        /* --- One virtual copy per tagged disc portal --- */
         for (int p = 0; p < SCENE_MAX_PORTAL_TRAVERSALS; p++) {
             int trav = mesh->portal_disc1[p] - 1;
             if (trav < 0 || trav >= scene->disc_count) continue;
@@ -765,6 +861,51 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                         vector_sub(hpv, exit_disc->center),
                         exit_disc->normal);
                     if (depth >= 0.0f) {
+                        closest_t = mhv.t;
+                        MESH_FILL_HIT(mhv, hpv);
+                    }
+                }
+            }
+        }
+
+        /* --- One virtual copy per tagged sphere portal --- */
+        for (int p = 0; p < SCENE_MAX_PORTAL_TRAVERSALS; p++) {
+            int trav = mesh->portal_sphere1[p] - 1;
+            if (trav < 0 || trav >= scene->sphere_count) continue;
+            const scene_sphere *entry_sph = &scene->spheres[trav];
+            const scene_sphere *exit_sph =
+                partner_sphere_for_entry(scene, entry_sph);
+            if (!exit_sph) continue;
+
+            /* Sphere portal map is approximated as a rigid translation
+             * (the true radial-inversion + antipodal map distorts
+             * shape). Use the mesh's bounds center, lifted to world
+             * space, as the "object center" feeding the map. */
+            vector C_world;
+            if (winv) {
+                mat4 W = mat4_affine_inverse(*winv);
+                C_world = mat4_transform_point(W, mesh->bounds_center);
+            } else {
+                C_world = mesh->bounds_center;
+            }
+            vector vcenter;
+            if (!sphere_portal_virtual_center(C_world, entry_sph,
+                                               exit_sph, &vcenter))
+                continue;
+            vector delta = vector_sub(vcenter, C_world);
+
+            /* virt_winv = (translate(delta) * W)^-1 = W^-1 * translate(-delta). */
+            mat4 T_inv = mat4_translate(
+                (vector){-delta.x, -delta.y, -delta.z});
+            mat4 virt_winv = winv ? mat4_mul(*winv, T_inv) : T_inv;
+
+            rt_mesh_hit mhv;
+            if (rt_intersect_mesh(ro, rd, mesh, &virt_winv, &mhv)) {
+                if (mhv.t > 0.0f && mhv.t < closest_t) {
+                    vector hpv = vector_add(ro, vector_scale(rd, mhv.t));
+                    vector d = vector_sub(hpv, exit_sph->center);
+                    if (vector_dot(d, d) >=
+                        exit_sph->radius * exit_sph->radius) {
                         closest_t = mhv.t;
                         MESH_FILL_HIT(mhv, hpv);
                     }

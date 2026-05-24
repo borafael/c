@@ -99,11 +99,11 @@ static scene_mesh make_octahedron_mesh(vector center, float radius,
     return m;
 }
 
-/* Animation knobs for the traversing sphere. The sphere traces a circle
- * in the X-Z plane around the (-2, *, -2) corner where A and C meet, so
- * over one cycle the sphere actually PASSES THROUGH each portal rather
- * than being permanently glued to one of their planes. In each quadrant
- * of the circle the viewer sees a different state:
+/* Animation knobs for the disc-portal traversing sphere. Circles in the
+ * X-Z plane around the (-2, *, -2) corner where A and C meet, so over
+ * one cycle the sphere passes through each portal rather than being
+ * permanently glued to one of their planes. In each quadrant the viewer
+ * sees a different state:
  *   Quadrant 1 (front of both A and C): full original visible.
  *   Quadrant 2 (behind A only):         full virtual at B.
  *   Quadrant 3 (behind both):           full virtual at B AND full at D.
@@ -116,7 +116,20 @@ static scene_mesh make_octahedron_mesh(vector center, float radius,
 #define TRAVELER_CENTER_Z   -2.0f
 #define TRAVELER_PERIOD     10.0f    /* seconds per full lap */
 
+/* Step 4: second traveler for the sphere-portal pair. Oscillates along Z
+ * through entry sphere E, with a small Y offset so the path never crosses
+ * E's center (the sphere-portal map is singular there). F is positioned
+ * so the antipodal "emerge" direction comes out at floor level instead
+ * of high in the air. */
+#define TRAV2_X              4.0f
+#define TRAV2_Y              0.9f    /* slightly ABOVE E.y (= 0.5) */
+#define TRAV2_Z_CENTER       4.0f
+#define TRAV2_Z_AMP          3.0f    /* z ∈ [1, 7] — well past E in both directions */
+#define TRAV2_RADIUS         0.30f
+#define TRAV2_PERIOD         8.0f
+
 static int traveler_sphere_idx = -1;
+static int traveler2_sphere_idx = -1;
 
 static void build_scene(scene **scene_out, scene_camera **camera_out) {
     scene *sc = scene_create();
@@ -244,6 +257,54 @@ static void build_scene(scene **scene_out, scene_camera **camera_out) {
     octa.portal_disc1[0] = disc_A_idx + 1;
     octa.portal_disc1[1] = disc_C_idx + 1;
     scene_add_mesh(sc, octa);
+
+    /* --- Step 4: sphere portal pair E ↔ F. ----
+     *
+     * Two spherical "portal volumes" — anything inside E pops out at the
+     * antipodal direction from F. F is lifted in +Y so the antipodal
+     * direction at the demo's traveler offset points upward (above the
+     * floor) rather than into the ground. */
+    int m_portal_E = scene_add_material(sc, (scene_material){
+        .albedo = {255, 100, 100}, .portal_index = -1});  /* portal idx filled below */
+    int m_portal_F = scene_add_material(sc, (scene_material){
+        .albedo = {100, 100, 255}, .portal_index = -1});
+
+    /* Sphere indices: floor reference balls occupy 0..2, traveler 1 at
+     * index 3, so E becomes index 4 and F becomes index 5. */
+    int sph_E_idx = 4;
+    int sph_F_idx = 5;
+    int portal_E = scene_add_portal(sc, (scene_portal){
+        .kind = SCENE_PORTAL_PAIRED_RIGID,
+        .partner_kind = SCENE_PRIM_SPHERE, .partner_index = sph_F_idx});
+    int portal_F = scene_add_portal(sc, (scene_portal){
+        .kind = SCENE_PORTAL_PAIRED_RIGID,
+        .partner_kind = SCENE_PRIM_SPHERE, .partner_index = sph_E_idx});
+    sc->materials[m_portal_E].portal_index = portal_E;
+    sc->materials[m_portal_F].portal_index = portal_F;
+
+    scene_add_sphere(sc, (scene_sphere){          /* sphere index 4 = E */
+        .center = {4.0f, 0.5f, 4.0f}, .radius = 1.0f, .material = m_portal_E,
+    });
+    scene_add_sphere(sc, (scene_sphere){          /* sphere index 5 = F */
+        /* F.y = 1.6 so the antipodal direction from F brings the virtual
+         * down to floor level (≈ y=0) when the traveler is inside E. */
+        .center = {-5.0f, 1.6f, 4.0f}, .radius = 1.0f, .material = m_portal_F,
+    });
+
+    /* Traveler 2 — orange sphere oscillating through E. Tagged with the
+     * sphere-portal traversal field so the renderer clips hits inside E
+     * and emits a virtual copy translated to the antipodal partner side
+     * of F. */
+    int m_traveler2 = scene_add_material(sc, (scene_material){
+        .albedo       = {255, 140,  40},
+        .portal_index = -1,
+    });
+    traveler2_sphere_idx = scene_add_sphere(sc, (scene_sphere){
+        .center         = {TRAV2_X, TRAV2_Y, TRAV2_Z_CENTER - TRAV2_Z_AMP},
+        .radius         = TRAV2_RADIUS,
+        .material       = m_traveler2,
+        .portal_sphere1 = {sph_E_idx + 1},
+    });
 
     scene_set_ambient(sc, 0.3f);
     scene_add_light(sc, (scene_light){
@@ -423,6 +484,13 @@ int main(int argc, char *argv[]) {
                 TRAVELER_CENTER_X + TRAVELER_PATH_R * cosf(theta);
             sc->spheres[traveler_sphere_idx].center.z =
                 TRAVELER_CENTER_Z + TRAVELER_PATH_R * sinf(theta);
+        }
+        /* Oscillate traveler 2 along Z through E. Outside E → original
+         * visible; inside E → original clipped, virtual visible at F. */
+        if (traveler2_sphere_idx >= 0) {
+            float phase = t * (2.0f * (float)M_PI / TRAV2_PERIOD);
+            sc->spheres[traveler2_sphere_idx].center.z =
+                TRAV2_Z_CENTER + TRAV2_Z_AMP * sinf(phase);
         }
 
         rt_renderer_render(cpu_rnd, sc, camera, &viewport, pixels, NULL);

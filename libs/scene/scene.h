@@ -138,22 +138,40 @@ typedef struct {
 
 /* Portal-traversal tag semantics (shared by scene_sphere and scene_mesh):
  *
- * Each slot in portal_disc1[] is 1-based so designated-initializer zero-init
- * naturally means "unused":
+ * Each slot in portal_disc1[] / portal_sphere1[] is 1-based so designated-
+ * initializer zero-init naturally means "unused":
  *   0     = unused slot (default).
- *   N + 1 = the primitive is straddling scene->discs[N], which must carry a
- *           SCENE_PORTAL_PAIRED_RIGID portal whose partner is also a disc.
+ *   N + 1 = the primitive is straddling scene->discs[N]  (portal_disc1)
+ *                       or scene->spheres[N]            (portal_sphere1),
+ *           which must carry a SCENE_PORTAL_PAIRED_RIGID portal whose
+ *           partner is the same kind of primitive (disc->disc, sphere->
+ *           sphere).
+ *
+ * The two arrays are independent — an object can carry both disc-portal
+ * tags and sphere-portal tags, and the renderer applies all of them.
+ *
+ * Disc clip = front of the entry plane. Sphere clip = OUTSIDE the entry
+ * sphere. Virtual copy:
+ *   - Disc portal: full rigid-motion map (tangent components preserved,
+ *     normal-axis flipped). Shape preserved exactly.
+ *   - Sphere portal: rigid-translation approximation — the true radial-
+ *     inversion + antipodal map distorts shapes, so we just translate the
+ *     object so its center lands at the antipodal partner-relative point.
+ *     Looks right at the surface crossing and for fully-inside/fully-
+ *     outside states; not physically consistent with rays looking THROUGH
+ *     the sphere portal at the virtual copy (step 5 would fix this).
  *
  * Multiple non-zero slots stack: the renderer clips the original to the
- * INTERSECTION of all tagged portals' front half-spaces, and emits one
- * virtual copy at EACH portal's partner (each clipped to its own partner's
- * front half-space). Slots can be filled in any order; zeros are skipped. */
+ * INTERSECTION of all tagged portals' clip regions, and emits one virtual
+ * copy per tagged slot (each clipped to its own partner's clip region).
+ * Slots can be filled in any order; zeros are skipped. */
 
 typedef struct {
     vector center;
     float  radius;
     int    material;
-    int    portal_disc1[SCENE_MAX_PORTAL_TRAVERSALS];   /* see above */
+    int    portal_disc1  [SCENE_MAX_PORTAL_TRAVERSALS];   /* see above */
+    int    portal_sphere1[SCENE_MAX_PORTAL_TRAVERSALS];   /* see above */
 } scene_sphere;
 
 typedef struct {
@@ -307,13 +325,11 @@ typedef struct {
      * skinned mesh has its `vertices` rewritten each frame by
      * scene_apply_skinning from the skin's preserved rest pose. */
     int           skin_index;
-    /* Portal-traversal tags — same encoding as scene_sphere.portal_disc1.
-     * See the comment above scene_sphere. The renderer's mesh loop reads
-     * this slot the same way: original clipped to intersection of all
-     * tagged portals' front half-spaces, one virtual copy emitted per
-     * tagged slot (each at the partner disc, clipped to its front
-     * half-space). */
-    int           portal_disc1[SCENE_MAX_PORTAL_TRAVERSALS];
+    /* Portal-traversal tags — same encoding as scene_sphere. See the
+     * comment block above scene_sphere. Disc and sphere arrays are
+     * independent; both apply if non-zero. */
+    int           portal_disc1  [SCENE_MAX_PORTAL_TRAVERSALS];
+    int           portal_sphere1[SCENE_MAX_PORTAL_TRAVERSALS];
 } scene_mesh;
 
 /* Recompute bounds_center / bounds_radius from the current vertex positions.
