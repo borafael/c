@@ -360,6 +360,40 @@ typedef struct {
     uint32_t object_id; /* RT_OBJ_ID(kind, index); 0 on miss */
 } hit_info;
 
+/* Fill a hit_info from a sphere intersection. Shared between the "normal"
+ * sphere hit and the portal-traversal "virtual copy" hit — both have the
+ * same fill logic, only the sphere data differs (the virtual copy passes
+ * a sphere with a transformed center). `sphere_idx` is the index into
+ * scene->spheres of the ORIGINAL sphere for object_id continuity (the
+ * virtual copy shares the original's id so the G-buffer doesn't see a
+ * seam). */
+static inline void fill_sphere_hit(hit_info *h, const scene *sc,
+                                    const scene_sphere *sph, int sphere_idx,
+                                    vector hp, float t) {
+    h->point  = hp;
+    h->normal = rt_normal_sphere(hp, sph);
+    float u, v;
+    uv_sphere(hp, sph->center, &u, &v);
+    const scene_material *m = &sc->materials[sph->material];
+    h->albedo       = material_sample(m, sc->textures, hp, u, v);
+    h->reflectivity = m->reflectivity;
+    h->unlit        = m->unlit;
+    h->portal_index = m->portal_index;
+    h->entry_center = sph->center;
+    h->entry_normal = h->normal;
+    {
+        vector dA = h->normal;
+        float ny = dA.y; if (ny < -1.0f) ny = -1.0f; if (ny > 1.0f) ny = 1.0f;
+        float theta = acosf(ny);
+        float phi   = atan2f(dA.z, dA.x);
+        h->entry_u = phi   / (float)M_PI;
+        h->entry_v = 2.0f * theta / (float)M_PI - 1.0f;
+    }
+    h->hit       = 1;
+    h->distance  = t;
+    h->object_id = RT_OBJ_ID(RT_OBJ_KIND_SPHERE, sphere_idx);
+}
+
 static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                             const mat4 *mesh_world_inv,
                             vector camera_origin) {
@@ -368,38 +402,91 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
     float closest_t = FLT_MAX;
 
     for (int i = 0; i < scene->sphere_count; i++) {
-        float t = rt_intersect_sphere(ro, rd, &scene->spheres[i]);
-        if (t > 0.0f && t < closest_t) {
-            closest_t = t;
-            vector hp = vector_add(ro, vector_scale(rd, t));
-            h.point = hp;
-            h.normal = rt_normal_sphere(hp, &scene->spheres[i]);
-            float u, v;
-            uv_sphere(hp, scene->spheres[i].center, &u, &v);
-            const scene_material *m = &scene->materials[scene->spheres[i].material];
-            h.albedo = material_sample(m, scene->textures, hp, u, v);
-            h.reflectivity = m->reflectivity;
-            h.unlit = m->unlit;
-            h.portal_index = m->portal_index;
-            h.entry_center = scene->spheres[i].center;
-            h.entry_normal = h.normal;   /* outward radial at hit; spheres
-                                          * don't flip (the surface is closed),
-                                          * so h.normal is the authored value. */
-            {
-                /* Normalized portal UV in [-1, 1]. Match the convention used
-                 * by inverse_sphere() in the PARAMETRIC dispatch so a hit at
-                 * the sphere's top (h.normal.y = 1) maps to v = -1, and a
-                 * hit at the bottom maps to v = +1. */
-                vector dA = h.normal;
-                float ny = dA.y; if (ny < -1.0f) ny = -1.0f; if (ny > 1.0f) ny = 1.0f;
-                float theta = acosf(ny);                  /* [0, PI]  */
-                float phi   = atan2f(dA.z, dA.x);         /* [-PI, PI]*/
-                h.entry_u = phi   / (float)M_PI;
-                h.entry_v = 2.0f * theta / (float)M_PI - 1.0f;
+        const scene_sphere *sph = &scene->spheres[i];
+
+        /* Portal-traversal tag: portal_disc1 = N+1 means the sphere is
+         * straddling scene->discs[N], which carries a PAIRED_RIGID
+         * disc->disc portal. We then render the sphere as:
+         *   - Original, clipped to the front half-space of disc N.
+         *   - A virtual copy at the partner disc, clipped to ITS front
+         *     half-space.
+         * Together these reproduce the geometry "this object is poking
+         * through the portal." */
+        int trav_disc = sph->portal_disc1 - 1;
+        const scene_disc *entry_disc = NULL;
+        const scene_disc *exit_disc  = NULL;
+        if (trav_disc >= 0 && trav_disc < scene->disc_count) {
+            entry_disc = &scene->discs[trav_disc];
+            int mat_idx = entry_disc->material;
+            if (mat_idx >= 0 && mat_idx < scene->material_count) {
+                int portal_idx = scene->materials[mat_idx].portal_index;
+                if (portal_idx >= 0 && portal_idx < scene->portal_count) {
+                    const scene_portal *p = &scene->portals[portal_idx];
+                    if (p->kind == SCENE_PORTAL_PAIRED_RIGID &&
+                        p->partner_kind == SCENE_PRIM_DISC &&
+                        p->partner_index >= 0 &&
+                        p->partner_index < scene->disc_count) {
+                        exit_disc = &scene->discs[p->partner_index];
+                    }
+                }
             }
-            h.hit = 1;
-            h.distance = t;
-            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_SPHERE, i);
+            /* If the partner isn't a paired-rigid disc, leave exit_disc
+             * NULL — the original still gets clipped, the virtual copy
+             * is skipped. Better than crashing on a misauthored scene. */
+        }
+
+        /* Original sphere intersect, clipped to entry_disc's front
+         * half-space if tagged. */
+        float t = rt_intersect_sphere(ro, rd, sph);
+        if (t > 0.0f && t < closest_t) {
+            vector hp = vector_add(ro, vector_scale(rd, t));
+            int keep = 1;
+            if (entry_disc) {
+                float depth = vector_dot(vector_sub(hp, entry_disc->center),
+                                          entry_disc->normal);
+                if (depth < 0.0f) keep = 0;
+            }
+            if (keep) {
+                closest_t = t;
+                fill_sphere_hit(&h, scene, sph, i, hp, t);
+            }
+        }
+
+        /* Virtual copy at the partner disc. Position via the rigid-disc
+         * portal map: tangent components carry across unchanged, normal
+         * component flips (so "behind A" becomes "in front of B"). */
+        if (exit_disc) {
+            vector etu_A, etv_A;
+            tangent_basis(entry_disc->normal, &etu_A, &etv_A);
+            vector off = vector_sub(sph->center, entry_disc->center);
+            float ou = vector_dot(off, etu_A);
+            float ov = vector_dot(off, etv_A);
+            float ow = vector_dot(off, entry_disc->normal);
+
+            vector xtu_B, xtv_B;
+            tangent_basis(exit_disc->normal, &xtu_B, &xtv_B);
+            vector vcenter = vector_add(exit_disc->center,
+                vector_add(
+                    vector_add(vector_scale(xtu_B, ou),
+                               vector_scale(xtv_B, ov)),
+                    vector_scale(exit_disc->normal, -ow)));
+
+            scene_sphere virt = {
+                .center      = vcenter,
+                .radius      = sph->radius,
+                .material    = sph->material,
+                .portal_disc1 = 0,   /* virtual copy is plain, no recursion */
+            };
+            float tv = rt_intersect_sphere(ro, rd, &virt);
+            if (tv > 0.0f && tv < closest_t) {
+                vector hpv = vector_add(ro, vector_scale(rd, tv));
+                float depth = vector_dot(vector_sub(hpv, exit_disc->center),
+                                          exit_disc->normal);
+                if (depth >= 0.0f) {
+                    closest_t = tv;
+                    fill_sphere_hit(&h, scene, &virt, i, hpv, tv);
+                }
+            }
         }
     }
 

@@ -138,6 +138,16 @@ typedef struct {
     vector center;
     float  radius;
     int    material;
+    /* Portal-traversal tag (1-based, so designated-initializer zero-init
+     * naturally means "no traversal"):
+     *   0     = does not straddle a portal (default).
+     *   N + 1 = the sphere is passing through scene->discs[N], which must
+     *           carry a SCENE_PORTAL_PAIRED_RIGID portal whose partner is
+     *           also a disc. The renderer clips this sphere to disc N's
+     *           front half-space and emits a virtual copy at the partner
+     *           disc (clipped to ITS front half-space), so the part poking
+     *           through the entry portal appears emerging from the exit. */
+    int    portal_disc1;
 } scene_sphere;
 
 typedef struct {

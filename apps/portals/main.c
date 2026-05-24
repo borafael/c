@@ -1,19 +1,22 @@
-/* Portals: paired-PARAMETRIC mismatched-shape demo.
+/* Portals: object-traversal demo (step 1).
  *
- * A disc on one side, a sphere on the other, paired with
- * SCENE_PORTAL_PAIRED_PARAMETRIC. The correspondence is "same normalized
- * (u, v) on the partner" — disc (u, v) ∈ [-1, 1] over its diameter maps
- * to sphere (phi/PI, 2*theta/PI - 1) over its lat/long. Looking at the
- * disc, you see the world *through the sphere's surface* — every point
- * on the flat disc is a window onto a different angular direction from
- * the sphere's exit point. Looking at the sphere, you see the disc's
- * flat scene wrapped around the sphere's curvature.
+ * Two PAIRED_RIGID disc portals A and B, with a tagged sphere oscillating
+ * back and forth through A. Step 1 of the "object coming out of a portal"
+ * upgrade ladder: prove that one primitive (sphere) can be split across
+ * the entry/exit of one paired-rigid disc portal.
  *
- * Visually unsettling because the mapping isn't a rigid motion — it's a
- * topological reparameterization. Two shapes with completely different
- * surface structures, glued together at their UV parameterizations.
+ * Mechanism: the sphere carries a `portal_disc1` tag pointing at disc A.
+ * The renderer:
+ *   - Clips the original sphere to A's front half-space.
+ *   - Renders a virtual copy at B, transformed by the rigid-disc portal
+ *     map (tangent offset preserved, normal-axis component flipped), and
+ *     clipped to B's front half-space.
+ * Together those two halves reproduce "the object is poking through the
+ * portal" — front half visible at the entry, back half emerging from
+ * the exit.
  *
- * Camera orbits in the corridor between them.
+ * The previous PARAMETRIC mismatched-shape demo lives in git history.
+ *
  * ESC quits, SPACE toggles auto-orbit, WASD/arrows fly. */
 
 #include "renderer.h"
@@ -34,10 +37,23 @@
 #define INIT_WINDOW_H 600
 #define FOV (M_PI / 2.8f)
 
+/* Animation knobs for the traversing sphere. Sphere center oscillates
+ * along X through disc A, sweeping from "fully behind" to "fully in
+ * front" so the viewer can watch the split appear, slide along, and
+ * vanish. Both extents lie outside A's disc so the transitions are
+ * clearly readable. */
+#define TRAVELER_Y         0.5f
+#define TRAVELER_Z        -2.0f
+#define TRAVELER_RADIUS    0.5f
+#define TRAVELER_MIN_X    -3.6f   /* fully behind disc A (A.x = -2) */
+#define TRAVELER_MAX_X    -0.4f   /* fully in front of disc A         */
+#define TRAVELER_PERIOD    7.0f   /* seconds per back-and-forth */
+
+static int traveler_sphere_idx = -1;
+
 static void build_scene(scene **scene_out, scene_camera **camera_out) {
     scene *sc = scene_create();
 
-    /* Floor (low plane just below origin). */
     int m_floor = scene_add_material(sc, (scene_material){
         .albedo       = {180, 180, 180},
         .albedo2      = {60,  60,  60},
@@ -51,101 +67,78 @@ static void build_scene(scene **scene_out, scene_camera **camera_out) {
         .material = m_floor,
     });
 
-    /* Corridor furniture. Each recursive portal bounce passes a ray
-     * through the corridor between A and B; without scene content along
-     * those paths the center of each portal goes black once
-     * RT_MAX_BOUNCES is exhausted (every iteration is a portal hit, no
-     * non-portal contribution ever accumulates). These objects break up
-     * that dark tunnel by giving off-axis recursive rays something to
-     * hit. They sit outside the camera's auto-orbit radius and below
-     * camera height, so they don't obstruct the direct view of either
-     * portal. */
-    int m_red    = scene_add_material(sc, (scene_material){
-        .albedo = {220,  70,  70}, .portal_index = -1,
-    });
-    int m_blue   = scene_add_material(sc, (scene_material){
-        .albedo = { 70, 120, 220}, .portal_index = -1,
-    });
-    int m_green  = scene_add_material(sc, (scene_material){
-        .albedo = { 80, 200, 100}, .portal_index = -1,
-    });
-    int m_orange = scene_add_material(sc, (scene_material){
-        .albedo = {240, 160,  60}, .portal_index = -1,
-    });
-    int m_violet = scene_add_material(sc, (scene_material){
-        .albedo = {170,  90, 220}, .portal_index = -1,
-    });
+    /* Background reference balls — give the camera something to anchor
+     * to so the traveler's motion reads against a stable scene. */
+    int m_red   = scene_add_material(sc, (scene_material){
+        .albedo = {220,  70,  70}, .portal_index = -1});
+    int m_blue  = scene_add_material(sc, (scene_material){
+        .albedo = { 70, 120, 220}, .portal_index = -1});
+    int m_green = scene_add_material(sc, (scene_material){
+        .albedo = { 80, 200, 100}, .portal_index = -1});
+    scene_add_sphere(sc, (scene_sphere){
+        .center = { 0.8f, -0.1f,  3.5f}, .radius = 0.35f, .material = m_red});
+    scene_add_sphere(sc, (scene_sphere){
+        .center = { 1.2f,  0.4f, -4.5f}, .radius = 0.30f, .material = m_blue});
+    scene_add_sphere(sc, (scene_sphere){
+        .center = {-4.0f,  0.2f,  0.5f}, .radius = 0.30f, .material = m_green});
 
-    /* Two reference balls on the corridor floor, z-offset from the
-     * portal axis so they read as "depth markers" without blocking
-     * the central portal pixels. */
-    scene_add_sphere(sc, (scene_sphere){
-        .center = { 1.5f, -0.15f, -3.2f}, .radius = 0.35f, .material = m_red,
-    });
-    scene_add_sphere(sc, (scene_sphere){
-        .center = {-1.5f, -0.15f, -0.8f}, .radius = 0.35f, .material = m_blue,
-    });
-
-    /* Three smaller balls at portal height between the discs, also
-     * z-offset so they don't sit on the direct A↔B line. Recursive
-     * rays that drift in z catch one of these and stop the recursion
-     * with a coloured contribution instead of black. */
-    scene_add_sphere(sc, (scene_sphere){
-        .center = { 0.6f, 0.5f, -3.5f}, .radius = 0.22f, .material = m_green,
-    });
-    scene_add_sphere(sc, (scene_sphere){
-        .center = {-0.6f, 0.5f, -0.5f}, .radius = 0.22f, .material = m_orange,
-    });
-    scene_add_sphere(sc, (scene_sphere){
-        .center = { 0.0f, 1.2f, -2.0f}, .radius = 0.22f, .material = m_violet,
-    });
-
-    /* ---- Disc (left) ↔ Sphere (right), paired parametrically. ----
+    /* ---- Paired-rigid disc portals A and B. ----
      *
-     * Ordering note: portal records reference partners BY INDEX. The
-     * corridor furniture spheres above occupy sphere indices 0..4; the
-     * portal sphere will get sphere index 5. The portal disc will get
-     * disc index 0 (no other discs in this scene). We assert those
-     * indices ahead of time so the portal records can name each other.
-     */
-    int disc_A_idx   = 0;
-    int sphere_B_idx = 5;
+     * Both face +X. Placed at the same X but different Z so:
+     *   - The camera can see both discs in a single view (orbit XZ).
+     *   - A ray exiting one portal doesn't aim straight at the other
+     *     (no degenerate infinite-portal loop).
+     *
+     * The traveling sphere is aligned with A (same z), oscillating in x.
+     * When fully behind A its virtual copy emerges fully in front of B;
+     * when fully in front of A the virtual copy is fully behind B and
+     * thus clipped away. */
+    int disc_A_idx = 0;     /* first disc added below */
+    int disc_B_idx = 1;     /* second disc            */
 
-    /* Portal on the disc points at the sphere; portal on the sphere
-     * points back at the disc — a two-way mismatched pair. */
     int portal_A = scene_add_portal(sc, (scene_portal){
-        .kind          = SCENE_PORTAL_PAIRED_PARAMETRIC,
-        .partner_kind  = SCENE_PRIM_SPHERE,
-        .partner_index = sphere_B_idx,
+        .kind          = SCENE_PORTAL_PAIRED_RIGID,
+        .partner_kind  = SCENE_PRIM_DISC,
+        .partner_index = disc_B_idx,
     });
     int portal_B = scene_add_portal(sc, (scene_portal){
-        .kind          = SCENE_PORTAL_PAIRED_PARAMETRIC,
+        .kind          = SCENE_PORTAL_PAIRED_RIGID,
         .partner_kind  = SCENE_PRIM_DISC,
         .partner_index = disc_A_idx,
     });
 
     int m_portal_A = scene_add_material(sc, (scene_material){
-        .albedo = {255, 0, 255}, .portal_index = portal_A,
-    });
+        .albedo = {200,  80, 230}, .portal_index = portal_A});
     int m_portal_B = scene_add_material(sc, (scene_material){
-        .albedo = {255, 0, 255}, .portal_index = portal_B,
-    });
+        .albedo = { 80, 200, 230}, .portal_index = portal_B});
 
-    /* Disc A on the left, normal facing right toward the sphere. */
-    scene_add_disc(sc, (scene_disc){      /* index disc_A_idx (0) */
-        .center   = {-3.0f, 0.5f, -2.0f},
+    scene_add_disc(sc, (scene_disc){    /* disc index 0 = A */
+        .center   = {-2.0f, 0.5f, -2.0f},
         .normal   = { 1.0f, 0.0f,  0.0f},
         .radius   = 1.0f,
         .material = m_portal_A,
     });
-    /* Sphere B on the right. */
-    scene_add_sphere(sc, (scene_sphere){      /* index sphere_B_idx (5) */
-        .center   = { 3.0f, 0.5f, -2.0f},
+    scene_add_disc(sc, (scene_disc){    /* disc index 1 = B */
+        .center   = {-2.0f, 0.5f,  2.0f},
+        .normal   = { 1.0f, 0.0f,  0.0f},
         .radius   = 1.0f,
         .material = m_portal_B,
     });
 
-    /* Lights. */
+    /* Traveling sphere — the star of step 1. Tagged with portal_disc1
+     * so the renderer clips it to disc A's front half-space and emits
+     * a virtual copy at disc B. */
+    int m_traveler = scene_add_material(sc, (scene_material){
+        .albedo       = {255, 215,  60},
+        .portal_index = -1,
+    });
+    traveler_sphere_idx = scene_add_sphere(sc, (scene_sphere){
+        .center       = {TRAVELER_MIN_X, TRAVELER_Y, TRAVELER_Z},
+        .radius       = TRAVELER_RADIUS,
+        .material     = m_traveler,
+        .portal_disc1 = disc_A_idx + 1,    /* 1-based: 0 = none */
+    });
+
     scene_set_ambient(sc, 0.3f);
     scene_add_light(sc, (scene_light){
         .direction = {0.4f, 0.9f, 0.3f},
@@ -154,8 +147,8 @@ static void build_scene(scene **scene_out, scene_camera **camera_out) {
 
     *scene_out  = sc;
     *camera_out = scene_camera_create(
-        (vector){0.0f, 0.8f, 0.5f},
-        (vector){-1.0f, 0.0f, -0.4f}
+        (vector){4.5f, 1.4f, 1.0f},
+        (vector){-1.0f, -0.2f, -0.3f}
     );
 }
 
@@ -245,9 +238,9 @@ int main(int argc, char *argv[]) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glGenFramebuffers(1, &display_fbo);
 
-    vector cam_pos = {0.5f, 0.7f, -2.0f};
-    float cam_yaw = -(float)M_PI_2;     /* facing -X toward portal A */
-    float cam_pitch = 0.0f;
+    vector cam_pos = {4.5f, 1.4f, 1.0f};
+    float cam_yaw = -1.7f;     /* facing -X-ish, toward the portals */
+    float cam_pitch = -0.15f;
     float move_speed = 3.0f;
     float look_speed = 1.6f;
     int auto_orbit = 1;
@@ -282,17 +275,16 @@ int main(int argc, char *argv[]) {
         if (manual_input) auto_orbit = 0;
 
         if (auto_orbit) {
-            /* Small orbit in the corridor between the two portals, so we
-             * alternately look at A (when on the +X side) and B (when on
-             * the -X side). Pan-target also swings slightly off the
-             * midpoint so we get oblique angles, not just straight-on. */
-            float a = t * 0.45f;
-            float orbit_r = 1.2f;
-            cam_pos.x = sinf(a) * orbit_r;
-            cam_pos.z = -2.0f + cosf(a) * orbit_r * 0.6f;
-            cam_pos.y = 0.7f + sinf(t * 0.6f) * 0.2f;
-            /* Look toward whichever portal is "far" along X. */
-            vector look_at = { -copysignf(3.0f, cam_pos.x), 0.5f, -2.0f };
+            /* Slow orbit around the portal pair. The orbit center is
+             * offset toward +X so the camera spends most of its time
+             * on the front side of A/B and we get a clear view of the
+             * traversing sphere splitting across A. */
+            float a = t * 0.22f;
+            float orbit_r = 5.0f;
+            cam_pos.x = -1.0f + sinf(a) * orbit_r;
+            cam_pos.z =          cosf(a) * orbit_r;
+            cam_pos.y = 1.4f + sinf(t * 0.4f) * 0.25f;
+            vector look_at = { -2.0f, 0.5f, 0.0f };
             vector dir = vector_normalize(vector_sub(look_at, cam_pos));
             cam_yaw   = atan2f(dir.x, dir.z);
             cam_pitch = asinf(dir.y);
@@ -314,6 +306,15 @@ int main(int argc, char *argv[]) {
 
         vector cam_dir = cam_dir_from_yaw_pitch(cam_yaw, cam_pitch);
         scene_camera_place(camera, cam_pos, cam_dir);
+
+        /* Animate the traversing sphere through disc A. Smooth back-and-
+         * forth so the viewer can watch the split appear, slide, vanish. */
+        if (traveler_sphere_idx >= 0) {
+            float omega = 2.0f * (float)M_PI / TRAVELER_PERIOD;
+            float u = (sinf(t * omega) + 1.0f) * 0.5f;   /* [0, 1] */
+            sc->spheres[traveler_sphere_idx].center.x =
+                TRAVELER_MIN_X + (TRAVELER_MAX_X - TRAVELER_MIN_X) * u;
+        }
 
         rt_renderer_render(cpu_rnd, sc, camera, &viewport, pixels, NULL);
 
