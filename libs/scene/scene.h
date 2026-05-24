@@ -164,7 +164,14 @@ typedef struct {
  * Multiple non-zero slots stack: the renderer clips the original to the
  * INTERSECTION of all tagged portals' clip regions, and emits one virtual
  * copy per tagged slot (each clipped to its own partner's clip region).
- * Slots can be filled in any order; zeros are skipped. */
+ * Slots can be filled in any order; zeros are skipped.
+ *
+ * Slot priority de-duplicates the "behind multiple portals" overlap. Each
+ * piece of the object lives at exactly one partner — the higher-priority
+ * portal's. Priority is just array index: portal_disc1[0] wins over
+ * portal_disc1[1], and all disc slots win over all sphere slots. (For
+ * a region that's behind both A and C, the virtual at A's partner shows
+ * it; C's partner skips it.) */
 
 typedef struct {
     vector center;

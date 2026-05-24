@@ -10,17 +10,18 @@
  *
  * The renderer clips the original sphere to the intersection of every
  * tagged portal's front half-space, and emits one virtual copy per
- * tagged portal — one at B, one at D. As the sphere laps:
+ * tagged portal — one at B, one at D. Step-5 de-dup gives each region
+ * a single home: A's slot has higher priority than C's, so the "behind
+ * A" region (including the "behind both" corner) always lives at B,
+ * and D only owns the "behind C AND in front of A" region. As the
+ * sphere laps:
  *   Quadrant 1 (front of A and C): full original visible.
  *   Quadrant 2 (behind A only):    full virtual at B.
- *   Quadrant 3 (behind A and C):   full virtuals at BOTH B and D.
+ *   Quadrant 3 (behind A and C):   full virtual at B (D is empty —
+ *                                   the higher-priority slot took it).
  *   Quadrant 4 (behind C only):    full virtual at D.
  * Quadrant crossings are the half-emerge moments — original and virtual
  * each show half a sphere, joined by the portal plane.
- *
- * The "behind A AND behind C" double-counting (sphere appears at both
- * B and D) is the simple per-portal rule; step 5 (recursive straddling)
- * would de-duplicate.
  *
  * History: an earlier draft used HORIZONTAL C/D (+Y normal). That
  * aimed the through-portal ray straight up into empty sky which the
@@ -106,7 +107,7 @@ static scene_mesh make_octahedron_mesh(vector center, float radius,
  * sees a different state:
  *   Quadrant 1 (front of both A and C): full original visible.
  *   Quadrant 2 (behind A only):         full virtual at B.
- *   Quadrant 3 (behind both):           full virtual at B AND full at D.
+ *   Quadrant 3 (behind both):           full virtual at B (higher priority).
  *   Quadrant 4 (behind C only):         full virtual at D.
  * Crossings between quadrants are the half-emerge moments. */
 #define TRAVELER_Y           0.5f

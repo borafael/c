@@ -435,6 +435,44 @@ static inline const scene_sphere *partner_sphere_for_entry(
     return &sc->spheres[pp->partner_index];
 }
 
+/* Step-5 de-dup: returns 1 if `hp_original` (the point on the original
+ * object that corresponds to a hit on a virtual copy) is claimed by THIS
+ * virtual slot, 0 if it belongs to a higher-priority slot instead.
+ *
+ * Slot priority is just the array index — slot 0 wins ties over slot 1,
+ * disc slots always win over sphere slots. The check: hp_original must
+ * be in front of every disc slot in [0, disc_limit) and outside every
+ * sphere slot in [0, sphere_limit). For a disc virtual at slot p call
+ * with (disc_limit = p, sphere_limit = 0); for a sphere virtual at slot p
+ * call with (disc_limit = SCENE_MAX_PORTAL_TRAVERSALS, sphere_limit = p).
+ *
+ * Without this check, a region of the object that's behind multiple
+ * portals appears at all of their partners (the step-2 / step-4
+ * double-count). With the check, each region of the object lives at
+ * exactly one partner. */
+static inline int hit_claimed_by_virtual(
+    const scene *sc, vector hp_original,
+    const int *disc_slots, int disc_limit,
+    const int *sphere_slots, int sphere_limit) {
+    for (int i = 0; i < disc_limit; i++) {
+        int trav = disc_slots[i] - 1;
+        if (trav < 0 || trav >= sc->disc_count) continue;
+        const scene_disc *d = &sc->discs[trav];
+        if (vector_dot(vector_sub(hp_original, d->center),
+                        d->normal) < 0.0f)
+            return 0;   /* "behind" a higher-priority disc — that one owns it */
+    }
+    for (int i = 0; i < sphere_limit; i++) {
+        int trav = sphere_slots[i] - 1;
+        if (trav < 0 || trav >= sc->sphere_count) continue;
+        const scene_sphere *s = &sc->spheres[trav];
+        vector to = vector_sub(hp_original, s->center);
+        if (vector_dot(to, to) < s->radius * s->radius)
+            return 0;   /* "inside" a higher-priority sphere — that one owns it */
+    }
+    return 1;
+}
+
 /* Sphere portal virtual-center map: rigid-translation approximation of
  * the true radial-inversion + antipodal map.
  *
@@ -589,8 +627,18 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                 float depth = vector_dot(vector_sub(hpv, exit_disc->center),
                                           exit_disc->normal);
                 if (depth >= 0.0f) {
-                    closest_t = tv;
-                    fill_sphere_hit(&h, scene, &virt, i, hpv, tv);
+                    /* Step-5 claim check: inverse-map hpv to the
+                     * corresponding world point on the original sphere
+                     * and reject if a higher-priority portal owns it. */
+                    mat4 P_BA = build_portal_forward_map(exit_disc,
+                                                          entry_disc);
+                    vector hp_orig = mat4_transform_point(P_BA, hpv);
+                    if (hit_claimed_by_virtual(scene, hp_orig,
+                            sph->portal_disc1, p,
+                            sph->portal_sphere1, 0)) {
+                        closest_t = tv;
+                        fill_sphere_hit(&h, scene, &virt, i, hpv, tv);
+                    }
                 }
             }
         }
@@ -619,8 +667,19 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                 vector hpv = vector_add(ro, vector_scale(rd, tv));
                 vector d = vector_sub(hpv, exit_sph->center);
                 if (vector_dot(d, d) >= exit_sph->radius * exit_sph->radius) {
-                    closest_t = tv;
-                    fill_sphere_hit(&h, scene, &virt, i, hpv, tv);
+                    /* Step-5 claim check: inverse translation. Sphere
+                     * portals are lower priority than disc portals, so
+                     * we check all disc slots and only earlier sphere
+                     * slots. */
+                    vector T = vector_sub(vcenter, sph->center);
+                    vector hp_orig = vector_sub(hpv, T);
+                    if (hit_claimed_by_virtual(scene, hp_orig,
+                            sph->portal_disc1,
+                            SCENE_MAX_PORTAL_TRAVERSALS,
+                            sph->portal_sphere1, p)) {
+                        closest_t = tv;
+                        fill_sphere_hit(&h, scene, &virt, i, hpv, tv);
+                    }
                 }
             }
         }
@@ -861,8 +920,17 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                         vector_sub(hpv, exit_disc->center),
                         exit_disc->normal);
                     if (depth >= 0.0f) {
-                        closest_t = mhv.t;
-                        MESH_FILL_HIT(mhv, hpv);
+                        /* Step-5 claim check: P_BA(hpv) is the
+                         * corresponding world point on the original
+                         * mesh. */
+                        vector hp_orig =
+                            mat4_transform_point(P_BA, hpv);
+                        if (hit_claimed_by_virtual(scene, hp_orig,
+                                mesh->portal_disc1, p,
+                                mesh->portal_sphere1, 0)) {
+                            closest_t = mhv.t;
+                            MESH_FILL_HIT(mhv, hpv);
+                        }
                     }
                 }
             }
@@ -906,8 +974,17 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                     vector d = vector_sub(hpv, exit_sph->center);
                     if (vector_dot(d, d) >=
                         exit_sph->radius * exit_sph->radius) {
-                        closest_t = mhv.t;
-                        MESH_FILL_HIT(mhv, hpv);
+                        /* Step-5 claim check: subtract the translation
+                         * to get the corresponding world point on the
+                         * original mesh. */
+                        vector hp_orig = vector_sub(hpv, delta);
+                        if (hit_claimed_by_virtual(scene, hp_orig,
+                                mesh->portal_disc1,
+                                SCENE_MAX_PORTAL_TRAVERSALS,
+                                mesh->portal_sphere1, p)) {
+                            closest_t = mhv.t;
+                            MESH_FILL_HIT(mhv, hpv);
+                        }
                     }
                 }
             }
