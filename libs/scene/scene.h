@@ -134,20 +134,24 @@ typedef struct {
 } scene_portal;
 
 /* ============================== Primitives =============================== */
+#define SCENE_SPHERE_MAX_PORTALS 4
+
 typedef struct {
     vector center;
     float  radius;
     int    material;
-    /* Portal-traversal tag (1-based, so designated-initializer zero-init
-     * naturally means "no traversal"):
-     *   0     = does not straddle a portal (default).
-     *   N + 1 = the sphere is passing through scene->discs[N], which must
-     *           carry a SCENE_PORTAL_PAIRED_RIGID portal whose partner is
-     *           also a disc. The renderer clips this sphere to disc N's
-     *           front half-space and emits a virtual copy at the partner
-     *           disc (clipped to ITS front half-space), so the part poking
-     *           through the entry portal appears emerging from the exit. */
-    int    portal_disc1;
+    /* Portal-traversal tags. Each slot is 1-based so designated-initializer
+     * zero-init naturally means "unused":
+     *   0     = unused slot (default).
+     *   N + 1 = the sphere is straddling scene->discs[N], which must carry
+     *           a SCENE_PORTAL_PAIRED_RIGID portal whose partner is also a
+     *           disc.
+     * Multiple non-zero slots stack: the renderer clips the original to
+     * the INTERSECTION of all tagged portals' front half-spaces, and emits
+     * one virtual copy at EACH portal's partner (each clipped to its own
+     * partner's front half-space). Slots can be filled in any order; zeros
+     * are skipped. */
+    int    portal_disc1[SCENE_SPHERE_MAX_PORTALS];
 } scene_sphere;
 
 typedef struct {

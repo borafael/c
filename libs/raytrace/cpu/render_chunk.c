@@ -360,6 +360,23 @@ typedef struct {
     uint32_t object_id; /* RT_OBJ_ID(kind, index); 0 on miss */
 } hit_info;
 
+/* Given an entry disc that carries a paired-rigid disc->disc portal,
+ * return the partner (exit) disc. NULL on any kind of misauthored
+ * scene — caller should treat as "no virtual copy for this slot." */
+static inline const scene_disc *partner_disc_for_entry(
+    const scene *sc, const scene_disc *entry_disc) {
+    int mat_idx = entry_disc->material;
+    if (mat_idx < 0 || mat_idx >= sc->material_count) return NULL;
+    int portal_idx = sc->materials[mat_idx].portal_index;
+    if (portal_idx < 0 || portal_idx >= sc->portal_count) return NULL;
+    const scene_portal *pp = &sc->portals[portal_idx];
+    if (pp->kind != SCENE_PORTAL_PAIRED_RIGID) return NULL;
+    if (pp->partner_kind != SCENE_PRIM_DISC) return NULL;
+    if (pp->partner_index < 0 ||
+        pp->partner_index >= sc->disc_count) return NULL;
+    return &sc->discs[pp->partner_index];
+}
+
 /* Fill a hit_info from a sphere intersection. Shared between the "normal"
  * sphere hit and the portal-traversal "virtual copy" hit — both have the
  * same fill logic, only the sphere data differs (the virtual copy passes
@@ -404,47 +421,31 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
     for (int i = 0; i < scene->sphere_count; i++) {
         const scene_sphere *sph = &scene->spheres[i];
 
-        /* Portal-traversal tag: portal_disc1 = N+1 means the sphere is
-         * straddling scene->discs[N], which carries a PAIRED_RIGID
-         * disc->disc portal. We then render the sphere as:
-         *   - Original, clipped to the front half-space of disc N.
-         *   - A virtual copy at the partner disc, clipped to ITS front
-         *     half-space.
-         * Together these reproduce the geometry "this object is poking
-         * through the portal." */
-        int trav_disc = sph->portal_disc1 - 1;
-        const scene_disc *entry_disc = NULL;
-        const scene_disc *exit_disc  = NULL;
-        if (trav_disc >= 0 && trav_disc < scene->disc_count) {
-            entry_disc = &scene->discs[trav_disc];
-            int mat_idx = entry_disc->material;
-            if (mat_idx >= 0 && mat_idx < scene->material_count) {
-                int portal_idx = scene->materials[mat_idx].portal_index;
-                if (portal_idx >= 0 && portal_idx < scene->portal_count) {
-                    const scene_portal *p = &scene->portals[portal_idx];
-                    if (p->kind == SCENE_PORTAL_PAIRED_RIGID &&
-                        p->partner_kind == SCENE_PRIM_DISC &&
-                        p->partner_index >= 0 &&
-                        p->partner_index < scene->disc_count) {
-                        exit_disc = &scene->discs[p->partner_index];
-                    }
-                }
-            }
-            /* If the partner isn't a paired-rigid disc, leave exit_disc
-             * NULL — the original still gets clipped, the virtual copy
-             * is skipped. Better than crashing on a misauthored scene. */
-        }
+        /* Portal-traversal: each non-zero entry in sph->portal_disc1 is
+         * a paired-rigid disc portal this sphere is straddling. The
+         * renderer:
+         *   - Clips the original to the INTERSECTION of every tagged
+         *     portal's front half-space (rejects any hit that lies
+         *     behind ANY tagged portal).
+         *   - Emits one virtual copy at each tagged portal's partner
+         *     (clipped to the partner's front half-space).
+         * The "behind portal X AND behind portal Y" region is rendered
+         * at both X's and Y's virtual copies — double-counted. That's the
+         * simple per-portal rule; step 5 (recursive straddling) would
+         * de-duplicate. */
 
-        /* Original sphere intersect, clipped to entry_disc's front
-         * half-space if tagged. */
+        /* --- Original hit, clipped against all tagged portals --- */
         float t = rt_intersect_sphere(ro, rd, sph);
         if (t > 0.0f && t < closest_t) {
             vector hp = vector_add(ro, vector_scale(rd, t));
             int keep = 1;
-            if (entry_disc) {
-                float depth = vector_dot(vector_sub(hp, entry_disc->center),
-                                          entry_disc->normal);
-                if (depth < 0.0f) keep = 0;
+            for (int p = 0;
+                 p < SCENE_SPHERE_MAX_PORTALS && keep; p++) {
+                int trav = sph->portal_disc1[p] - 1;
+                if (trav < 0 || trav >= scene->disc_count) continue;
+                const scene_disc *d = &scene->discs[trav];
+                if (vector_dot(vector_sub(hp, d->center), d->normal) < 0.0f)
+                    keep = 0;
             }
             if (keep) {
                 closest_t = t;
@@ -452,10 +453,18 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             }
         }
 
-        /* Virtual copy at the partner disc. Position via the rigid-disc
-         * portal map: tangent components carry across unchanged, normal
-         * component flips (so "behind A" becomes "in front of B"). */
-        if (exit_disc) {
+        /* --- One virtual copy per tagged portal --- */
+        for (int p = 0; p < SCENE_SPHERE_MAX_PORTALS; p++) {
+            int trav = sph->portal_disc1[p] - 1;
+            if (trav < 0 || trav >= scene->disc_count) continue;
+            const scene_disc *entry_disc = &scene->discs[trav];
+            const scene_disc *exit_disc =
+                partner_disc_for_entry(scene, entry_disc);
+            if (!exit_disc) continue;   /* misauthored slot — skip */
+
+            /* Rigid-disc portal map: tangent components carry across
+             * unchanged, normal-axis flips (so "behind entry" becomes
+             * "in front of exit"). */
             vector etu_A, etv_A;
             tangent_basis(entry_disc->normal, &etu_A, &etv_A);
             vector off = vector_sub(sph->center, entry_disc->center);
@@ -472,10 +481,10 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                     vector_scale(exit_disc->normal, -ow)));
 
             scene_sphere virt = {
-                .center      = vcenter,
-                .radius      = sph->radius,
-                .material    = sph->material,
-                .portal_disc1 = 0,   /* virtual copy is plain, no recursion */
+                .center   = vcenter,
+                .radius   = sph->radius,
+                .material = sph->material,
+                /* portal_disc1[*] all zero by zero-init — virtual is plain */
             };
             float tv = rt_intersect_sphere(ro, rd, &virt);
             if (tv > 0.0f && tv < closest_t) {

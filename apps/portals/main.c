@@ -1,21 +1,35 @@
-/* Portals: object-traversal demo (step 1).
+/* Portals: object-traversal demo (steps 1 + 2).
  *
- * Two PAIRED_RIGID disc portals A and B, with a tagged sphere oscillating
- * back and forth through A. Step 1 of the "object coming out of a portal"
- * upgrade ladder: prove that one primitive (sphere) can be split across
- * the entry/exit of one paired-rigid disc portal.
+ * Two PAIRED_RIGID disc portal pairs share one traveling sphere:
+ *   - A (vertical, normal +X) ↔ B (vertical, normal +X)
+ *   - C (vertical, normal +Z) ↔ D (vertical, normal +Z)
+ * A and C are co-located at (-2, 0.5, -2); their planes meet at right
+ * angles. The sphere traces a circle in X-Z around that corner, so over
+ * one lap it crosses each portal plane twice — passing through every
+ * combination of "front of A / behind A" × "front of C / behind C".
  *
- * Mechanism: the sphere carries a `portal_disc1` tag pointing at disc A.
- * The renderer:
- *   - Clips the original sphere to A's front half-space.
- *   - Renders a virtual copy at B, transformed by the rigid-disc portal
- *     map (tangent offset preserved, normal-axis component flipped), and
- *     clipped to B's front half-space.
- * Together those two halves reproduce "the object is poking through the
- * portal" — front half visible at the entry, back half emerging from
- * the exit.
+ * The renderer clips the original sphere to the intersection of every
+ * tagged portal's front half-space, and emits one virtual copy per
+ * tagged portal — one at B, one at D. As the sphere laps:
+ *   Quadrant 1 (front of A and C): full original visible.
+ *   Quadrant 2 (behind A only):    full virtual at B.
+ *   Quadrant 3 (behind A and C):   full virtuals at BOTH B and D.
+ *   Quadrant 4 (behind C only):    full virtual at D.
+ * Quadrant crossings are the half-emerge moments — original and virtual
+ * each show half a sphere, joined by the portal plane.
  *
- * The previous PARAMETRIC mismatched-shape demo lives in git history.
+ * The "behind A AND behind C" double-counting (sphere appears at both
+ * B and D) is the simple per-portal rule; step 5 (recursive straddling)
+ * would de-duplicate.
+ *
+ * History: an earlier draft used HORIZONTAL C/D (+Y normal). That
+ * aimed the through-portal ray straight up into empty sky which the
+ * renderer paints black, producing a moving black-hole artifact on the
+ * floor. A still-earlier draft also had the sphere stuck on C's plane
+ * (no Z motion), so the virtual at D was permanently half-cut. Both
+ * fixed by the current circular-path + vertical-C/D arrangement.
+ *
+ * Previous PARAMETRIC mismatched-shape demo lives in git history.
  *
  * ESC quits, SPACE toggles auto-orbit, WASD/arrows fly. */
 
@@ -37,17 +51,22 @@
 #define INIT_WINDOW_H 600
 #define FOV (M_PI / 2.8f)
 
-/* Animation knobs for the traversing sphere. Sphere center oscillates
- * along X through disc A, sweeping from "fully behind" to "fully in
- * front" so the viewer can watch the split appear, slide along, and
- * vanish. Both extents lie outside A's disc so the transitions are
- * clearly readable. */
-#define TRAVELER_Y         0.5f
-#define TRAVELER_Z        -2.0f
-#define TRAVELER_RADIUS    0.5f
-#define TRAVELER_MIN_X    -3.6f   /* fully behind disc A (A.x = -2) */
-#define TRAVELER_MAX_X    -0.4f   /* fully in front of disc A         */
-#define TRAVELER_PERIOD    7.0f   /* seconds per back-and-forth */
+/* Animation knobs for the traversing sphere. The sphere traces a circle
+ * in the X-Z plane around the (-2, *, -2) corner where A and C meet, so
+ * over one cycle the sphere actually PASSES THROUGH each portal rather
+ * than being permanently glued to one of their planes. In each quadrant
+ * of the circle the viewer sees a different state:
+ *   Quadrant 1 (front of both A and C): full original visible.
+ *   Quadrant 2 (behind A only):         full virtual at B.
+ *   Quadrant 3 (behind both):           full virtual at B AND full at D.
+ *   Quadrant 4 (behind C only):         full virtual at D.
+ * Crossings between quadrants are the half-emerge moments. */
+#define TRAVELER_Y           0.5f
+#define TRAVELER_RADIUS      0.5f
+#define TRAVELER_PATH_R      1.5f    /* radius of the circular path */
+#define TRAVELER_CENTER_X   -2.0f    /* circle center == A/C location */
+#define TRAVELER_CENTER_Z   -2.0f
+#define TRAVELER_PERIOD     10.0f    /* seconds per full lap */
 
 static int traveler_sphere_idx = -1;
 
@@ -82,35 +101,44 @@ static void build_scene(scene **scene_out, scene_camera **camera_out) {
     scene_add_sphere(sc, (scene_sphere){
         .center = {-4.0f,  0.2f,  0.5f}, .radius = 0.30f, .material = m_green});
 
-    /* ---- Paired-rigid disc portals A and B. ----
+    /* ---- Paired-rigid disc portals. ----
      *
-     * Both face +X. Placed at the same X but different Z so:
-     *   - The camera can see both discs in a single view (orbit XZ).
-     *   - A ray exiting one portal doesn't aim straight at the other
-     *     (no degenerate infinite-portal loop).
+     * Pair 1 — A ↔ B: vertical discs (+X normal). The sphere oscillates
+     * through A; its "behind A" half emerges at B.
      *
-     * The traveling sphere is aligned with A (same z), oscillating in x.
-     * When fully behind A its virtual copy emerges fully in front of B;
-     * when fully in front of A the virtual copy is fully behind B and
-     * thus clipped away. */
+     * Pair 2 — C ↔ D: vertical discs (+Z normal). C is co-located with
+     * A but rotated 90°, so its plane (z = -2) slices the sphere by Z
+     * instead of X. The sphere center stays at z = -2 so it ALWAYS
+     * straddles C; its "behind C" half (z < -2) always emerges at D
+     * (placed at +X offset, same y/z as C so the emerging half is at
+     * floor-aligned height — no aerial discs to project "sky" patches
+     * over the floor). */
     int disc_A_idx = 0;     /* first disc added below */
-    int disc_B_idx = 1;     /* second disc            */
+    int disc_B_idx = 1;
+    int disc_C_idx = 2;
+    int disc_D_idx = 3;
 
     int portal_A = scene_add_portal(sc, (scene_portal){
-        .kind          = SCENE_PORTAL_PAIRED_RIGID,
-        .partner_kind  = SCENE_PRIM_DISC,
-        .partner_index = disc_B_idx,
-    });
+        .kind = SCENE_PORTAL_PAIRED_RIGID,
+        .partner_kind = SCENE_PRIM_DISC, .partner_index = disc_B_idx});
     int portal_B = scene_add_portal(sc, (scene_portal){
-        .kind          = SCENE_PORTAL_PAIRED_RIGID,
-        .partner_kind  = SCENE_PRIM_DISC,
-        .partner_index = disc_A_idx,
-    });
+        .kind = SCENE_PORTAL_PAIRED_RIGID,
+        .partner_kind = SCENE_PRIM_DISC, .partner_index = disc_A_idx});
+    int portal_C = scene_add_portal(sc, (scene_portal){
+        .kind = SCENE_PORTAL_PAIRED_RIGID,
+        .partner_kind = SCENE_PRIM_DISC, .partner_index = disc_D_idx});
+    int portal_D = scene_add_portal(sc, (scene_portal){
+        .kind = SCENE_PORTAL_PAIRED_RIGID,
+        .partner_kind = SCENE_PRIM_DISC, .partner_index = disc_C_idx});
 
     int m_portal_A = scene_add_material(sc, (scene_material){
         .albedo = {200,  80, 230}, .portal_index = portal_A});
     int m_portal_B = scene_add_material(sc, (scene_material){
         .albedo = { 80, 200, 230}, .portal_index = portal_B});
+    int m_portal_C = scene_add_material(sc, (scene_material){
+        .albedo = {230, 200,  80}, .portal_index = portal_C});
+    int m_portal_D = scene_add_material(sc, (scene_material){
+        .albedo = { 80, 230, 130}, .portal_index = portal_D});
 
     scene_add_disc(sc, (scene_disc){    /* disc index 0 = A */
         .center   = {-2.0f, 0.5f, -2.0f},
@@ -124,19 +152,34 @@ static void build_scene(scene **scene_out, scene_camera **camera_out) {
         .radius   = 1.0f,
         .material = m_portal_B,
     });
+    scene_add_disc(sc, (scene_disc){    /* disc index 2 = C (vertical, +Z) */
+        .center   = {-2.0f, 0.5f, -2.0f},   /* co-located with A */
+        .normal   = { 0.0f, 0.0f,  1.0f},
+        .radius   = 1.0f,
+        .material = m_portal_C,
+    });
+    scene_add_disc(sc, (scene_disc){    /* disc index 3 = D (vertical, +Z) */
+        .center   = { 2.0f, 0.5f, -2.0f},   /* same y/z as C, +X offset */
+        .normal   = { 0.0f, 0.0f,  1.0f},
+        .radius   = 1.0f,
+        .material = m_portal_D,
+    });
 
-    /* Traveling sphere — the star of step 1. Tagged with portal_disc1
-     * so the renderer clips it to disc A's front half-space and emits
-     * a virtual copy at disc B. */
+    /* Traveling sphere — tagged with BOTH portal pairs. The renderer
+     * clips the original to the intersection of A's and C's front
+     * half-spaces, and emits a virtual copy at B (for A) and another at
+     * D (for C). */
     int m_traveler = scene_add_material(sc, (scene_material){
         .albedo       = {255, 215,  60},
         .portal_index = -1,
     });
     traveler_sphere_idx = scene_add_sphere(sc, (scene_sphere){
-        .center       = {TRAVELER_MIN_X, TRAVELER_Y, TRAVELER_Z},
+        .center       = {TRAVELER_CENTER_X + TRAVELER_PATH_R,
+                         TRAVELER_Y,
+                         TRAVELER_CENTER_Z},     /* start at theta=0 */
         .radius       = TRAVELER_RADIUS,
         .material     = m_traveler,
-        .portal_disc1 = disc_A_idx + 1,    /* 1-based: 0 = none */
+        .portal_disc1 = {disc_A_idx + 1, disc_C_idx + 1},    /* 1-based */
     });
 
     scene_set_ambient(sc, 0.3f);
@@ -307,13 +350,16 @@ int main(int argc, char *argv[]) {
         vector cam_dir = cam_dir_from_yaw_pitch(cam_yaw, cam_pitch);
         scene_camera_place(camera, cam_pos, cam_dir);
 
-        /* Animate the traversing sphere through disc A. Smooth back-and-
-         * forth so the viewer can watch the split appear, slide, vanish. */
+        /* Circle the traveler through both portal planes in the X-Z
+         * plane. Each lap visits all four quadrants, so each virtual
+         * copy gets to fully emerge and fully retreat instead of being
+         * stuck mid-portal. */
         if (traveler_sphere_idx >= 0) {
-            float omega = 2.0f * (float)M_PI / TRAVELER_PERIOD;
-            float u = (sinf(t * omega) + 1.0f) * 0.5f;   /* [0, 1] */
+            float theta = t * (2.0f * (float)M_PI / TRAVELER_PERIOD);
             sc->spheres[traveler_sphere_idx].center.x =
-                TRAVELER_MIN_X + (TRAVELER_MAX_X - TRAVELER_MIN_X) * u;
+                TRAVELER_CENTER_X + TRAVELER_PATH_R * cosf(theta);
+            sc->spheres[traveler_sphere_idx].center.z =
+                TRAVELER_CENTER_Z + TRAVELER_PATH_R * sinf(theta);
         }
 
         rt_renderer_render(cpu_rnd, sc, camera, &viewport, pixels, NULL);
