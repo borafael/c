@@ -46,6 +46,31 @@ typedef struct {
 } rt_gbuffer;
 
 /**
+ * Object-kind constants for decoding the high byte of
+ * rt_gbuffer.object_id. The id layout is (kind << 24) | index. Most
+ * consumers should treat object_id as opaque (compare for inequality
+ * only); these are exposed so post-process passes that want to apply
+ * selectively — e.g. only fog lit geometry, not the sky sphere — can
+ * filter without depending on per-scene insertion order.
+ */
+#define RT_OBJ_KIND_SKY         0
+#define RT_OBJ_KIND_SPHERE      1
+#define RT_OBJ_KIND_PLANE       2
+#define RT_OBJ_KIND_DISC        3
+#define RT_OBJ_KIND_CYLINDER    4
+#define RT_OBJ_KIND_TRIANGLE    5
+#define RT_OBJ_KIND_MESH        6
+#define RT_OBJ_KIND_BOX         7
+#define RT_OBJ_KIND_SPRITE      8
+#define RT_OBJ_KIND_HEIGHTFIELD 9
+#define RT_OBJ_KIND_CONE       10
+#define RT_OBJ_KIND_TORUS      11
+
+static inline uint32_t rt_obj_kind(uint32_t object_id) {
+    return object_id >> 24;
+}
+
+/**
  * Renderer vtable. Exposed in the public header so the dispatchers in
  * libs/raytrace/renderer.c can forward through the function pointers
  * without an extra translation-unit hop. Every field is private — do

@@ -14,6 +14,11 @@
  * across at the call site; layouts already match.
  */
 
+/* Shared small RGB triple used by several passes (fog colour, palette
+ * entries, halftone ink/paper). Kept near the top so later sections
+ * can reference it. */
+typedef struct { uint8_t r, g, b; } postfx_rgb;
+
 /* ===================================================================
  *   Edge detection (comic outlines)
  * =================================================================== */
@@ -56,10 +61,39 @@ void postfx_apply_edges(uint32_t *pixels,
                         const postfx_edges *cfg);
 
 /* ===================================================================
- *   Palette quantization (pixel-art look)
+ *   Distance fog (atmospheric depth cue)
  * =================================================================== */
 
-typedef struct { uint8_t r, g, b; } postfx_rgb;
+/* Per-pixel fog driven by the G-buffer depth channel. Each lit pixel
+ * is blended toward `color` with a linear ramp from `start` to `end`
+ * (world units along the primary ray) and clamped at `max_strength`.
+ *
+ * Callers usually want fog on opaque geometry but NOT on the sky
+ * sphere, sun, moons or stars (those already encode their own horizon
+ * tint via material colour). `skip_kinds_mask` is a bitmask of
+ * RT_OBJ_KIND_* values to leave untouched: set
+ *   (1u << RT_OBJ_KIND_SKY) | (1u << RT_OBJ_KIND_SPHERE)
+ * to fog the heightfield + cones while sphere-backed sky/sun/moons
+ * pass through unchanged. Pass 0 to fog everything that hit something.
+ *
+ * Stateless (no ctx). */
+typedef struct {
+    int      enabled;
+    postfx_rgb color;          /* horizon-tinted target */
+    float    start;            /* world units; fog == 0 at and below */
+    float    end;              /* world units; fog == max_strength at and above */
+    float    max_strength;     /* 0..1 cap on blend toward `color` */
+    uint32_t skip_kinds_mask;  /* bit N set => skip pixels with rt_obj_kind == N */
+} postfx_fog;
+
+void postfx_fog_apply(uint32_t *pixels,
+                      const postfx_gbuffer *gbuf,
+                      int width, int height,
+                      const postfx_fog *cfg);
+
+/* ===================================================================
+ *   Palette quantization (pixel-art look)
+ * =================================================================== */
 
 typedef struct {
     const postfx_rgb *colors;

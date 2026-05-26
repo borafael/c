@@ -314,22 +314,9 @@ static inline scene_color material_sample(const scene_material *m,
 #define RT_REFLECT_EPSILON 1e-4f
 
 /* G-buffer object-id encoding. The high byte is the primitive kind, the
- * low 24 bits are the per-kind array index. 0 is reserved for "sky" so a
- * miss can be detected with object_id == 0. Edge-detection in the comic
- * pass only compares ids for inequality; no consumer should depend on
- * the bit layout. */
-#define RT_OBJ_KIND_SKY         0
-#define RT_OBJ_KIND_SPHERE      1
-#define RT_OBJ_KIND_PLANE       2
-#define RT_OBJ_KIND_DISC        3
-#define RT_OBJ_KIND_CYLINDER    4
-#define RT_OBJ_KIND_TRIANGLE    5
-#define RT_OBJ_KIND_MESH        6
-#define RT_OBJ_KIND_BOX         7
-#define RT_OBJ_KIND_SPRITE      8
-#define RT_OBJ_KIND_HEIGHTFIELD 9
-#define RT_OBJ_KIND_CONE       10
-#define RT_OBJ_KIND_TORUS      11
+ * low 24 bits are the per-kind array index. RT_OBJ_KIND_* constants
+ * live in renderer.h so post-process callers can filter by kind. The
+ * encoding macro stays here — it's a renderer-internal detail. */
 #define RT_OBJ_ID(kind, index) \
     (((uint32_t)(kind) << 24) | ((uint32_t)(index) & 0x00FFFFFFu))
 

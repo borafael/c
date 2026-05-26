@@ -48,14 +48,28 @@
 #define PITCH_LIMIT     1.45f         /* ~83°, prevents gimbal flip */
 #define WAKE_FADE_SEC   4.5f          /* black -> full brightness on startup */
 
+/* Sky gradient endpoints — pulsed each frame so the whole atmosphere
+ * breathes slowly. Multiplier swings in roughly [0.84, 1.00] over a
+ * ~21 s period; the gradient endpoints scale together so the
+ * horizon/zenith hue relationship stays put. */
+#define SKY_HORIZON_R   8
+#define SKY_HORIZON_G  32
+#define SKY_HORIZON_B  48
+#define SKY_ZENITH_R   58
+#define SKY_ZENITH_G   24
+#define SKY_ZENITH_B   64
+#define SKY_PULSE_RATE  0.30f          /* radians/sec */
+#define SKY_PULSE_BIAS  0.92f
+#define SKY_PULSE_AMP   0.08f
+
 /* ===== Mountain heightfield (ring around player) ========================== */
-#define HF_ROWS         96
-#define HF_COLS         96
-#define HF_WORLD_W      600.0f
-#define HF_WORLD_D      600.0f
-#define HF_INNER        70.0f        /* flat playable area radius */
-#define HF_OUTER        280.0f       /* mountains reach max height here */
-#define HF_MAX_H        85.0f
+#define HF_ROWS         128
+#define HF_COLS         128
+#define HF_WORLD_W      1700.0f
+#define HF_WORLD_D      1700.0f
+#define HF_INNER        260.0f       /* flat playable area radius */
+#define HF_OUTER        750.0f       /* mountains reach max height here */
+#define HF_MAX_H        160.0f
 
 /* Borrowed by the scene; storage lives here. */
 static float   HF_HEIGHTS[HF_ROWS * HF_COLS];
@@ -82,6 +96,230 @@ static float smooth_noise(float x, float y) {
     float d = hash01(ix + 1, iy + 1);
     return a * (1 - u) * (1 - v) + b * u * (1 - v)
          + c * (1 - u) * v       + d * u * v;
+}
+
+/* ===== Whispers ========================================================== *
+ *  Faint text fades in over the framebuffer at a long interval. Bottom-     *
+ *  centred. ~80% intelligible English phrases, ~20% random glyph noise so   *
+ *  the brain still tries to parse alien strings. Tiny embedded 5×7 lower-   *
+ *  case font keeps the whole module under 250 bytes of data.                *
+ * ========================================================================= */
+
+#define FONT_W              5
+#define FONT_H              7
+#define FONT_GLYPH_COUNT    28
+#define WHISPER_MAX_LEN     32
+#define WHISPER_SCALE        2
+#define WHISPER_FADE_IN_SEC  1.5f
+#define WHISPER_HOLD_SEC     2.5f
+#define WHISPER_FADE_OUT_SEC 2.0f
+#define WHISPER_GAP_MIN_SEC 35.0f
+#define WHISPER_GAP_MAX_SEC 55.0f
+#define WHISPER_NOISE_PROB  20      /* percent: random-glyph instead of phrase */
+
+/* Bit-packed 5×7 glyphs. Bit 4 (0x10) is the leftmost column. Index 0 is
+ * space, index 1 is apostrophe, indices 2..27 are 'a'..'z'. */
+static const uint8_t FONT_GLYPHS[FONT_GLYPH_COUNT][FONT_H] = {
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* space     */
+    {0x04,0x04,0x04,0x00,0x00,0x00,0x00}, /* '         */
+    {0x00,0x00,0x0E,0x01,0x0F,0x11,0x0F}, /* a */
+    {0x10,0x10,0x16,0x19,0x11,0x11,0x1E}, /* b */
+    {0x00,0x00,0x0E,0x10,0x10,0x10,0x0E}, /* c */
+    {0x01,0x01,0x0D,0x13,0x11,0x11,0x0F}, /* d */
+    {0x00,0x00,0x0E,0x11,0x1F,0x10,0x0E}, /* e */
+    {0x06,0x09,0x08,0x1C,0x08,0x08,0x08}, /* f */
+    {0x00,0x00,0x0F,0x11,0x0F,0x01,0x0E}, /* g */
+    {0x10,0x10,0x16,0x19,0x11,0x11,0x11}, /* h */
+    {0x04,0x00,0x0C,0x04,0x04,0x04,0x0E}, /* i */
+    {0x02,0x00,0x06,0x02,0x02,0x12,0x0C}, /* j */
+    {0x10,0x10,0x12,0x14,0x18,0x14,0x12}, /* k */
+    {0x0C,0x04,0x04,0x04,0x04,0x04,0x0E}, /* l */
+    {0x00,0x00,0x1A,0x15,0x15,0x15,0x15}, /* m */
+    {0x00,0x00,0x16,0x19,0x11,0x11,0x11}, /* n */
+    {0x00,0x00,0x0E,0x11,0x11,0x11,0x0E}, /* o */
+    {0x00,0x00,0x1E,0x11,0x1E,0x10,0x10}, /* p */
+    {0x00,0x00,0x0F,0x11,0x0F,0x01,0x01}, /* q */
+    {0x00,0x00,0x16,0x19,0x10,0x10,0x10}, /* r */
+    {0x00,0x00,0x0F,0x10,0x0E,0x01,0x1E}, /* s */
+    {0x08,0x08,0x1C,0x08,0x08,0x09,0x06}, /* t */
+    {0x00,0x00,0x11,0x11,0x11,0x13,0x0D}, /* u */
+    {0x00,0x00,0x11,0x11,0x11,0x0A,0x04}, /* v */
+    {0x00,0x00,0x11,0x11,0x15,0x15,0x0A}, /* w */
+    {0x00,0x00,0x11,0x0A,0x04,0x0A,0x11}, /* x */
+    {0x00,0x00,0x11,0x11,0x0F,0x01,0x0E}, /* y */
+    {0x00,0x00,0x1F,0x02,0x04,0x08,0x1F}, /* z */
+};
+
+static int font_index(char c) {
+    if (c == ' ')  return 0;
+    if (c == '\'') return 1;
+    if (c >= 'a' && c <= 'z') return 2 + (c - 'a');
+    return 0;
+}
+
+static const char *WHISPER_PHRASES[] = {
+    "ph'nglui mglw'nafh",
+    "they only sleep",
+    "the angles wake",
+    "the stars are wrong",
+    "it remembers you",
+    "yog sothoth",
+    "we were here first",
+    "the dream is real",
+    "do not name it",
+    "ia ia cthulhu",
+};
+#define WHISPER_PHRASE_COUNT \
+    ((int)(sizeof(WHISPER_PHRASES) / sizeof(WHISPER_PHRASES[0])))
+
+typedef enum {
+    WHISPER_IDLE,
+    WHISPER_FADE_IN,
+    WHISPER_HOLD,
+    WHISPER_FADE_OUT,
+} whisper_phase;
+
+typedef struct {
+    whisper_phase phase;
+    float    phase_t;     /* elapsed in current phase */
+    float    next_gap;    /* idle duration before next whisper fires */
+    char     text[WHISPER_MAX_LEN + 1];
+    int      text_len;
+    int      is_noise;    /* 1 = random glyph stream, 0 = English phrase */
+    uint32_t noise_seed;  /* stable across the whole whisper lifetime */
+} whisper_state;
+
+/* Self-contained 32-bit mixer; doesn't piggy-back on hash01's two-arg form
+ * because we want three orthogonal axes (seed, char index, row). */
+static uint32_t whisper_hash(uint32_t a, uint32_t b, uint32_t c) {
+    uint32_t h = a * 374761393u ^ b * 668265263u ^ c * 1274126177u;
+    h ^= h >> 13;
+    h *= 1274126177u;
+    h ^= h >> 16;
+    return h;
+}
+
+static void whisper_pick_next(whisper_state *w, uint32_t seed) {
+    uint32_t r = whisper_hash(seed, 0, 0xA5A5A5A5u);
+    if ((r % 100u) < (uint32_t)(100 - WHISPER_NOISE_PROB)) {
+        const char *src = WHISPER_PHRASES[(r >> 8) % WHISPER_PHRASE_COUNT];
+        int len = 0;
+        while (src[len] && len < WHISPER_MAX_LEN) {
+            w->text[len] = src[len];
+            len++;
+        }
+        w->text[len] = 0;
+        w->text_len = len;
+        w->is_noise = 0;
+    } else {
+        int len = 8 + (int)((r >> 16) % 7u);     /* 8..14 chars */
+        for (int i = 0; i < len; i++) {
+            w->text[i] = (char)('a' + (whisper_hash(seed, i, 1) % 26u));
+        }
+        w->text[len] = 0;
+        w->text_len = len;
+        w->is_noise = 1;
+    }
+    uint32_t rg = whisper_hash(seed, 1, 0xDEADBEEFu);
+    w->next_gap = WHISPER_GAP_MIN_SEC
+                + (WHISPER_GAP_MAX_SEC - WHISPER_GAP_MIN_SEC)
+                  * ((rg & 0xFFFFu) / 65535.0f);
+    w->noise_seed = seed;
+}
+
+static void whisper_update(whisper_state *w, float dt, uint32_t now_ms) {
+    w->phase_t += dt;
+    switch (w->phase) {
+    case WHISPER_IDLE:
+        if (w->phase_t >= w->next_gap) {
+            whisper_pick_next(w, now_ms);
+            w->phase = WHISPER_FADE_IN;
+            w->phase_t = 0.0f;
+        }
+        break;
+    case WHISPER_FADE_IN:
+        if (w->phase_t >= WHISPER_FADE_IN_SEC) {
+            w->phase = WHISPER_HOLD; w->phase_t = 0.0f;
+        }
+        break;
+    case WHISPER_HOLD:
+        if (w->phase_t >= WHISPER_HOLD_SEC) {
+            w->phase = WHISPER_FADE_OUT; w->phase_t = 0.0f;
+        }
+        break;
+    case WHISPER_FADE_OUT:
+        if (w->phase_t >= WHISPER_FADE_OUT_SEC) {
+            w->phase = WHISPER_IDLE; w->phase_t = 0.0f;
+        }
+        break;
+    }
+}
+
+static void whisper_render(const whisper_state *w, uint32_t *pixels,
+                           int W, int H) {
+    if (w->phase == WHISPER_IDLE) return;
+    float alpha;
+    if (w->phase == WHISPER_FADE_IN) {
+        float t = w->phase_t / WHISPER_FADE_IN_SEC;
+        alpha = t * t * (3.0f - 2.0f * t);
+    } else if (w->phase == WHISPER_HOLD) {
+        alpha = 1.0f;
+    } else {                                     /* FADE_OUT */
+        float t = 1.0f - w->phase_t / WHISPER_FADE_OUT_SEC;
+        if (t < 0.0f) t = 0.0f;
+        alpha = t * t * (3.0f - 2.0f * t);
+    }
+    int alpha_i = (int)(alpha * 255.0f);
+    if (alpha_i <= 0) return;
+    if (alpha_i > 255) alpha_i = 255;
+
+    int char_step = (FONT_W + 1) * WHISPER_SCALE;
+    int text_w = w->text_len * char_step;
+    int text_h = FONT_H * WHISPER_SCALE;
+    int x0 = (W - text_w) / 2;
+    int y0 = H - text_h - 16;
+
+    const int fg_r = 200, fg_g = 220, fg_b = 230;   /* pale teal-white */
+
+    for (int ci = 0; ci < w->text_len; ci++) {
+        uint8_t glyph[FONT_H];
+        if (w->is_noise) {
+            for (int r = 0; r < FONT_H; r++) {
+                glyph[r] = (uint8_t)(whisper_hash(w->noise_seed, ci, r) & 0x1F);
+            }
+        } else {
+            int gi = font_index(w->text[ci]);
+            for (int r = 0; r < FONT_H; r++) glyph[r] = FONT_GLYPHS[gi][r];
+        }
+        for (int gy = 0; gy < FONT_H; gy++) {
+            uint8_t row = glyph[gy];
+            if (!row) continue;
+            for (int gx = 0; gx < FONT_W; gx++) {
+                if (!(row & (1 << (FONT_W - 1 - gx)))) continue;
+                int px0 = x0 + ci * char_step + gx * WHISPER_SCALE;
+                int py0 = y0 + gy * WHISPER_SCALE;
+                for (int sy = 0; sy < WHISPER_SCALE; sy++) {
+                    int py = py0 + sy;
+                    if (py < 0 || py >= H) continue;
+                    for (int sx = 0; sx < WHISPER_SCALE; sx++) {
+                        int px = px0 + sx;
+                        if (px < 0 || px >= W) continue;
+                        uint32_t p = pixels[py * W + px];
+                        int b  = ( p        & 0xFF);
+                        int g  = ((p >>  8) & 0xFF);
+                        int r2 = ((p >> 16) & 0xFF);
+                        b  = (b  * (255 - alpha_i) + fg_b * alpha_i) >> 8;
+                        g  = (g  * (255 - alpha_i) + fg_g * alpha_i) >> 8;
+                        r2 = (r2 * (255 - alpha_i) + fg_r * alpha_i) >> 8;
+                        pixels[py * W + px] = (p & 0xFF000000u)
+                                            | ((uint32_t)r2 << 16)
+                                            | ((uint32_t)g  <<  8)
+                                            |  (uint32_t)b;
+                    }
+                }
+            }
+        }
+    }
 }
 
 static float fbm(float x, float y) {
@@ -111,9 +349,17 @@ static void build_mountains(void) {
                 /* Squared ramp = gentle near, jagged far. */
                 ramp = t * t;
             }
-            float n1 = fbm(c * 0.16f, r * 0.16f);
-            float n2 = fbm(c * 0.50f, r * 0.50f);
-            float h  = ramp * HF_MAX_H * (0.35f + 1.10f * n1) * (0.55f + 0.85f * n2);
+            float n1 = fbm(c * 0.22f, r * 0.22f);
+            float n2 = fbm(c * 0.65f, r * 0.65f);
+            float n3 = fbm(c * 1.40f, r * 1.40f);
+            /* Ridge term: peaks where noise crosses 0.5, valleys elsewhere.
+             * Multiplied in to break long ridgelines into a denser saw of
+             * peaks without raising the overall envelope. */
+            float ridge = 1.0f - fabsf(2.0f * n3 - 1.0f);
+            float h  = ramp * HF_MAX_H
+                     * (0.30f + 1.00f * n1)
+                     * (0.50f + 0.90f * n2)
+                     * (0.65f + 0.50f * ridge);
 
             /* Subtle ripple in the inner playable area — a hair of tide
              * pools so the floor doesn't read as perfectly mathematical. */
@@ -175,7 +421,7 @@ static void add_star_field(scene *s, int mat, int count) {
         float theta = u * 2.0f * (float)M_PI;
         /* Bias toward upper hemisphere — clamp v so phi stays > 30° above horizon. */
         float phi = (0.18f + 0.55f * v) * (float)M_PI;   /* polar angle from +Y */
-        float r = 600.0f + 60.0f * hash01(i, 73);
+        float r = 1350.0f + 80.0f * hash01(i, 73);
         float x = r * sinf(phi) * cosf(theta);
         float y = r * cosf(phi);
         float z = r * sinf(phi) * sinf(theta);
@@ -183,6 +429,42 @@ static void add_star_field(scene *s, int mat, int count) {
         scene_add_sphere(s, (scene_sphere){
             .center = {x, y, z}, .radius = radius, .material = mat,
         });
+    }
+}
+
+/* Bases for per-frame animated spheres. Filled in at scene build time
+ * and read back each frame; the in-scene sphere centers are then
+ * rewritten as base + animated offset so motion never compounds. */
+#define BIOLUM_COUNT 28
+static vector BIOLUM_BASE[BIOLUM_COUNT];
+static int    BIOLUM_FIRST_IDX = -1;
+static vector CTHULHU_BASE;
+static int    CTHULHU_IDX = -1;
+
+static void add_bioluminescence(scene *s, int mat_teal, int mat_violet, int count) {
+    /* Tiny unlit spheres scattered across the playable plain, hovering
+     * a hair above the ground so they read as luminous polyps rather
+     * than embedded stones. Positions are polar (angle + radius from
+     * origin) so the distribution stays radially clean even at low
+     * counts; biased toward mid-distance so they don't all crowd the
+     * spawn point. Two colours alternate to suggest two species. */
+    for (int i = 0; i < count; i++) {
+        float u = hash01(i, 41);
+        float v = hash01(i, 89);
+        float angle = u * 2.0f * (float)M_PI;
+        float dist  = 25.0f + 210.0f * v;            /* 25..235 (HF_INNER 260) */
+        float x = dist * cosf(angle);
+        float z = dist * sinf(angle);
+        float y = 0.30f + 0.55f * hash01(i, 17);     /* hover 0.3..0.85 */
+        float radius = 0.35f + 0.45f * hash01(i, 53);
+        int mat = (i & 1) ? mat_teal : mat_violet;
+        int idx = scene_add_sphere(s, (scene_sphere){
+            .center = {x, y, z}, .radius = radius, .material = mat,
+        });
+        if (i < BIOLUM_COUNT) {
+            BIOLUM_BASE[i] = (vector){x, y, z};
+            if (BIOLUM_FIRST_IDX < 0) BIOLUM_FIRST_IDX = idx;
+        }
     }
 }
 
@@ -216,7 +498,7 @@ static void add_vegetation(scene *s, int stalk_mat) {
     }
 }
 
-static void build_scene(scene **out_s, scene_camera **out_cam) {
+static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat) {
     scene *s = scene_create();
 
     /* ===== Materials ===== */
@@ -224,8 +506,8 @@ static void build_scene(scene **out_s, scene_camera **out_cam) {
      * GRADIENT (albedo at bottom -> albedo2 at top), unlit. The sphere
      * is huge so the gradient stretches across the whole field of view. */
     int m_sky = scene_add_material(s, (scene_material){
-        .albedo   = {  8, 32, 48},   /* horizon: deep teal */
-        .albedo2  = { 58, 24, 64},   /* zenith: bruised purple */
+        .albedo   = { SKY_HORIZON_R, SKY_HORIZON_G, SKY_HORIZON_B },
+        .albedo2  = { SKY_ZENITH_R,  SKY_ZENITH_G,  SKY_ZENITH_B  },
         .tex_kind = SCENE_TEX_GRADIENT,
         .tex_scale = 1400.0f,        /* span = sky-sphere diameter */
         .unlit = 1,
@@ -256,14 +538,30 @@ static void build_scene(scene **out_s, scene_camera **out_cam) {
         .reflectivity = 0.08f,
     });
     /* ===== Geometry ===== */
-    /* Sky sphere — huge, centered on origin, gradient is along +Y. */
+    /* Sky sphere — huge, centered on origin, gradient is along +Y.
+     * Radius has to clear the sun (z=1000, r=75), the star hemisphere
+     * (r≈1430), and the mountain corners (HF_WORLD_W * sqrt(2)/2 ≈ 1202). */
     scene_add_sphere(s, (scene_sphere){
-        .center = {0, 0, 0}, .radius = 700.0f, .material = m_sky,
+        .center = {0, 0, 0}, .radius = 1700.0f, .material = m_sky,
     });
 
-    /* Sun — low, swollen, on the +Z horizon to invite walking toward it. */
+    /* Sun — low, swollen, just past the mountain ring on the +Z horizon
+     * so it peeks between peaks. Pushed further out alongside the ring. */
     scene_add_sphere(s, (scene_sphere){
-        .center = {0.0f, 38.0f, 500.0f}, .radius = 55.0f, .material = m_sun,
+        .center = {0.0f, 80.0f, 1000.0f}, .radius = 75.0f, .material = m_sun,
+    });
+
+    /* Second sun, mostly buried behind the mountains opposite the
+     * first. Off-axis on +X so it isn't dead-centre when the player
+     * turns around. Centre y is high enough that the top crests the
+     * mountain skyline reliably (angular ~13°, mountain avg ~8°) —
+     * the body still sinks below most ridges so it reads as half
+     * submerged rather than a full disk. unlit, casts no light. */
+    int m_sun2 = scene_add_material(s, (scene_material){
+        .albedo = {135, 32, 22}, .unlit = 1,
+    });
+    scene_add_sphere(s, (scene_sphere){
+        .center = {260.0f, 120.0f, -950.0f}, .radius = 110.0f, .material = m_sun2,
     });
 
     /* Two pale teal moons — high and oblique. */
@@ -297,6 +595,51 @@ static void build_scene(scene **out_s, scene_camera **out_cam) {
     /* Vegetation. */
     add_vegetation(s, m_stalk);
 
+    /* Cthulhu silhouette — a huge unlit sphere high in the sky, just
+     * a touch darker than the zenith gradient so it reads as a hole
+     * in the heavens rather than a body floating in front. Positioned
+     * off-axis (forward-right, elevation ~60°) so the player has to
+     * actually look up to notice it. Substantial angular footprint
+     * (~17°), but its near-sky colour keeps it from screaming for
+     * attention. One sphere; almost free to render. */
+    int m_cthulhu = scene_add_material(s, (scene_material){
+        .albedo = {28, 12, 34}, .unlit = 1,
+    });
+    CTHULHU_BASE = (vector){325.0f, 1126.0f, 563.0f};
+    CTHULHU_IDX = scene_add_sphere(s, (scene_sphere){
+        .center = CTHULHU_BASE, .radius = 200.0f, .material = m_cthulhu,
+    });
+
+    /* Bioluminescent specks — tiny unlit hovering polyps. Two species,
+     * sickly teal and bruised violet. Skipped by fog (SPHERE kind), so
+     * they stay vivid no matter how far across the plain they sit. */
+    int m_biolum_teal = scene_add_material(s, (scene_material){
+        .albedo = { 40, 200, 160}, .unlit = 1,
+    });
+    int m_biolum_vio  = scene_add_material(s, (scene_material){
+        .albedo = {150,  80, 200}, .unlit = 1,
+    });
+    add_bioluminescence(s, m_biolum_teal, m_biolum_vio, 28);
+
+    /* Distant monolith — a single obsidian spire forward-left of
+     * spawn, just inside the mountain ring. Tall and disproportionately
+     * thin so the silhouette reads as wrong even before you parse what
+     * it is. Slight tilt toward the camera to make the geometry feel
+     * a touch off-axis. Fog still applies, so it hazes with depth like
+     * the rest of the world — the eeriness is in the shape, not in
+     * cheating the atmosphere. */
+    int m_monolith = scene_add_material(s, (scene_material){
+        .albedo       = { 15,  18,  26},   /* dark cool-violet obsidian */
+        .reflectivity = 0.04f,
+    });
+    scene_add_cylinder(s, (scene_cylinder){
+        .center      = {-200.0f, 110.0f, 480.0f},
+        .axis        = vector_normalize((vector){0.04f, 1.0f, -0.02f}),
+        .radius      = 10.0f,
+        .half_height = 110.0f,
+        .material    = m_monolith,
+    });
+
     /* ===== Lights ===== */
     /* Two directionals: one from the sun's direction (warmer red), one
      * faint fill from the opposite zenith (cold teal-violet). Low ambient
@@ -318,6 +661,7 @@ static void build_scene(scene **out_s, scene_camera **out_cam) {
         (vector){0.0f, EYE_HEIGHT, 0.0f},
         (vector){0.0f, 0.0f, 1.0f}
     );
+    if (out_sky_mat) *out_sky_mat = m_sky;
 }
 
 /* ===== POV helpers ======================================================= */
@@ -393,22 +737,46 @@ int main(int argc, char *argv[]) {
 
     scene *scn = NULL;
     scene_camera *cam = NULL;
-    build_scene(&scn, &cam);
+    int sky_mat = -1;
+    build_scene(&scn, &cam, &sky_mat);
 
     int render_w = RENDER_W, render_h = RENDER_H;
     rt_viewport viewport = { render_w, render_h, FOV };
     uint32_t *pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
 
-    /* Postfx stack — vignette tightens the frame, chromatic shifts the
-     * sun's red into the sky, bloom blooms the sun, grain crawls. */
+    /* G-buffer drives the distance-fog pass; depth and object_id are
+     * needed, normal is unused but the renderer fills all three. */
+    rt_gbuffer gbuf = {
+        .object_id = calloc((size_t)(render_w * render_h), sizeof(uint32_t)),
+        .depth     = calloc((size_t)(render_w * render_h), sizeof(float)),
+        .normal    = calloc((size_t)(render_w * render_h) * 3, sizeof(float)),
+    };
+
+    /* Postfx stack — fog first (so bloom blooms the foggy frame and the
+     * sun halo spills over hazed mountains), then chromatic + vignette
+     * + grain on top. */
     postfx_chromatic_ctx *chrom = postfx_chromatic_create(render_w, render_h);
     postfx_bloom_ctx     *bloom = postfx_bloom_create(render_w, render_h);
     postfx_chromatic chrom_cfg = { .enabled = 1, .shift_pixels = 1 };
-    postfx_vignette  vig_cfg   = { .enabled = 1, .intensity = 0.75f, .softness = 0.30f };
+    postfx_vignette  vig_cfg   = { .enabled = 1, .intensity = 0.35f, .softness = 0.50f };
     postfx_grain     grain_cfg = { .enabled = 1, .strength = 0.10f, .seed = 0 };
     postfx_bloom     bloom_cfg = {
         .enabled = 1, .threshold = 0.55f, .knee = 0.30f,
         .intensity = 0.55f, .radius = 6, .iterations = 2,
+    };
+    /* Fog targets the horizon teal so distant mountains fade into the
+     * sky gradient. Skip sky/sun/moons/stars (all spheres) — they
+     * already paint their own backdrop colours. The ramp starts past
+     * the coral-stalk radius and saturates a bit beyond the mountain
+     * ring so far peaks crush hard into the haze. */
+    postfx_fog fog_cfg = {
+        .enabled       = 1,
+        .color         = { 14, 30, 44 },
+        .start         = 120.0f,
+        .end           = 700.0f,
+        .max_strength  = 1.00f,
+        .skip_kinds_mask = (1u << RT_OBJ_KIND_SKY)
+                         | (1u << RT_OBJ_KIND_SPHERE),
     };
 
     GLuint display_tex, display_fbo;
@@ -426,6 +794,12 @@ int main(int argc, char *argv[]) {
     float  cam_pitch = 0.0f;
     int    mouse_captured = 1;
     int    postfx_on = 1;
+
+    /* Whisper state — starts idle, first fire is between WHISPER_GAP_MIN
+     * and WHISPER_GAP_MAX seconds after the wake fade finishes. */
+    whisper_state whisper = {0};
+    whisper.phase = WHISPER_IDLE;
+    whisper.next_gap = WAKE_FADE_SEC + WHISPER_GAP_MIN_SEC;
 
     SDL_SetRelativeMouseMode(SDL_TRUE);
 
@@ -490,22 +864,76 @@ int main(int argc, char *argv[]) {
         vector cam_dir = cam_dir_from_yaw_pitch(cam_yaw, cam_pitch);
         scene_camera_place(cam, cam_pos, cam_dir);
 
+        float t_sec = (frame_now - start_ticks) / 1000.0f;
+
+        /* Slow sky pulse — the atmosphere breathes. Cheap: two color
+         * triples scaled by one multiplier per frame, no per-pixel
+         * cost. */
+        if (sky_mat >= 0) {
+            float pulse = SKY_PULSE_BIAS
+                        + SKY_PULSE_AMP * sinf(t_sec * SKY_PULSE_RATE);
+            scn->materials[sky_mat].albedo.r  = (uint8_t)(SKY_HORIZON_R * pulse);
+            scn->materials[sky_mat].albedo.g  = (uint8_t)(SKY_HORIZON_G * pulse);
+            scn->materials[sky_mat].albedo.b  = (uint8_t)(SKY_HORIZON_B * pulse);
+            scn->materials[sky_mat].albedo2.r = (uint8_t)(SKY_ZENITH_R  * pulse);
+            scn->materials[sky_mat].albedo2.g = (uint8_t)(SKY_ZENITH_G  * pulse);
+            scn->materials[sky_mat].albedo2.b = (uint8_t)(SKY_ZENITH_B  * pulse);
+        }
+
+        /* Cthulhu drift — slow lissajous in xz, gentler bob in y.
+         * Three slightly off-rate sinusoids so the orbit never closes
+         * cleanly; the eye reads it as "moving" without being able to
+         * pin down a path. */
+        if (CTHULHU_IDX >= 0 && CTHULHU_IDX < scn->sphere_count) {
+            scn->spheres[CTHULHU_IDX].center.x = CTHULHU_BASE.x + 38.0f * sinf(t_sec * 0.18f);
+            scn->spheres[CTHULHU_IDX].center.z = CTHULHU_BASE.z + 28.0f * cosf(t_sec * 0.13f);
+            scn->spheres[CTHULHU_IDX].center.y = CTHULHU_BASE.y + 12.0f * sinf(t_sec * 0.11f);
+        }
+
+        /* Bioluminescent flutter — each speck has its own deterministic
+         * phase, so the swarm reads as a cloud of independent things
+         * rather than a unison wave. Vertical bob is dominant; tiny xz
+         * drift adds wing-flap shimmer. */
+        if (BIOLUM_FIRST_IDX >= 0) {
+            for (int i = 0; i < BIOLUM_COUNT; i++) {
+                int si = BIOLUM_FIRST_IDX + i;
+                if (si >= scn->sphere_count) break;
+                float px = hash01(i, 211) * 6.283f;
+                float py = hash01(i, 307) * 6.283f;
+                float pz = hash01(i, 401) * 6.283f;
+                scn->spheres[si].center.x = BIOLUM_BASE[i].x + 0.30f * sinf(t_sec * 0.7f + px);
+                scn->spheres[si].center.y = BIOLUM_BASE[i].y + 0.55f * sinf(t_sec * 1.3f + py);
+                scn->spheres[si].center.z = BIOLUM_BASE[i].z + 0.30f * cosf(t_sec * 0.6f + pz);
+            }
+        }
+
         Uint32 r0 = SDL_GetTicks();
-        rt_renderer_render(rnd, scn, cam, &viewport, pixels, NULL);
+        rt_renderer_render(rnd, scn, cam, &viewport, pixels, &gbuf);
         Uint32 r1 = SDL_GetTicks();
 
         /* Interlace leaves odd rows holding prior-frame content. Without
          * intervention, chromatic + grain compound on those stale rows
          * each frame and they drift into red/green static. Line-double
          * the rendered (even) rows down into the odd rows so postfx
-         * operates on a fully-coherent image. Halves vertical detail
-         * but kills the artifact entirely. */
+         * operates on a fully-coherent image. The G-buffer needs the
+         * same treatment because fog reads odd-row depth. Halves
+         * vertical detail but kills the artifact entirely. */
         for (int y = 1; y < render_h; y += 2) {
-            memcpy(&pixels[y * render_w], &pixels[(y - 1) * render_w],
-                   (size_t)render_w * sizeof(uint32_t));
+            size_t row_px   = (size_t)render_w;
+            memcpy(&pixels[y * render_w],         &pixels[(y - 1) * render_w],
+                   row_px * sizeof(uint32_t));
+            memcpy(&gbuf.depth[y * render_w],     &gbuf.depth[(y - 1) * render_w],
+                   row_px * sizeof(float));
+            memcpy(&gbuf.object_id[y * render_w], &gbuf.object_id[(y - 1) * render_w],
+                   row_px * sizeof(uint32_t));
         }
 
         if (postfx_on) {
+            postfx_fog_apply      (pixels, &(postfx_gbuffer){
+                                       .object_id = gbuf.object_id,
+                                       .depth     = gbuf.depth,
+                                       .normal    = gbuf.normal,
+                                   }, render_w, render_h, &fog_cfg);
             postfx_bloom_apply    (bloom, pixels, render_w, render_h, &bloom_cfg);
             postfx_chromatic_apply(chrom, pixels, render_w, render_h, &chrom_cfg);
             postfx_vignette_apply (pixels, render_w, render_h, &vig_cfg);
@@ -530,6 +958,12 @@ int main(int argc, char *argv[]) {
                 pixels[i] = (p & 0xFF000000) | (r << 16) | (g << 8) | b;
             }
         }
+
+        /* Whispers — overlay last, so they fade in on top of the
+         * already-postfx'd frame (and survive the wake fade naturally
+         * because the first whisper fires well after it ends). */
+        whisper_update(&whisper, dt, frame_now);
+        whisper_render(&whisper, pixels, render_w, render_h);
 
         Uint32 fx1 = SDL_GetTicks();
         r_ms  += r1  - r0;
@@ -558,6 +992,9 @@ int main(int argc, char *argv[]) {
     glDeleteTextures(1, &display_tex);
     postfx_chromatic_destroy(chrom);
     postfx_bloom_destroy(bloom);
+    free(gbuf.normal);
+    free(gbuf.depth);
+    free(gbuf.object_id);
     free(pixels);
     scene_camera_destroy(cam);
     scene_destroy(scn);

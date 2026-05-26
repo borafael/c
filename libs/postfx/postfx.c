@@ -72,6 +72,59 @@ void postfx_apply_edges(uint32_t *pixels,
 }
 
 /* ===================================================================
+ *   Distance fog
+ * =================================================================== */
+
+void postfx_fog_apply(uint32_t *pixels,
+                      const postfx_gbuffer *gbuf,
+                      int width, int height,
+                      const postfx_fog *cfg) {
+    if (!cfg || !cfg->enabled || !gbuf || !gbuf->depth) return;
+    float start = cfg->start;
+    float end   = cfg->end;
+    if (end <= start) return;
+    float max_s = cfg->max_strength;
+    if (max_s <= 0.0f) return;
+    if (max_s > 1.0f) max_s = 1.0f;
+    float inv_range = 1.0f / (end - start);
+    uint32_t skip = cfg->skip_kinds_mask;
+    /* Pre-extract fog colour as floats so we can lerp without repeated
+     * conversions per pixel. */
+    float fr = (float)cfg->color.r;
+    float fg = (float)cfg->color.g;
+    float fb = (float)cfg->color.b;
+
+    int n = width * height;
+    for (int i = 0; i < n; i++) {
+        if (gbuf->object_id) {
+            uint32_t kind = gbuf->object_id[i] >> 24;
+            if (kind < 32 && (skip & (1u << kind))) continue;
+        }
+        float d = gbuf->depth[i];
+        if (d <= start) continue;
+        float t = (d - start) * inv_range;
+        if (t > 1.0f) t = 1.0f;
+        t *= max_s;
+        /* lerp pixel toward fog colour by `t`. */
+        uint32_t p = pixels[i];
+        float pb = (float)( p        & 0xFF);
+        float pg = (float)((p >>  8) & 0xFF);
+        float pr = (float)((p >> 16) & 0xFF);
+        float one_t = 1.0f - t;
+        int ob = (int)(pb * one_t + fb * t + 0.5f);
+        int og = (int)(pg * one_t + fg * t + 0.5f);
+        int o_r = (int)(pr * one_t + fr * t + 0.5f);
+        if (ob  > 255) ob  = 255;
+        if (og  > 255) og  = 255;
+        if (o_r > 255) o_r = 255;
+        pixels[i] = (p & 0xFF000000u)
+                  | ((uint32_t)o_r << 16)
+                  | ((uint32_t)og  <<  8)
+                  |  (uint32_t)ob;
+    }
+}
+
+/* ===================================================================
  *   Palette table + quantizer
  * =================================================================== */
 
