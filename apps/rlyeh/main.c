@@ -46,6 +46,7 @@
 #define LOOK_SPEED      1.6f          /* keyboard fallback */
 #define MOUSE_SENS      0.0025f
 #define PITCH_LIMIT     1.45f         /* ~83°, prevents gimbal flip */
+#define WAKE_FADE_SEC   4.5f          /* black -> full brightness on startup */
 
 /* ===== Mountain heightfield (ring around player) ========================== */
 #define HF_ROWS         96
@@ -429,8 +430,9 @@ int main(int argc, char *argv[]) {
     SDL_SetRelativeMouseMode(SDL_TRUE);
 
     int running = 1;
-    Uint32 frame_last = SDL_GetTicks();
-    Uint32 fps_last   = SDL_GetTicks();
+    Uint32 start_ticks = SDL_GetTicks();
+    Uint32 frame_last  = start_ticks;
+    Uint32 fps_last    = start_ticks;
     int    fps_frames = 0;
     Uint32 r_ms = 0, fx_ms = 0;
     char title_buf[200];
@@ -510,6 +512,25 @@ int main(int argc, char *argv[]) {
             grain_cfg.seed = frame_now;
             postfx_grain_apply    (pixels, render_w, render_h, &grain_cfg);
         }
+        /* Wake-up fade: smooth ramp from pitch black on the first frame
+         * to full brightness over WAKE_FADE_SEC. Smoothstep gives an
+         * eyelids-opening feel — slow start, slow finish. Applied last
+         * so postfx (grain, vignette) fades in too. */
+        float wake_t = (frame_now - start_ticks) / 1000.0f / WAKE_FADE_SEC;
+        if (wake_t < 1.0f) {
+            if (wake_t < 0.0f) wake_t = 0.0f;
+            float fade = wake_t * wake_t * (3.0f - 2.0f * wake_t);
+            uint32_t mul = (uint32_t)(fade * 256.0f);
+            int n = render_w * render_h;
+            for (int i = 0; i < n; i++) {
+                uint32_t p = pixels[i];
+                uint32_t b = ((p        & 0xFF) * mul) >> 8;
+                uint32_t g = (((p >> 8) & 0xFF) * mul) >> 8;
+                uint32_t r = (((p >> 16) & 0xFF) * mul) >> 8;
+                pixels[i] = (p & 0xFF000000) | (r << 16) | (g << 8) | b;
+            }
+        }
+
         Uint32 fx1 = SDL_GetTicks();
         r_ms  += r1  - r0;
         fx_ms += fx1 - r1;
