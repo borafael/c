@@ -441,6 +441,27 @@ static int    BIOLUM_FIRST_IDX = -1;
 static vector CTHULHU_BASE;
 static int    CTHULHU_IDX = -1;
 
+/* Leaning coral stalks. The cone primitive stores apex + axis; to lean
+ * the tip toward the camera while keeping the root planted, we keep
+ * each stalk's BASE (rooted) position and its rest-tilt magnitude, and
+ * recompute apex + axis per frame from the smoothed lean direction.
+ * The smoothing time-constant is large (~25 s) so the motion reads as
+ * "watching" rather than "tracking". */
+#define VEG_COUNT 7
+static int    VEG_FIRST_IDX = -1;
+static vector VEG_BASE  [VEG_COUNT];   /* root position (y ≈ 0) */
+static float  VEG_HEIGHT[VEG_COUNT];
+static float  VEG_TILT  [VEG_COUNT];   /* rest tilt magnitude (length of horizontal axis component) */
+static float  VEG_LEAN_X[VEG_COUNT];   /* smoothed unit horizontal direction the tip leans toward */
+static float  VEG_LEAN_Z[VEG_COUNT];
+#define VEG_LEAN_RATE  0.04f           /* per-second smoothing factor (~25 s response) */
+
+static int    BEACON_IDX = -1;
+static int    BEACON_MAT = -1;
+#define BEACON_BASE_R 220
+#define BEACON_BASE_G  40
+#define BEACON_BASE_B  30
+
 static void add_bioluminescence(scene *s, int mat_teal, int mat_violet, int count) {
     /* Tiny unlit spheres scattered across the playable plain, hovering
      * a hair above the ground so they read as luminous polyps rather
@@ -488,11 +509,53 @@ static void add_vegetation(scene *s, int stalk_mat) {
         vector axis = vector_normalize((vector){
             clumps[i].tilt * cosf(th), -1.0f, clumps[i].tilt * sinf(th)
         });
-        scene_add_cone(s, (scene_cone){
+        int idx = scene_add_cone(s, (scene_cone){
             .apex     = apex,
             .axis     = axis,
             .height   = clumps[i].h,
             .radius   = clumps[i].r,
+            .material = stalk_mat,
+        });
+        if (i < VEG_COUNT) {
+            if (VEG_FIRST_IDX < 0) VEG_FIRST_IDX = idx;
+            /* Treat the root as approximately directly under the apex;
+             * with tilt ≤ 0.18 the horizontal offset is well under 1
+             * unit, which the slow lean update absorbs harmlessly. */
+            VEG_BASE  [i] = (vector){ clumps[i].x, 0.0f, clumps[i].z };
+            VEG_HEIGHT[i] = clumps[i].h;
+            VEG_TILT  [i] = clumps[i].tilt;
+            VEG_LEAN_X[i] = cosf(th);
+            VEG_LEAN_Z[i] = sinf(th);
+        }
+    }
+}
+
+static void add_coral_cluster(scene *s, int stalk_mat, float cx, float cz) {
+    /* A denser knot of stalks placed in one direction from spawn so the
+     * eye is drawn to walk toward it. Position offsets are hand-picked
+     * for asymmetry — never on a grid. Stays static (does not lean);
+     * the moving stalks are the original seven near spawn. */
+    static const struct { float dx, dz, h, r, tilt_az; } cluster[] = {
+        {  0.0f,  0.0f, 6.8f, 0.60f, 0.10f },
+        {  1.8f, -1.2f, 5.4f, 0.45f, 0.15f },
+        { -2.2f,  0.8f, 7.2f, 0.55f, 0.08f },
+        {  0.6f,  2.4f, 4.6f, 0.40f, 0.12f },
+        { -1.0f, -2.6f, 5.8f, 0.50f, 0.14f },
+        {  2.6f,  1.4f, 6.2f, 0.45f, 0.09f },
+        { -2.8f, -0.4f, 4.2f, 0.38f, 0.18f },
+    };
+    int n = (int)(sizeof(cluster) / sizeof(cluster[0]));
+    for (int i = 0; i < n; i++) {
+        float th = (float)i * 1.13f;
+        vector apex = { cx + cluster[i].dx, cluster[i].h, cz + cluster[i].dz };
+        vector axis = vector_normalize((vector){
+            cluster[i].tilt_az * cosf(th), -1.0f, cluster[i].tilt_az * sinf(th)
+        });
+        scene_add_cone(s, (scene_cone){
+            .apex     = apex,
+            .axis     = axis,
+            .height   = cluster[i].h,
+            .radius   = cluster[i].r,
             .material = stalk_mat,
         });
     }
@@ -592,8 +655,40 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
     };
     scene_add_heightfield(s, &hf);
 
-    /* Vegetation. */
+    /* Vegetation — the seven leaners near spawn. */
     add_vegetation(s, m_stalk);
+
+    /* Coral cluster as destination — denser knot forward-right of
+     * spawn (still well inside HF_INNER) so the eye has something
+     * to walk toward, between the player and the sun's bearing. */
+    add_coral_cluster(s, m_stalk, 18.0f, 95.0f);
+
+    /* Mirror pool — a single horizontal disc on the plain, dark and
+     * high-reflectivity. Picks up the sky gradient, the sun's red
+     * bloom, and the Cthulhu silhouette when you walk near and look
+     * down. Floats a hair above the heightfield's inner ripple to
+     * stay out of z-fighting territory. */
+    int m_water = scene_add_material(s, (scene_material){
+        .albedo       = {  5,   8,  12},
+        .reflectivity = 0.92f,
+    });
+    scene_add_disc(s, (scene_disc){
+        .center   = {10.0f, 0.10f, 16.0f},
+        .normal   = {0.0f,  1.0f,  0.0f},
+        .radius   = 6.0f,
+        .material = m_water,
+    });
+
+    /* Distant red beacon — single small unlit sphere far past the
+     * mountain ring in the +X/+Z quadrant, slightly above the average
+     * ridge so it peeks through saddles. Pulses brightness in the
+     * main loop. Like a lighthouse you can never reach. */
+    BEACON_MAT = scene_add_material(s, (scene_material){
+        .albedo = {BEACON_BASE_R, BEACON_BASE_G, BEACON_BASE_B}, .unlit = 1,
+    });
+    BEACON_IDX = scene_add_sphere(s, (scene_sphere){
+        .center = {1061.0f, 240.0f, 1061.0f}, .radius = 6.0f, .material = BEACON_MAT,
+    });
 
     /* Cthulhu silhouette — a huge unlit sphere high in the sky, just
      * a touch darker than the zenith gradient so it reads as a hole
@@ -888,6 +983,51 @@ int main(int argc, char *argv[]) {
             scn->spheres[CTHULHU_IDX].center.x = CTHULHU_BASE.x + 38.0f * sinf(t_sec * 0.18f);
             scn->spheres[CTHULHU_IDX].center.z = CTHULHU_BASE.z + 28.0f * cosf(t_sec * 0.13f);
             scn->spheres[CTHULHU_IDX].center.y = CTHULHU_BASE.y + 12.0f * sinf(t_sec * 0.11f);
+        }
+
+        /* Coral stalks lean toward the camera with a long lag. Each
+         * frame: compute target unit direction from base to camera (xz
+         * only), smooth toward it at VEG_LEAN_RATE, then synthesise a
+         * fresh apex + axis pair so the cone leans with that direction
+         * while the root stays planted. The lerp is dt-scaled so the
+         * response is frame-rate-independent. */
+        if (VEG_FIRST_IDX >= 0) {
+            for (int i = 0; i < VEG_COUNT; i++) {
+                int ci = VEG_FIRST_IDX + i;
+                if (ci >= scn->cone_count) break;
+                float dx = cam_pos.x - VEG_BASE[i].x;
+                float dz = cam_pos.z - VEG_BASE[i].z;
+                float horiz = sqrtf(dx * dx + dz * dz);
+                if (horiz > 0.001f) { dx /= horiz; dz /= horiz; }
+                else { dx = VEG_LEAN_X[i]; dz = VEG_LEAN_Z[i]; }
+                float k = dt * VEG_LEAN_RATE * 25.0f;   /* normalize to ~1 at the time constant */
+                if (k > 1.0f) k = 1.0f;
+                VEG_LEAN_X[i] += (dx - VEG_LEAN_X[i]) * k;
+                VEG_LEAN_Z[i] += (dz - VEG_LEAN_Z[i]) * k;
+                float lx = VEG_LEAN_X[i], lz = VEG_LEAN_Z[i];
+                float t = VEG_TILT[i];
+                /* up_unit: base -> apex direction (mostly +Y, leaning
+                 * toward (lx, lz)). */
+                float ux = lx * t, uy = 1.0f, uz = lz * t;
+                float ulen = sqrtf(ux * ux + uy * uy + uz * uz);
+                ux /= ulen; uy /= ulen; uz /= ulen;
+                float h = VEG_HEIGHT[i];
+                scn->cones[ci].apex = (vector){
+                    VEG_BASE[i].x + ux * h,
+                    VEG_BASE[i].y + uy * h,
+                    VEG_BASE[i].z + uz * h,
+                };
+                scn->cones[ci].axis = (vector){-ux, -uy, -uz};
+            }
+        }
+
+        /* Beacon pulse — single material edit per frame, brightens
+         * smoothly from ~40% to 100% of base red over ~4 s. */
+        if (BEACON_MAT >= 0) {
+            float pulse = 0.40f + 0.60f * (0.5f + 0.5f * sinf(t_sec * 1.5f));
+            scn->materials[BEACON_MAT].albedo.r = (uint8_t)(BEACON_BASE_R * pulse);
+            scn->materials[BEACON_MAT].albedo.g = (uint8_t)(BEACON_BASE_G * pulse);
+            scn->materials[BEACON_MAT].albedo.b = (uint8_t)(BEACON_BASE_B * pulse);
         }
 
         /* Bioluminescent flutter — each speck has its own deterministic
