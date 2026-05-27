@@ -28,6 +28,7 @@ APPS=(
     "nbody:"
     "orb:"
     "pixelart:"
+    "rlyeh:assets"
     "rtdemo:"
     "showcase:"
     "toon:"

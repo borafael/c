@@ -26,6 +26,7 @@
 #include "heightfield.h"
 #include "mesh.h"        /* rt_scene_build_accel */
 #include "postfx.h"
+#include "audio.h"
 #include <SDL2/SDL.h>
 
 #define GL_GLEXT_PROTOTYPES 1
@@ -35,6 +36,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+
+#ifdef _WIN32
+/* MinGW lacks POSIX setenv; _putenv_s has the same effect for our uses. */
+#define setenv(k, v, ow) _putenv_s((k), (v))
+#endif
 
 #define INIT_WINDOW_W   960
 #define INIT_WINDOW_H   600
@@ -796,6 +802,12 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
         return 1;
     }
+
+    /* Ambient loop — failure is non-fatal, the demo just runs silent.
+     * Two probe paths so the same binary works from the project root
+     * (dev) and from a staged dir next to its `assets/` (Win64 build). */
+    if (audio_init("apps/rlyeh/assets/ambient.mp3") != 0)
+        audio_init("assets/ambient.mp3");
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -1141,6 +1153,7 @@ int main(int argc, char *argv[]) {
     rt_renderer_destroy(rnd);
     SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);
+    audio_shutdown();
     SDL_Quit();
     return 0;
 }

@@ -94,7 +94,7 @@ scripts/build-windows.sh             # produces build/win64/<app>/
 scripts/build-windows.sh --clean     # wipe build/win64-build first
 ```
 
-Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bloom`, `comic`, `crt`, `halftone`, `mech`, `mirrors`, `nbody`, `orb`, `pixelart`, `rtdemo`, `showcase`, `toon`). Requires `gcc-mingw-w64-x86-64-posix` and `deps/SDL2-2.30.11/x86_64-w64-mingw32/`. Each app gets its own staged dir with the `.exe`, `SDL2.dll`, `libwinpthread-1.dll`, and any per-app asset directories. `bloom`, `comic`, `crt`, `halftone`, `pixelart`, `showcase`, and `toon` are listed in `SHARED_VALKYRIE_APPS` so the script also copies `apps/mech/assets/valkyrie.{obj,mtl}` next to their EXEs. The script does an out-of-tree build under `build/win64-build/`, so an in-tree Linux build (if any) must be `make distclean`'d first.
+Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bloom`, `comic`, `crt`, `halftone`, `mech`, `mirrors`, `nbody`, `orb`, `pixelart`, `rlyeh`, `rtdemo`, `showcase`, `toon`). Requires `gcc-mingw-w64-x86-64-posix` and `deps/SDL2-2.30.11/x86_64-w64-mingw32/`. Each app gets its own staged dir with the `.exe`, `SDL2.dll`, `libwinpthread-1.dll`, and any per-app asset directories. `bloom`, `comic`, `crt`, `halftone`, `pixelart`, `showcase`, and `toon` are listed in `SHARED_VALKYRIE_APPS` so the script also copies `apps/mech/assets/valkyrie.{obj,mtl}` next to their EXEs. The script does an out-of-tree build under `build/win64-build/`, so an in-tree Linux build (if any) must be `make distclean`'d first.
 
 ## Running
 

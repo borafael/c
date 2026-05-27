@@ -23,6 +23,11 @@
 #include <math.h>
 #include <time.h>
 
+#ifdef _WIN32
+/* MinGW lacks POSIX setenv; _putenv_s has the same effect for our uses. */
+#define setenv(k, v, ow) _putenv_s((k), (v))
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif

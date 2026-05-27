@@ -58,6 +58,11 @@
 #include <string.h>
 #include <math.h>
 
+#ifdef _WIN32
+/* MinGW lacks POSIX setenv; _putenv_s has the same effect for our uses. */
+#define setenv(k, v, ow) _putenv_s((k), (v))
+#endif
+
 #define INIT_WINDOW_W   960
 #define INIT_WINDOW_H   720
 #define FOV             (M_PI / 3.0f)
