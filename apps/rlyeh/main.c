@@ -672,15 +672,18 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
         .material = m_water,
     });
 
-    /* Red beacon — single small unlit sphere crowning the distant
-     * monolith spire (forward-left of spawn). Sits just above the
-     * cylinder's tilted top cap (see monolith geometry below). Pulses
-     * brightness in the main loop, a baleful eye atop the obelisk. */
+    /* Red beacon — single small unlit sphere half-sunk into the
+     * camera-facing wall of the distant monolith, near the top of the
+     * shaft (forward-left of spawn). Mostly embedded in the radius-10
+     * cylinder so it reads as light leaking from a lone high window
+     * rather than an orb perched on top. Pulses brightness in the main
+     * loop, fading all the way to black and back — a window lamp that
+     * gutters. */
     BEACON_MAT = scene_add_material(s, (scene_material){
         .albedo = {BEACON_BASE_R, BEACON_BASE_G, BEACON_BASE_B}, .unlit = 1,
     });
     BEACON_IDX = scene_add_sphere(s, (scene_sphere){
-        .center = {-195.4f, 225.9f, 477.7f}, .radius = 6.0f, .material = BEACON_MAT,
+        .center = {-192.8f, 205.0f, 469.8f}, .radius = 3.2f, .material = BEACON_MAT,
     });
 
     /* Cthulhu silhouette — a huge unlit sphere high in the sky, just
@@ -1020,10 +1023,11 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        /* Beacon pulse — single material edit per frame, brightens
-         * smoothly from ~40% to 100% of base red over ~4 s. */
+        /* Beacon pulse — single material edit per frame, fades from full
+         * black up to 100% of base red and back over ~13 s. Starts at
+         * full black (1 - cos so pulse == 0 at t == 0). */
         if (BEACON_MAT >= 0) {
-            float pulse = 0.40f + 0.60f * (0.5f + 0.5f * sinf(t_sec * 1.5f));
+            float pulse = 0.5f - 0.5f * cosf(t_sec * 0.48f);
             scn->materials[BEACON_MAT].albedo.r = (uint8_t)(BEACON_BASE_R * pulse);
             scn->materials[BEACON_MAT].albedo.g = (uint8_t)(BEACON_BASE_G * pulse);
             scn->materials[BEACON_MAT].albedo.b = (uint8_t)(BEACON_BASE_B * pulse);
