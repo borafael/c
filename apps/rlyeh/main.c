@@ -620,19 +620,6 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
         .center = {0.0f, 80.0f, 1000.0f}, .radius = 75.0f, .material = m_sun,
     });
 
-    /* Second sun, mostly buried behind the mountains opposite the
-     * first. Off-axis on +X so it isn't dead-centre when the player
-     * turns around. Centre y is high enough that the top crests the
-     * mountain skyline reliably (angular ~13°, mountain avg ~8°) —
-     * the body still sinks below most ridges so it reads as half
-     * submerged rather than a full disk. unlit, casts no light. */
-    int m_sun2 = scene_add_material(s, (scene_material){
-        .albedo = {135, 32, 22}, .unlit = 1,
-    });
-    scene_add_sphere(s, (scene_sphere){
-        .center = {260.0f, 120.0f, -950.0f}, .radius = 110.0f, .material = m_sun2,
-    });
-
     /* Two pale teal moons — high and oblique. */
     scene_add_sphere(s, (scene_sphere){
         .center = {-280.0f, 200.0f, 80.0f}, .radius = 24.0f, .material = m_moon,
@@ -685,15 +672,15 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
         .material = m_water,
     });
 
-    /* Distant red beacon — single small unlit sphere far past the
-     * mountain ring in the +X/+Z quadrant, slightly above the average
-     * ridge so it peeks through saddles. Pulses brightness in the
-     * main loop. Like a lighthouse you can never reach. */
+    /* Red beacon — single small unlit sphere crowning the distant
+     * monolith spire (forward-left of spawn). Sits just above the
+     * cylinder's tilted top cap (see monolith geometry below). Pulses
+     * brightness in the main loop, a baleful eye atop the obelisk. */
     BEACON_MAT = scene_add_material(s, (scene_material){
         .albedo = {BEACON_BASE_R, BEACON_BASE_G, BEACON_BASE_B}, .unlit = 1,
     });
     BEACON_IDX = scene_add_sphere(s, (scene_sphere){
-        .center = {1061.0f, 240.0f, 1061.0f}, .radius = 6.0f, .material = BEACON_MAT,
+        .center = {-195.4f, 225.9f, 477.7f}, .radius = 6.0f, .material = BEACON_MAT,
     });
 
     /* Cthulhu silhouette — a huge unlit sphere high in the sky, just
