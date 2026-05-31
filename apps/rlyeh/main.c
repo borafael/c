@@ -1,7 +1,7 @@
 /* R'lyeh — Lovecraftian POV demo.
  *
  * First-person stroll across a drowned alien plain. Bruised teal-purple sky,
- * one swollen red sun on the horizon, two pale teal moons. Far-off jagged
+ * two pale teal moons, a slow mirror orb adrift overhead. Far-off jagged
  * obsidian mountains close the world in on every side. Coral-stalk
  * vegetation scattered across the plain.
  *
@@ -36,6 +36,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>      /* clock_gettime — benchmark timing */
+#include <unistd.h>    /* sysconf — host core count for the benchmark */
 
 #ifdef _WIN32
 /* MinGW lacks POSIX setenv; _putenv_s has the same effect for our uses. */
@@ -441,11 +443,17 @@ static void add_star_field(scene *s, int mat, int count) {
 /* Bases for per-frame animated spheres. Filled in at scene build time
  * and read back each frame; the in-scene sphere centers are then
  * rewritten as base + animated offset so motion never compounds. */
-#define BIOLUM_COUNT 28
-static vector BIOLUM_BASE[BIOLUM_COUNT];
-static int    BIOLUM_FIRST_IDX = -1;
 static vector CTHULHU_BASE;
 static int    CTHULHU_IDX = -1;
+
+/* Roaming mirror orb — a perfect-mirror sphere adrift in the sky. Same
+ * base+index animation pattern as the Cthulhu silhouette: the base is
+ * fixed at scene-build time, the in-scene center rewritten each frame as
+ * base + drift so motion never compounds. The benchmark clears
+ * g_add_orb so its baseline measures the orb-free shipped scene. */
+static vector ORB_BASE;
+static int    ORB_IDX = -1;
+static int    g_add_orb = 1;
 
 /* Leaning coral stalks. The cone primitive stores apex + axis; to lean
  * the tip toward the camera while keeping the root planted, we keep
@@ -453,7 +461,7 @@ static int    CTHULHU_IDX = -1;
  * recompute apex + axis per frame from the smoothed lean direction.
  * The smoothing time-constant is large (~25 s) so the motion reads as
  * "watching" rather than "tracking". */
-#define VEG_COUNT 7
+#define VEG_COUNT 14
 static int    VEG_FIRST_IDX = -1;
 static vector VEG_BASE  [VEG_COUNT];   /* root position (y ≈ 0) */
 static float  VEG_HEIGHT[VEG_COUNT];
@@ -462,38 +470,6 @@ static float  VEG_LEAN_X[VEG_COUNT];   /* smoothed unit horizontal direction the
 static float  VEG_LEAN_Z[VEG_COUNT];
 #define VEG_LEAN_RATE  0.04f           /* per-second smoothing factor (~25 s response) */
 
-static int    BEACON_IDX = -1;
-static int    BEACON_MAT = -1;
-#define BEACON_BASE_R 220
-#define BEACON_BASE_G  40
-#define BEACON_BASE_B  30
-
-static void add_bioluminescence(scene *s, int mat_teal, int mat_violet, int count) {
-    /* Tiny unlit spheres scattered across the playable plain, hovering
-     * a hair above the ground so they read as luminous polyps rather
-     * than embedded stones. Positions are polar (angle + radius from
-     * origin) so the distribution stays radially clean even at low
-     * counts; biased toward mid-distance so they don't all crowd the
-     * spawn point. Two colours alternate to suggest two species. */
-    for (int i = 0; i < count; i++) {
-        float u = hash01(i, 41);
-        float v = hash01(i, 89);
-        float angle = u * 2.0f * (float)M_PI;
-        float dist  = 25.0f + 210.0f * v;            /* 25..235 (HF_INNER 260) */
-        float x = dist * cosf(angle);
-        float z = dist * sinf(angle);
-        float y = 0.30f + 0.55f * hash01(i, 17);     /* hover 0.3..0.85 */
-        float radius = 0.35f + 0.45f * hash01(i, 53);
-        int mat = (i & 1) ? mat_teal : mat_violet;
-        int idx = scene_add_sphere(s, (scene_sphere){
-            .center = {x, y, z}, .radius = radius, .material = mat,
-        });
-        if (i < BIOLUM_COUNT) {
-            BIOLUM_BASE[i] = (vector){x, y, z};
-            if (BIOLUM_FIRST_IDX < 0) BIOLUM_FIRST_IDX = idx;
-        }
-    }
-}
 
 static void add_vegetation(scene *s, int stalk_mat) {
     /* Coral / polyp clumps scattered across the playable area. Each clump
@@ -507,6 +483,13 @@ static void add_vegetation(scene *s, int stalk_mat) {
         {   8.0f,  44.0f, 7.2f, 0.70f, 0.04f },
         { -12.0f, -48.0f, 5.8f, 0.55f, 0.11f },
         {  48.0f,  -4.0f, 4.1f, 0.42f, 0.18f },
+        {  62.0f,  38.0f, 6.0f, 0.58f, 0.07f },
+        { -55.0f,  22.0f, 4.7f, 0.46f, 0.13f },
+        {  28.0f, -58.0f, 6.8f, 0.62f, 0.06f },
+        { -40.0f,  56.0f, 5.1f, 0.48f, 0.16f },
+        {  14.0f,  70.0f, 7.6f, 0.72f, 0.05f },
+        { -68.0f, -30.0f, 4.3f, 0.44f, 0.17f },
+        {  52.0f,  64.0f, 5.9f, 0.54f, 0.09f },
     };
     int n = (int)(sizeof(clumps) / sizeof(clumps[0]));
     for (int i = 0; i < n; i++) {
@@ -581,9 +564,6 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
         .tex_scale = 1400.0f,        /* span = sky-sphere diameter */
         .unlit = 1,
     });
-    int m_sun = scene_add_material(s, (scene_material){
-        .albedo = {180, 28, 22}, .unlit = 1,
-    });
     int m_moon = scene_add_material(s, (scene_material){
         .albedo = {130, 170, 175}, .unlit = 1,
     });
@@ -608,16 +588,10 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
     });
     /* ===== Geometry ===== */
     /* Sky sphere — huge, centered on origin, gradient is along +Y.
-     * Radius has to clear the sun (z=1000, r=75), the star hemisphere
-     * (r≈1430), and the mountain corners (HF_WORLD_W * sqrt(2)/2 ≈ 1202). */
+     * Radius has to clear the star hemisphere (r≈1430) and the mountain
+     * corners (HF_WORLD_W * sqrt(2)/2 ≈ 1202). */
     scene_add_sphere(s, (scene_sphere){
         .center = {0, 0, 0}, .radius = 1700.0f, .material = m_sky,
-    });
-
-    /* Sun — low, swollen, just past the mountain ring on the +Z horizon
-     * so it peeks between peaks. Pushed further out alongside the ring. */
-    scene_add_sphere(s, (scene_sphere){
-        .center = {0.0f, 80.0f, 1000.0f}, .radius = 75.0f, .material = m_sun,
     });
 
     /* Two pale teal moons — high and oblique. */
@@ -653,38 +627,8 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
 
     /* Coral cluster as destination — denser knot forward-right of
      * spawn (still well inside HF_INNER) so the eye has something
-     * to walk toward, between the player and the sun's bearing. */
+     * to walk toward, between the player and the +Z horizon. */
     add_coral_cluster(s, m_stalk, 18.0f, 95.0f);
-
-    /* Mirror pool — a single horizontal disc on the plain, dark and
-     * high-reflectivity. Picks up the sky gradient, the sun's red
-     * bloom, and the Cthulhu silhouette when you walk near and look
-     * down. Floats a hair above the heightfield's inner ripple to
-     * stay out of z-fighting territory. */
-    int m_water = scene_add_material(s, (scene_material){
-        .albedo       = {  5,   8,  12},
-        .reflectivity = 0.92f,
-    });
-    scene_add_disc(s, (scene_disc){
-        .center   = {10.0f, 0.10f, 16.0f},
-        .normal   = {0.0f,  1.0f,  0.0f},
-        .radius   = 6.0f,
-        .material = m_water,
-    });
-
-    /* Red beacon — single small unlit sphere half-sunk into the
-     * camera-facing wall of the distant monolith, near the top of the
-     * shaft (forward-left of spawn). Mostly embedded in the radius-10
-     * cylinder so it reads as light leaking from a lone high window
-     * rather than an orb perched on top. Pulses brightness in the main
-     * loop, fading all the way to black and back — a window lamp that
-     * gutters. */
-    BEACON_MAT = scene_add_material(s, (scene_material){
-        .albedo = {BEACON_BASE_R, BEACON_BASE_G, BEACON_BASE_B}, .unlit = 1,
-    });
-    BEACON_IDX = scene_add_sphere(s, (scene_sphere){
-        .center = {-192.8f, 205.0f, 469.8f}, .radius = 3.2f, .material = BEACON_MAT,
-    });
 
     /* Cthulhu silhouette — a huge unlit sphere high in the sky, just
      * a touch darker than the zenith gradient so it reads as a hole
@@ -700,17 +644,6 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
     CTHULHU_IDX = scene_add_sphere(s, (scene_sphere){
         .center = CTHULHU_BASE, .radius = 200.0f, .material = m_cthulhu,
     });
-
-    /* Bioluminescent specks — tiny unlit hovering polyps. Two species,
-     * sickly teal and bruised violet. Skipped by fog (SPHERE kind), so
-     * they stay vivid no matter how far across the plain they sit. */
-    int m_biolum_teal = scene_add_material(s, (scene_material){
-        .albedo = { 40, 200, 160}, .unlit = 1,
-    });
-    int m_biolum_vio  = scene_add_material(s, (scene_material){
-        .albedo = {150,  80, 200}, .unlit = 1,
-    });
-    add_bioluminescence(s, m_biolum_teal, m_biolum_vio, 28);
 
     /* Distant monolith — a single obsidian spire forward-left of
      * spawn, just inside the mountain ring. Tall and disproportionately
@@ -731,10 +664,27 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
         .material    = m_monolith,
     });
 
+    /* Roaming mirror orb — a single perfect-mirror sphere adrift high
+     * forward-left, opposite the Cthulhu silhouette. reflectivity 1.0
+     * means it carries no colour of its own: it shows a convex fish-eye
+     * of R'lyeh's wrong sky, the moons and stars sliding across it as it
+     * drifts. Cheap despite being a mirror — measured ~+3% of the
+     * raytrace at this on-screen size (run RLYEH_BENCH=1 to reproduce).
+     * The benchmark clears g_add_orb so its baseline excludes this. */
+    if (g_add_orb) {
+        int m_orb = scene_add_material(s, (scene_material){
+            .albedo = {10, 12, 16}, .reflectivity = 1.0f,
+        });
+        ORB_BASE = (vector){-220.0f, 470.0f, 660.0f};
+        ORB_IDX = scene_add_sphere(s, (scene_sphere){
+            .center = ORB_BASE, .radius = 140.0f, .material = m_orb,
+        });
+    }
+
     /* ===== Lights ===== */
-    /* Two directionals: one from the sun's direction (warmer red), one
-     * faint fill from the opposite zenith (cold teal-violet). Low ambient
-     * keeps shadows heavy without going pitch-black. */
+    /* Two directionals: one key from the +Z horizon, one faint fill
+     * from the opposite zenith (cold teal-violet). Low ambient keeps
+     * shadows heavy without going pitch-black. */
     scene_set_ambient(s, 0.18f);
     scene_add_light(s, (scene_light){
         .direction = vector_normalize((vector){0.0f, 0.30f, 1.0f}),
@@ -780,8 +730,160 @@ static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 }
 
+/* ===== Headless benchmark (RLYEH_BENCH=1) ================================ *
+ * Measures the cost of adding a fully-reflective roaming sphere to the
+ * real R'lyeh scene, with no SDL/GL (so it runs anywhere). Three
+ * conditions on the identical scene + camera:
+ *   baseline        — scene as shipped
+ *   +occluder(r=0)  — one extra unlit sphere in the sky (isolates the
+ *                     "+1 primitive in every scan" cost; no bounce)
+ *   +mirror(r=1)    — same sphere flipped to a perfect mirror (adds the
+ *                     reflection-bounce cost on its covered pixels)
+ * Each is timed full-frame and again with the app's even-rows interlace.
+ * The sphere's real screen coverage is counted from the G-buffer so we
+ * can report a per-covered-pixel marginal cost. */
+static double bench_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1.0e6;
+}
+
+static double bench_measure(rt_renderer *rnd, scene *s, scene_camera *cam,
+                            rt_viewport *vp, uint32_t *px, rt_gbuffer *gb,
+                            int n, double *out_min, double *out_max) {
+    for (int i = 0; i < 5; i++)                 /* warm caches / clocks */
+        rt_renderer_render(rnd, s, cam, vp, px, gb);
+    double total = 0.0, mn = 1e30, mx = 0.0;
+    for (int i = 0; i < n; i++) {
+        double t0 = bench_now_ms();
+        rt_renderer_render(rnd, s, cam, vp, px, gb);
+        double dt = bench_now_ms() - t0;
+        total += dt;
+        if (dt < mn) mn = dt;
+        if (dt > mx) mx = dt;
+    }
+    if (out_min) *out_min = mn;
+    if (out_max) *out_max = mx;
+    return total / (double)n;
+}
+
+static int run_bench(void) {
+    g_add_orb = 0;            /* baseline excludes the shipped roaming orb so
+                              * the occluder->mirror deltas isolate exactly
+                              * one added sphere */
+    scene *s = NULL; scene_camera *cam = NULL; int sky = -1;
+    build_scene(&s, &cam, &sky);
+
+    /* Fixed representative pose: spawn point, level, looking +Z. The
+     * roaming sphere (placed below) hangs in the upper third of this view. */
+    scene_camera_place(cam, (vector){0.0f, EYE_HEIGHT, 0.0f},
+                            (vector){0.0f, 0.0f, 1.0f});
+
+    rt_renderer *rnd = rt_renderer_create(RT_BACKEND_CPU);
+    if (!rnd) { fprintf(stderr, "CPU renderer unavailable\n"); return 1; }
+
+    int W = RENDER_W, H = RENDER_H;
+    rt_viewport vp = { W, H, FOV };
+    uint32_t *px = calloc((size_t)(W * H), sizeof(uint32_t));
+    rt_gbuffer gb = {
+        .object_id = calloc((size_t)(W * H), sizeof(uint32_t)),
+        .depth     = calloc((size_t)(W * H), sizeof(float)),
+        .normal    = calloc((size_t)(W * H) * 3, sizeof(float)),
+    };
+
+    const char *n_env     = getenv("RLYEH_BENCH_FRAMES");
+    const int   N         = n_env ? atoi(n_env) : 120;
+    const int   fields[2] = { -1, 0 };                 /* full frame, app interlace */
+    const char *fname[2]  = { "full-frame    ", "interlaced(app)" };
+
+    /* Deltas are computed off MIN, not AVG: at these frame times the
+     * thread pool's scheduling jitter (tens of %) dwarfs the sphere's
+     * sub-ms cost, and the least-contended run is the cleanest estimate
+     * of the actual compute. AVG/MAX are printed for context only. */
+    long nthreads = sysconf(_SC_NPROCESSORS_ONLN);
+    const char *thr_env = getenv("RT_CPU_THREADS");
+    printf("R'lyeh reflective-sphere benchmark\n");
+    printf("  res=%dx%d  bounce_budget=4  frames/measure=%d  host_cores=%ld  RT_CPU_THREADS=%s\n",
+           W, H, N, nthreads, thr_env ? thr_env : "(default=all)");
+    printf("  base scene: %d spheres, %d cones, %d cylinders, %d heightfields\n\n",
+           s->sphere_count, s->cone_count, s->cylinder_count,
+           s->heightfield_count);
+
+    double base_ms[2], occ_ms[2], mir_ms[2];
+    double base_mn[2], occ_mn[2], mir_mn[2], mx;
+
+    /* --- baseline (no extra sphere) --- */
+    for (int f = 0; f < 2; f++) {
+        rt_renderer_set_interlace(rnd, fields[f]);
+        base_ms[f] = bench_measure(rnd, s, cam, &vp, px, &gb, N, &base_mn[f], &mx);
+        printf("  baseline        %s : min %6.3f ms  (avg %6.3f / max %6.3f)\n",
+               fname[f], base_mn[f], base_ms[f], mx);
+    }
+
+    /* --- add the roaming sphere as an unlit occluder (reflectivity 0) --- */
+    int mat = scene_add_material(s, (scene_material){
+        .albedo = {40, 40, 55}, .unlit = 1,
+    });
+    int sidx = scene_add_sphere(s, (scene_sphere){
+        .center = {0.0f, 233.0f, 500.0f}, .radius = 80.0f, .material = mat,
+    });
+    uint32_t want = ((uint32_t)RT_OBJ_KIND_SPHERE << 24)
+                  | ((uint32_t)sidx & 0x00FFFFFFu);
+    for (int f = 0; f < 2; f++) {
+        rt_renderer_set_interlace(rnd, fields[f]);
+        occ_ms[f] = bench_measure(rnd, s, cam, &vp, px, &gb, N, &occ_mn[f], &mx);
+        printf("  +occluder(r=0)  %s : min %6.3f ms  (avg %6.3f / max %6.3f)\n",
+               fname[f], occ_mn[f], occ_ms[f], mx);
+    }
+    /* Coverage from the last (interlaced) occluder pass would only count
+     * even rows; re-render once full-frame so the count is the true
+     * on-screen footprint. */
+    rt_renderer_set_interlace(rnd, -1);
+    rt_renderer_render(rnd, s, cam, &vp, px, &gb);
+    int cover = 0;
+    for (int i = 0; i < W * H; i++) if (gb.object_id[i] == want) cover++;
+
+    /* --- flip the same sphere to a perfect mirror --- */
+    s->materials[mat].unlit        = 0;
+    s->materials[mat].reflectivity = 1.0f;
+    for (int f = 0; f < 2; f++) {
+        rt_renderer_set_interlace(rnd, fields[f]);
+        mir_ms[f] = bench_measure(rnd, s, cam, &vp, px, &gb, N, &mir_mn[f], &mx);
+        printf("  +mirror(r=1)    %s : min %6.3f ms  (avg %6.3f / max %6.3f)\n",
+               fname[f], mir_mn[f], mir_ms[f], mx);
+    }
+
+    double cov_pct = 100.0 * (double)cover / (double)(W * H);
+    printf("\n  sphere screen coverage: %d / %d px (%.2f%% of frame)\n",
+           cover, W * H, cov_pct);
+    printf("  --- deltas vs baseline, from MIN (full-frame) ---\n");
+    printf("    occluder (+1 sphere in scan): %+6.3f ms (%+.1f%%)\n",
+           occ_mn[0] - base_mn[0],
+           100.0 * (occ_mn[0] - base_mn[0]) / base_mn[0]);
+    printf("    mirror   (occluder + bounce): %+6.3f ms (%+.1f%%)\n",
+           mir_mn[0] - base_mn[0],
+           100.0 * (mir_mn[0] - base_mn[0]) / base_mn[0]);
+    if (cover > 0) {
+        double per_px_us = 1000.0 * (mir_mn[0] - occ_mn[0]) / (double)cover;
+        printf("    reflection cost: %+6.3f ms over %d px = %.3f us/covered px\n",
+               mir_mn[0] - occ_mn[0], cover, per_px_us);
+        printf("    extrapolated if it filled the whole frame: %.2f ms "
+               "(+%.0f%% over baseline)\n",
+               per_px_us * (double)(W * H) / 1000.0,
+               100.0 * (per_px_us * (double)(W * H) / 1000.0) / base_mn[0]);
+    }
+
+    free(gb.normal); free(gb.depth); free(gb.object_id); free(px);
+    scene_camera_destroy(cam);
+    scene_destroy(s);
+    rt_renderer_destroy(rnd);
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
+
+    if (getenv("RLYEH_BENCH")) return run_bench();
 
     /* CPU raytrace; interlace on for ~2x frame rate. The dropped rows
      * just hold the previous frame and read as crawling persistence on
@@ -849,9 +951,9 @@ int main(int argc, char *argv[]) {
         .normal    = calloc((size_t)(render_w * render_h) * 3, sizeof(float)),
     };
 
-    /* Postfx stack — fog first (so bloom blooms the foggy frame and the
-     * sun halo spills over hazed mountains), then chromatic + vignette
-     * + grain on top. */
+    /* Postfx stack — fog first (so bloom blooms the foggy frame and
+     * bright glints spill over hazed mountains), then chromatic +
+     * vignette + grain on top. */
     postfx_chromatic_ctx *chrom = postfx_chromatic_create(render_w, render_h);
     postfx_bloom_ctx     *bloom = postfx_bloom_create(render_w, render_h);
     postfx_chromatic chrom_cfg = { .enabled = 1, .shift_pixels = 1 };
@@ -862,7 +964,7 @@ int main(int argc, char *argv[]) {
         .intensity = 0.55f, .radius = 6, .iterations = 2,
     };
     /* Fog targets the horizon teal so distant mountains fade into the
-     * sky gradient. Skip sky/sun/moons/stars (all spheres) — they
+     * sky gradient. Skip sky/moons/stars (all spheres) — they
      * already paint their own backdrop colours. The ramp starts past
      * the coral-stalk radius and saturates a bit beyond the mountain
      * ring so far peaks crush hard into the haze. */
@@ -885,7 +987,7 @@ int main(int argc, char *argv[]) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glGenFramebuffers(1, &display_fbo);
 
-    /* Player state — at origin, looking down +Z toward the sun. */
+    /* Player state — at origin, looking down +Z across the plain. */
     vector cam_pos   = {0.0f, EYE_HEIGHT, 0.0f};
     float  cam_yaw   = 0.0f;     /* 0 = +Z */
     float  cam_pitch = 0.0f;
@@ -987,6 +1089,16 @@ int main(int argc, char *argv[]) {
             scn->spheres[CTHULHU_IDX].center.y = CTHULHU_BASE.y + 12.0f * sinf(t_sec * 0.11f);
         }
 
+        /* Mirror orb drift — slower and on different rates than the
+         * Cthulhu silhouette so the two never move in sympathy. Wide,
+         * unhurried xz wander with a gentle vertical bob; periods are
+         * ~90-150 s so it reads as adrift rather than orbiting. */
+        if (ORB_IDX >= 0 && ORB_IDX < scn->sphere_count) {
+            scn->spheres[ORB_IDX].center.x = ORB_BASE.x + 55.0f * sinf(t_sec * 0.067f);
+            scn->spheres[ORB_IDX].center.z = ORB_BASE.z + 45.0f * cosf(t_sec * 0.051f);
+            scn->spheres[ORB_IDX].center.y = ORB_BASE.y + 18.0f * sinf(t_sec * 0.043f);
+        }
+
         /* Coral stalks lean toward the camera with a long lag. Each
          * frame: compute target unit direction from base to camera (xz
          * only), smooth toward it at VEG_LEAN_RATE, then synthesise a
@@ -1020,33 +1132,6 @@ int main(int argc, char *argv[]) {
                     VEG_BASE[i].z + uz * h,
                 };
                 scn->cones[ci].axis = (vector){-ux, -uy, -uz};
-            }
-        }
-
-        /* Beacon pulse — single material edit per frame, fades from full
-         * black up to 100% of base red and back over ~13 s. Starts at
-         * full black (1 - cos so pulse == 0 at t == 0). */
-        if (BEACON_MAT >= 0) {
-            float pulse = 0.5f - 0.5f * cosf(t_sec * 0.48f);
-            scn->materials[BEACON_MAT].albedo.r = (uint8_t)(BEACON_BASE_R * pulse);
-            scn->materials[BEACON_MAT].albedo.g = (uint8_t)(BEACON_BASE_G * pulse);
-            scn->materials[BEACON_MAT].albedo.b = (uint8_t)(BEACON_BASE_B * pulse);
-        }
-
-        /* Bioluminescent flutter — each speck has its own deterministic
-         * phase, so the swarm reads as a cloud of independent things
-         * rather than a unison wave. Vertical bob is dominant; tiny xz
-         * drift adds wing-flap shimmer. */
-        if (BIOLUM_FIRST_IDX >= 0) {
-            for (int i = 0; i < BIOLUM_COUNT; i++) {
-                int si = BIOLUM_FIRST_IDX + i;
-                if (si >= scn->sphere_count) break;
-                float px = hash01(i, 211) * 6.283f;
-                float py = hash01(i, 307) * 6.283f;
-                float pz = hash01(i, 401) * 6.283f;
-                scn->spheres[si].center.x = BIOLUM_BASE[i].x + 0.30f * sinf(t_sec * 0.7f + px);
-                scn->spheres[si].center.y = BIOLUM_BASE[i].y + 0.55f * sinf(t_sec * 1.3f + py);
-                scn->spheres[si].center.z = BIOLUM_BASE[i].z + 0.30f * cosf(t_sec * 0.6f + pz);
             }
         }
 
