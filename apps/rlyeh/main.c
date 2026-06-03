@@ -1,9 +1,8 @@
 /* R'lyeh — Lovecraftian POV demo.
  *
  * First-person stroll across a drowned alien plain. Bruised teal-purple sky,
- * two pale teal moons, a slow mirror orb adrift overhead. Far-off jagged
- * obsidian mountains close the world in on every side. Coral-stalk
- * vegetation scattered across the plain.
+ * two pale teal moons. Far-off jagged obsidian mountains close the world in
+ * on every side. Coral-stalk vegetation scattered across the plain.
  *
  * Player can only walk and look — no jumping, no flying, no shooting.
  * The whole point is that nothing happens. The world is finished without you.
@@ -446,15 +445,6 @@ static void add_star_field(scene *s, int mat, int count) {
 static vector CTHULHU_BASE;
 static int    CTHULHU_IDX = -1;
 
-/* Roaming mirror orb — a perfect-mirror sphere adrift in the sky. Same
- * base+index animation pattern as the Cthulhu silhouette: the base is
- * fixed at scene-build time, the in-scene center rewritten each frame as
- * base + drift so motion never compounds. The benchmark clears
- * g_add_orb so its baseline measures the orb-free shipped scene. */
-static vector ORB_BASE;
-static int    ORB_IDX = -1;
-static int    g_add_orb = 1;
-
 /* Leaning coral stalks. The cone primitive stores apex + axis; to lean
  * the tip toward the camera while keeping the root planted, we keep
  * each stalk's BASE (rooted) position and its rest-tilt magnitude, and
@@ -664,23 +654,6 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
         .material    = m_monolith,
     });
 
-    /* Roaming mirror orb — a single perfect-mirror sphere adrift high
-     * forward-left, opposite the Cthulhu silhouette. reflectivity 1.0
-     * means it carries no colour of its own: it shows a convex fish-eye
-     * of R'lyeh's wrong sky, the moons and stars sliding across it as it
-     * drifts. Cheap despite being a mirror — measured ~+3% of the
-     * raytrace at this on-screen size (run RLYEH_BENCH=1 to reproduce).
-     * The benchmark clears g_add_orb so its baseline excludes this. */
-    if (g_add_orb) {
-        int m_orb = scene_add_material(s, (scene_material){
-            .albedo = {10, 12, 16}, .reflectivity = 1.0f,
-        });
-        ORB_BASE = (vector){-220.0f, 470.0f, 660.0f};
-        ORB_IDX = scene_add_sphere(s, (scene_sphere){
-            .center = ORB_BASE, .radius = 140.0f, .material = m_orb,
-        });
-    }
-
     /* ===== Lights ===== */
     /* Two directionals: one key from the +Z horizon, one faint fill
      * from the opposite zenith (cold teal-violet). Low ambient keeps
@@ -768,9 +741,9 @@ static double bench_measure(rt_renderer *rnd, scene *s, scene_camera *cam,
 }
 
 static int run_bench(void) {
-    g_add_orb = 0;            /* baseline excludes the shipped roaming orb so
-                              * the occluder->mirror deltas isolate exactly
-                              * one added sphere */
+    /* The scene ships with no reflective spheres, so the baseline below is
+     * naturally clean: the occluder->mirror deltas isolate exactly the one
+     * sphere this benchmark adds. */
     scene *s = NULL; scene_camera *cam = NULL; int sky = -1;
     build_scene(&s, &cam, &sky);
 
@@ -1087,16 +1060,6 @@ int main(int argc, char *argv[]) {
             scn->spheres[CTHULHU_IDX].center.x = CTHULHU_BASE.x + 38.0f * sinf(t_sec * 0.18f);
             scn->spheres[CTHULHU_IDX].center.z = CTHULHU_BASE.z + 28.0f * cosf(t_sec * 0.13f);
             scn->spheres[CTHULHU_IDX].center.y = CTHULHU_BASE.y + 12.0f * sinf(t_sec * 0.11f);
-        }
-
-        /* Mirror orb drift — slower and on different rates than the
-         * Cthulhu silhouette so the two never move in sympathy. Wide,
-         * unhurried xz wander with a gentle vertical bob; periods are
-         * ~90-150 s so it reads as adrift rather than orbiting. */
-        if (ORB_IDX >= 0 && ORB_IDX < scn->sphere_count) {
-            scn->spheres[ORB_IDX].center.x = ORB_BASE.x + 55.0f * sinf(t_sec * 0.067f);
-            scn->spheres[ORB_IDX].center.z = ORB_BASE.z + 45.0f * cosf(t_sec * 0.051f);
-            scn->spheres[ORB_IDX].center.y = ORB_BASE.y + 18.0f * sinf(t_sec * 0.043f);
         }
 
         /* Coral stalks lean toward the camera with a long lag. Each
