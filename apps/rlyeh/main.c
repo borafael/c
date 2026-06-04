@@ -45,8 +45,20 @@
 
 #define INIT_WINDOW_W   960
 #define INIT_WINDOW_H   600
-#define RENDER_W        480
-#define RENDER_H        300
+#define RENDER_W        240
+#define RENDER_H        150
+
+/* Render-resolution ladder (R cycles). Every rung is 16:10 like the
+ * window, so the nearest-neighbour upscale in display_pixels() stays an
+ * integer multiple and the chunky-pixel look never shimmers. */
+static const struct { int w, h; } RES_LADDER[] = {
+    { 120,  75 },
+    { 240, 150 },
+    { 480, 300 },
+    { 960, 600 },
+};
+#define RES_LADDER_N    ((int)(sizeof(RES_LADDER) / sizeof(RES_LADDER[0])))
+#define RES_DEFAULT_IDX 1   /* 240x150, matches RENDER_W/RENDER_H */
 #define FOV             (M_PI / 2.6f)
 #define EYE_HEIGHT      1.7f
 #define WALK_SPEED      4.0f
@@ -420,24 +432,6 @@ static void build_mountains(void) {
 }
 
 /* ===== Scene construction ================================================ */
-static void add_star_field(scene *s, int mat, int count) {
-    /* Stars on a hemisphere; positions are pseudo-random but deterministic. */
-    for (int i = 0; i < count; i++) {
-        float u = hash01(i, 11);
-        float v = hash01(i, 47);
-        float theta = u * 2.0f * (float)M_PI;
-        /* Bias toward upper hemisphere — clamp v so phi stays > 30° above horizon. */
-        float phi = (0.18f + 0.55f * v) * (float)M_PI;   /* polar angle from +Y */
-        float r = 1350.0f + 80.0f * hash01(i, 73);
-        float x = r * sinf(phi) * cosf(theta);
-        float y = r * cosf(phi);
-        float z = r * sinf(phi) * sinf(theta);
-        float radius = 0.6f + 1.6f * hash01(i, 19);
-        scene_add_sphere(s, (scene_sphere){
-            .center = {x, y, z}, .radius = radius, .material = mat,
-        });
-    }
-}
 
 /* Bases for per-frame animated spheres. Filled in at scene build time
  * and read back each frame; the in-scene sphere centers are then
@@ -450,15 +444,35 @@ static int    CTHULHU_IDX = -1;
  * each stalk's BASE (rooted) position and its rest-tilt magnitude, and
  * recompute apex + axis per frame from the smoothed lean direction.
  * The smoothing time-constant is large (~25 s) so the motion reads as
- * "watching" rather than "tracking". */
-#define VEG_COUNT 14
+ * "watching" rather than "tracking". Every cone in the scene leans —
+ * the scattered stalks and the forward cluster alike — registered in
+ * add order via veg_register() so the lean loop can walk them
+ * contiguously as VEG_FIRST_IDX + i. */
+#define VEG_COUNT 21                   /* 14 scattered stalks + 7 cluster */
 static int    VEG_FIRST_IDX = -1;
+static int    VEG_REGISTERED = 0;      /* stalks registered for leaning so far */
 static vector VEG_BASE  [VEG_COUNT];   /* root position (y ≈ 0) */
 static float  VEG_HEIGHT[VEG_COUNT];
 static float  VEG_TILT  [VEG_COUNT];   /* rest tilt magnitude (length of horizontal axis component) */
 static float  VEG_LEAN_X[VEG_COUNT];   /* smoothed unit horizontal direction the tip leans toward */
 static float  VEG_LEAN_Z[VEG_COUNT];
 #define VEG_LEAN_RATE  0.04f           /* per-second smoothing factor (~25 s response) */
+
+/* Register a freshly-added cone for the per-frame camera-lean. Cones must
+ * be added to the scene contiguously (no non-stalk cones interleaved) so
+ * the lean loop can address them as VEG_FIRST_IDX + i. Registrations past
+ * VEG_COUNT are silently dropped. th seeds the rest lean direction. */
+static void veg_register(int cone_idx, vector base, float height, float tilt,
+                         float th) {
+    if (VEG_REGISTERED >= VEG_COUNT) return;
+    int v = VEG_REGISTERED++;
+    if (VEG_FIRST_IDX < 0) VEG_FIRST_IDX = cone_idx;
+    VEG_BASE  [v] = base;
+    VEG_HEIGHT[v] = height;
+    VEG_TILT  [v] = tilt;
+    VEG_LEAN_X[v] = cosf(th);
+    VEG_LEAN_Z[v] = sinf(th);
+}
 
 
 static void add_vegetation(scene *s, int stalk_mat) {
@@ -495,25 +509,20 @@ static void add_vegetation(scene *s, int stalk_mat) {
             .radius   = clumps[i].r,
             .material = stalk_mat,
         });
-        if (i < VEG_COUNT) {
-            if (VEG_FIRST_IDX < 0) VEG_FIRST_IDX = idx;
-            /* Treat the root as approximately directly under the apex;
-             * with tilt ≤ 0.18 the horizontal offset is well under 1
-             * unit, which the slow lean update absorbs harmlessly. */
-            VEG_BASE  [i] = (vector){ clumps[i].x, 0.0f, clumps[i].z };
-            VEG_HEIGHT[i] = clumps[i].h;
-            VEG_TILT  [i] = clumps[i].tilt;
-            VEG_LEAN_X[i] = cosf(th);
-            VEG_LEAN_Z[i] = sinf(th);
-        }
+        /* Treat the root as approximately directly under the apex; with
+         * tilt ≤ 0.18 the horizontal offset is well under 1 unit, which
+         * the slow lean update absorbs harmlessly. */
+        veg_register(idx, (vector){ clumps[i].x, 0.0f, clumps[i].z },
+                     clumps[i].h, clumps[i].tilt, th);
     }
 }
 
 static void add_coral_cluster(scene *s, int stalk_mat, float cx, float cz) {
     /* A denser knot of stalks placed in one direction from spawn so the
      * eye is drawn to walk toward it. Position offsets are hand-picked
-     * for asymmetry — never on a grid. Stays static (does not lean);
-     * the moving stalks are the original seven near spawn. */
+     * for asymmetry — never on a grid. Leans toward the camera like the
+     * scattered stalks (registered below), so the whole knot cranes to
+     * watch as you approach. */
     static const struct { float dx, dz, h, r, tilt_az; } cluster[] = {
         {  0.0f,  0.0f, 6.8f, 0.60f, 0.10f },
         {  1.8f, -1.2f, 5.4f, 0.45f, 0.15f },
@@ -530,13 +539,15 @@ static void add_coral_cluster(scene *s, int stalk_mat, float cx, float cz) {
         vector axis = vector_normalize((vector){
             cluster[i].tilt_az * cosf(th), -1.0f, cluster[i].tilt_az * sinf(th)
         });
-        scene_add_cone(s, (scene_cone){
+        int idx = scene_add_cone(s, (scene_cone){
             .apex     = apex,
             .axis     = axis,
             .height   = cluster[i].h,
             .radius   = cluster[i].r,
             .material = stalk_mat,
         });
+        veg_register(idx, (vector){ cx + cluster[i].dx, 0.0f, cz + cluster[i].dz },
+                     cluster[i].h, cluster[i].tilt_az, th);
     }
 }
 
@@ -560,26 +571,23 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
     int m_moon2 = scene_add_material(s, (scene_material){
         .albedo = {95, 145, 155}, .unlit = 1,
     });
-    int m_star = scene_add_material(s, (scene_material){
-        .albedo = {220, 230, 235}, .unlit = 1,
-    });
     /* Heightfield uses the per-cell colors baked into HF_COLORS, no
      * material needed. Pass -1 for the heightfield material to skip the
      * material-modulation path entirely. */
 
-    /* Coral stalks — dark with cyan/teal marble veins, very low
-     * reflectivity (wet but not mirror). */
+    /* Coral stalks — dark with cyan/teal marble veins, fully matte (no
+     * reflections; the menacing cones read better dead-flat than glossy). */
     int m_stalk = scene_add_material(s, (scene_material){
         .albedo   = { 18,  35,  45},
         .albedo2  = { 70, 140, 150},
         .tex_kind = SCENE_TEX_MARBLE,
         .tex_scale = 1.2f,
-        .reflectivity = 0.08f,
+        .reflectivity = 0.0f,
     });
     /* ===== Geometry ===== */
     /* Sky sphere — huge, centered on origin, gradient is along +Y.
-     * Radius has to clear the star hemisphere (r≈1430) and the mountain
-     * corners (HF_WORLD_W * sqrt(2)/2 ≈ 1202). */
+     * Radius has to clear the mountain corners
+     * (HF_WORLD_W * sqrt(2)/2 ≈ 1202). */
     scene_add_sphere(s, (scene_sphere){
         .center = {0, 0, 0}, .radius = 1700.0f, .material = m_sky,
     });
@@ -591,9 +599,6 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
     scene_add_sphere(s, (scene_sphere){
         .center = {220.0f, 240.0f, -120.0f}, .radius = 18.0f, .material = m_moon2,
     });
-
-    /* Stars — deterministic pseudo-random hemisphere. */
-    add_star_field(s, m_star, 90);
 
     /* Mountains — heightfield ring around the player. */
     build_mountains();
@@ -612,7 +617,7 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
     };
     scene_add_heightfield(s, &hf);
 
-    /* Vegetation — the seven leaners near spawn. */
+    /* Vegetation — stalks scattered across the plain, all leaning. */
     add_vegetation(s, m_stalk);
 
     /* Coral cluster as destination — denser knot forward-right of
@@ -644,7 +649,7 @@ static void build_scene(scene **out_s, scene_camera **out_cam, int *out_sky_mat)
      * cheating the atmosphere. */
     int m_monolith = scene_add_material(s, (scene_material){
         .albedo       = { 15,  18,  26},   /* dark cool-violet obsidian */
-        .reflectivity = 0.04f,
+        .reflectivity = 0.0f,              /* fully matte, like the cones */
     });
     scene_add_cylinder(s, (scene_cylinder){
         .center      = {-200.0f, 110.0f, 480.0f},
@@ -685,6 +690,28 @@ static vector cam_dir_from_yaw_pitch(float yaw, float pitch) {
         sinf(pitch),
         cosf(pitch) * cosf(yaw)
     };
+}
+
+/* (Re)allocate the CPU framebuffer + G-buffer and resize the display
+ * texture for a new render resolution. Frees any previous buffers, so it
+ * doubles as the initial allocator when called with *pixels == NULL and a
+ * zeroed gbuffer (free(NULL) is a no-op). The postfx contexts are left
+ * untouched — bloom/chromatic auto-resize their scratch on the next apply
+ * when they see the new width/height. */
+static void set_render_res(int w, int h, uint32_t **pixels, rt_gbuffer *gb,
+                           rt_viewport *vp, GLuint tex) {
+    free(*pixels);
+    free(gb->object_id);
+    free(gb->depth);
+    free(gb->normal);
+    *pixels       = calloc((size_t)(w * h), sizeof(uint32_t));
+    gb->object_id = calloc((size_t)(w * h), sizeof(uint32_t));
+    gb->depth     = calloc((size_t)(w * h), sizeof(float));
+    gb->normal    = calloc((size_t)(w * h) * 3, sizeof(float));
+    *vp = (rt_viewport){ w, h, FOV };
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
+                 GL_BGRA, GL_UNSIGNED_BYTE, NULL);
 }
 
 static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
@@ -898,31 +925,47 @@ int main(int argc, char *argv[]) {
     SDL_GL_SetSwapInterval(0);
     gl_compat_init((gl_compat_loader_fn)SDL_GL_GetProcAddress);
 
-    rt_renderer *rnd = rt_renderer_create(RT_BACKEND_CPU);
-    if (!rnd) {
-        fprintf(stderr, "CPU renderer unavailable\n");
+    /* Build every backend this configuration supports. CPU goes first so
+     * it stays the default — its even-rows interlace (RT_CPU_INTERLACE=0,
+     * set above) drives the line-doubling persistence below; the OpenGL
+     * compute path renders full-frame instead. Both fill the G-buffer, so
+     * the fog pass works either way. TAB cycles. */
+    rt_renderer *backends[2] = {0};
+    rt_backend   backend_kind[2] = {0};
+    int backend_count = 0;
+    const rt_backend try_order[] = { RT_BACKEND_CPU, RT_BACKEND_OPENGL };
+    for (size_t i = 0; i < sizeof(try_order) / sizeof(try_order[0]); i++) {
+        if (!rt_renderer_available(try_order[i])) continue;
+        rt_renderer *r = rt_renderer_create(try_order[i]);
+        if (r) { backend_kind[backend_count] = try_order[i]; backends[backend_count++] = r; }
+    }
+    if (backend_count == 0) {
+        fprintf(stderr, "No renderer backends available\n");
         SDL_GL_DeleteContext(gl_ctx);
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
+    int backend_idx = 0;
+    rt_renderer *rnd = backends[backend_idx];
+    int active_is_cpu = (backend_kind[backend_idx] == RT_BACKEND_CPU);
+    fprintf(stderr, "Renderer: %s (TAB cycles %d backend%s)\n",
+            rt_renderer_name(rnd), backend_count, backend_count == 1 ? "" : "s");
 
     scene *scn = NULL;
     scene_camera *cam = NULL;
     int sky_mat = -1;
     build_scene(&scn, &cam, &sky_mat);
 
-    int render_w = RENDER_W, render_h = RENDER_H;
+    /* Buffers + viewport are sized by set_render_res() below (and again
+     * whenever R cycles the ladder); the G-buffer drives the distance-fog
+     * pass, so depth and object_id are needed (normal is unused but the
+     * renderer fills all three). */
+    int res_idx  = RES_DEFAULT_IDX;
+    int render_w = RES_LADDER[res_idx].w, render_h = RES_LADDER[res_idx].h;
     rt_viewport viewport = { render_w, render_h, FOV };
-    uint32_t *pixels = calloc((size_t)(render_w * render_h), sizeof(uint32_t));
-
-    /* G-buffer drives the distance-fog pass; depth and object_id are
-     * needed, normal is unused but the renderer fills all three. */
-    rt_gbuffer gbuf = {
-        .object_id = calloc((size_t)(render_w * render_h), sizeof(uint32_t)),
-        .depth     = calloc((size_t)(render_w * render_h), sizeof(float)),
-        .normal    = calloc((size_t)(render_w * render_h) * 3, sizeof(float)),
-    };
+    uint32_t *pixels = NULL;
+    rt_gbuffer gbuf  = {0};
 
     /* Postfx stack — fog first (so bloom blooms the foggy frame and
      * bright glints spill over hazed mountains), then chromatic +
@@ -937,7 +980,7 @@ int main(int argc, char *argv[]) {
         .intensity = 0.55f, .radius = 6, .iterations = 2,
     };
     /* Fog targets the horizon teal so distant mountains fade into the
-     * sky gradient. Skip sky/moons/stars (all spheres) — they
+     * sky gradient. Skip sky/moons (all spheres) — they
      * already paint their own backdrop colours. The ramp starts past
      * the coral-stalk radius and saturates a bit beyond the mountain
      * ring so far peaks crush hard into the haze. */
@@ -954,11 +997,13 @@ int main(int argc, char *argv[]) {
     GLuint display_tex, display_fbo;
     glGenTextures(1, &display_tex);
     glBindTexture(GL_TEXTURE_2D, display_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, render_w, render_h, 0,
-                 GL_BGRA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glGenFramebuffers(1, &display_fbo);
+
+    /* Allocate the frame/G-buffers and size the display texture for the
+     * starting rung. */
+    set_render_res(render_w, render_h, &pixels, &gbuf, &viewport, display_tex);
 
     /* Player state — at origin, looking down +Z across the plain. */
     vector cam_pos   = {0.0f, EYE_HEIGHT, 0.0f};
@@ -1000,6 +1045,18 @@ int main(int argc, char *argv[]) {
                     SDL_SetRelativeMouseMode(mouse_captured ? SDL_TRUE : SDL_FALSE);
                 }
                 if (k == SDLK_p) postfx_on = !postfx_on;
+                if (k == SDLK_r) {
+                    res_idx  = (res_idx + 1) % RES_LADDER_N;
+                    render_w = RES_LADDER[res_idx].w;
+                    render_h = RES_LADDER[res_idx].h;
+                    set_render_res(render_w, render_h, &pixels, &gbuf,
+                                   &viewport, display_tex);
+                }
+                if (k == SDLK_TAB && backend_count > 1) {
+                    backend_idx   = (backend_idx + 1) % backend_count;
+                    rnd           = backends[backend_idx];
+                    active_is_cpu = (backend_kind[backend_idx] == RT_BACKEND_CPU);
+                }
                 if (k == SDLK_F11) {
                     fullscreen = !fullscreen;
                     SDL_SetWindowFullscreen(window,
@@ -1069,7 +1126,7 @@ int main(int argc, char *argv[]) {
          * while the root stays planted. The lerp is dt-scaled so the
          * response is frame-rate-independent. */
         if (VEG_FIRST_IDX >= 0) {
-            for (int i = 0; i < VEG_COUNT; i++) {
+            for (int i = 0; i < VEG_REGISTERED; i++) {
                 int ci = VEG_FIRST_IDX + i;
                 if (ci >= scn->cone_count) break;
                 float dx = cam_pos.x - VEG_BASE[i].x;
@@ -1108,8 +1165,10 @@ int main(int argc, char *argv[]) {
          * the rendered (even) rows down into the odd rows so postfx
          * operates on a fully-coherent image. The G-buffer needs the
          * same treatment because fog reads odd-row depth. Halves
-         * vertical detail but kills the artifact entirely. */
-        for (int y = 1; y < render_h; y += 2) {
+         * vertical detail but kills the artifact entirely. Only the CPU
+         * backend interlaces; the OpenGL path renders every row, so skip
+         * the doubling there and keep its full vertical detail. */
+        for (int y = 1; active_is_cpu && y < render_h; y += 2) {
             size_t row_px   = (size_t)render_w;
             memcpy(&pixels[y * render_w],         &pixels[(y - 1) * render_w],
                    row_px * sizeof(uint32_t));
@@ -1170,9 +1229,9 @@ int main(int argc, char *argv[]) {
             float ar  = fps_frames ? (float)r_ms  / fps_frames : 0.0f;
             float afx = fps_frames ? (float)fx_ms / fps_frames : 0.0f;
             snprintf(title_buf, sizeof(title_buf),
-                     "R'lyeh - %d FPS (rt=%.1fms fx=%.1fms) %dx%d %s",
+                     "R'lyeh - %d FPS (rt=%.1fms fx=%.1fms) %dx%d %s %s",
                      fps_frames, ar, afx, render_w, render_h,
-                     postfx_on ? "[postfx]" : "");
+                     rt_renderer_name(rnd), postfx_on ? "[postfx]" : "");
             SDL_SetWindowTitle(window, title_buf);
             fps_frames = 0; r_ms = 0; fx_ms = 0;
             fps_last = now;
@@ -1189,7 +1248,7 @@ int main(int argc, char *argv[]) {
     free(pixels);
     scene_camera_destroy(cam);
     scene_destroy(scn);
-    rt_renderer_destroy(rnd);
+    for (int i = 0; i < backend_count; i++) rt_renderer_destroy(backends[i]);
     SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);
     audio_shutdown();
