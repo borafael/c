@@ -107,6 +107,12 @@ apps/lowspec/lowspec
 apps/racer/racer
 apps/tty3d/tty3d
 apps/ttycam/ttycam
+apps/rlyeh/rlyeh
+apps/portals/portals
+apps/portal_disc/portal_disc
+apps/portal_mesh/portal_mesh
+apps/portal_multi/portal_multi
+apps/portal_sphere/portal_sphere
 
 # Mesh assets are Wavefront OBJ (text geometry), not compiled object files
 # — exempt from the global *.obj ignore.
