@@ -885,9 +885,9 @@ int main(int argc, char *argv[]) {
 
     if (getenv("RLYEH_BENCH")) return run_bench();
 
-    /* CPU raytrace; interlace on for ~2x frame rate. The dropped rows
-     * just hold the previous frame and read as crawling persistence on
-     * motion, which fits the mood. */
+    /* CPU raytrace; start interlaced (even rows only) for ~2x frame rate.
+     * This only sets the CPU backend's initial field at create time — the
+     * I key flips it live at runtime via rt_renderer_set_interlace(). */
     setenv("RT_CPU_INTERLACE", "0", 1);
 
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
@@ -1011,6 +1011,7 @@ int main(int argc, char *argv[]) {
     float  cam_pitch = 0.0f;
     int    mouse_captured = 1;
     int    postfx_on = 1;
+    int    interlace_on = 1;     /* CPU even-rows interlace (matches the setenv above); I toggles live */
 
     /* Whisper state — starts idle, first fire is between WHISPER_GAP_MIN
      * and WHISPER_GAP_MAX seconds after the wake fade finishes. */
@@ -1045,6 +1046,13 @@ int main(int argc, char *argv[]) {
                     SDL_SetRelativeMouseMode(mouse_captured ? SDL_TRUE : SDL_FALSE);
                 }
                 if (k == SDLK_p) postfx_on = !postfx_on;
+                if (k == SDLK_i) {
+                    /* Field 0 = even rows only (interlaced), -1 = full
+                     * frame. No-op on the OpenGL backend, which always
+                     * renders every row. */
+                    interlace_on = !interlace_on;
+                    rt_renderer_set_interlace(rnd, interlace_on ? 0 : -1);
+                }
                 if (k == SDLK_r) {
                     res_idx  = (res_idx + 1) % RES_LADDER_N;
                     render_w = RES_LADDER[res_idx].w;
@@ -1056,6 +1064,9 @@ int main(int argc, char *argv[]) {
                     backend_idx   = (backend_idx + 1) % backend_count;
                     rnd           = backends[backend_idx];
                     active_is_cpu = (backend_kind[backend_idx] == RT_BACKEND_CPU);
+                    /* Re-assert the interlace choice on the newly-active
+                     * renderer (the CPU backend keeps its own field). */
+                    rt_renderer_set_interlace(rnd, interlace_on ? 0 : -1);
                 }
                 if (k == SDLK_F11) {
                     fullscreen = !fullscreen;
@@ -1168,7 +1179,7 @@ int main(int argc, char *argv[]) {
          * vertical detail but kills the artifact entirely. Only the CPU
          * backend interlaces; the OpenGL path renders every row, so skip
          * the doubling there and keep its full vertical detail. */
-        for (int y = 1; active_is_cpu && y < render_h; y += 2) {
+        for (int y = 1; active_is_cpu && interlace_on && y < render_h; y += 2) {
             size_t row_px   = (size_t)render_w;
             memcpy(&pixels[y * render_w],         &pixels[(y - 1) * render_w],
                    row_px * sizeof(uint32_t));
@@ -1228,10 +1239,11 @@ int main(int argc, char *argv[]) {
         if (now - fps_last >= 1000) {
             float ar  = fps_frames ? (float)r_ms  / fps_frames : 0.0f;
             float afx = fps_frames ? (float)fx_ms / fps_frames : 0.0f;
+            const char *lace = (active_is_cpu && interlace_on) ? "il" : "full";
             snprintf(title_buf, sizeof(title_buf),
-                     "R'lyeh - %d FPS (rt=%.1fms fx=%.1fms) %dx%d %s %s",
+                     "R'lyeh - %d FPS (rt=%.1fms fx=%.1fms) %dx%d %s %s %s",
                      fps_frames, ar, afx, render_w, render_h,
-                     rt_renderer_name(rnd), postfx_on ? "[postfx]" : "");
+                     rt_renderer_name(rnd), lace, postfx_on ? "[postfx]" : "");
             SDL_SetWindowTitle(window, title_buf);
             fps_frames = 0; r_ms = 0; fx_ms = 0;
             fps_last = now;
