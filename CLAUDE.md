@@ -50,6 +50,12 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   ├── toon/             # Cel shading: lighting bands + comic outlines
 │   ├── crt/              # CRT/VHS look: scanlines + chromatic + vignette + grain
 │   ├── showcase/         # One-stop tour: cycle through every postfx mode (M/N)
+│   ├── rlyeh/            # Eerie first-person walk across a foggy R'lyeh
+│   │                     #   plain — CPU/OpenGL raytrace backends (TAB),
+│   │                     #   resolution ladder (R), interlace toggle (I),
+│   │                     #   fog + bloom + chromatic + vignette + grain
+│   │                     #   postfx, ambient audio + whispers. WASD + mouse
+│   │                     #   look. RLYEH_BENCH=1 for a headless CPU bench.
 │   ├── tty3d/            # Orbit camera around the orb scene rendered into
 │   │                     #   the terminal — CPU raytracer + libs/term, no
 │   │                     #   SDL/X. Auto-detects best glyph/colour mode;
@@ -118,6 +124,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 ./apps/mech/mech [scene.ini]             # INI-driven scene; defaults to apps/mech/assets/scene.ini
 ./apps/anim/anim [--load-fbx <file>]     # Skeleton/anim demo or FBX viewer (orbit camera)
 ./apps/tty3d/tty3d                       # Orb scene in the terminal (G/C cycle glyph/color modes live)
+./apps/rlyeh/rlyeh                       # Eerie first-person R'lyeh walk — WASD + mouse look (arrows fallback); R res ladder, TAB CPU/GL backend, I interlace, P postfx, M mouse capture, F11 fullscreen, ESC quit (RLYEH_BENCH=1 for headless CPU bench)
 
 # Other
 ./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
