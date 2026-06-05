@@ -72,7 +72,11 @@ static const struct { int w, h; } RES_LADDER[] = {
 #define WAKE_FADE_SEC   4.5f          /* black -> full brightness on startup */
 
 /* Selectable worlds; O cycles. Index 0 is the default — you wake in it. */
-static const world_api *const WORLDS[] = { &world_lighthouse, &world_rlyeh };
+static const world_api *const WORLDS[] = {
+    &world_lighthouse,      /* the shore */
+    &world_lighthouse_top,  /* up in the lantern room */
+    &world_rlyeh,           /* the dream */
+};
 #define WORLD_COUNT ((int)(sizeof(WORLDS) / sizeof(WORLDS[0])))
 
 /* Wrongness ∈ [0,1]. Default is small but non-zero: subtly wrong from the

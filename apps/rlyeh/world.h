@@ -58,5 +58,6 @@ typedef struct {
 
 extern const world_api world_rlyeh;
 extern const world_api world_lighthouse;
+extern const world_api world_lighthouse_top;
 
 #endif /* RLYEH_WORLD_H */
