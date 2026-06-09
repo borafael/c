@@ -172,6 +172,7 @@ AC_CONFIG_FILES([
     apps/portal_mesh/Makefile
     apps/portal_sphere/Makefile
     apps/rlyeh/Makefile
+    apps/room/Makefile
 ])
 if test "x$build_term" = "xyes"; then
     AC_CONFIG_FILES([libs/term/Makefile apps/tty3d/Makefile apps/ttycam/Makefile])
