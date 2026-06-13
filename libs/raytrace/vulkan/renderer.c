@@ -101,6 +101,7 @@ typedef struct {
     float   albedo2[4];
     int32_t kind[4];   /* .x = tex_kind, .y = tex_index, .z = unlit */
     float   scale[4];  /* .x = tex_scale, .y = reflectivity */
+    float   world_to_obj[16];
 } vk_gpu_material;
 
 /* set 1 binding numbers — match raytrace.comp. */
@@ -638,6 +639,7 @@ static void upload_materials(vk_backend_data *d, const scene *s) {
         buf[i].scale[1]   = m->reflectivity;
         buf[i].scale[2]   = 0.0f;
         buf[i].scale[3]   = 0.0f;
+        memcpy(buf[i].world_to_obj, m->world_to_obj.m, sizeof(m->world_to_obj.m));
     }
 }
 

@@ -267,13 +267,12 @@ int main(int argc, char *argv[]) {
      * axis, 2 around the tube). On the core sphere, 1.0 wraps a single
      * eye across the whole orb. unlit on the ring keeps eyes glowing on
      * the shadowed side; the core stays lit so it reads as a sphere. */
-    scene_material ophan_ring_material = {
-        .tex_scale = 0.5f,
-        .unlit     = 1,
-    };
-    scene_material ophan_core_material = {
-        .tex_scale = 1.0f,
-    };
+    scene_material ophan_ring_material = scene_material_default();
+    ophan_ring_material.tex_scale = 0.5f;
+    ophan_ring_material.unlit     = 1;
+
+    scene_material ophan_core_material = scene_material_default();
+    ophan_core_material.tex_scale = 1.0f;
 
     /* Sephirot-Trine — three iridescent globes orbiting an empty centroid.
      * Each sphere is unlit so it radiates regardless of the sun direction,
@@ -281,46 +280,43 @@ int main(int argc, char *argv[]) {
      * smoothly shaded — sells the "iridescent congeries" read. The albedo
      * pair gives the soft color shift; the secondary color reads through
      * the clouds. */
-    scene_material trine_mat_gold = {
-        .albedo    = {235, 200,  90},   /* warm gold */
-        .albedo2   = {255, 240, 180},   /* pale ivory */
-        .tex_kind  = SCENE_TEX_CLOUDS,
-        .tex_scale = 1.4f,
-        .unlit     = 1,
-    };
-    scene_material trine_mat_cyan = {
-        .albedo    = { 90, 200, 230},   /* electric cyan */
-        .albedo2   = {200, 240, 255},   /* pale blue */
-        .tex_kind  = SCENE_TEX_CLOUDS,
-        .tex_scale = 1.4f,
-        .unlit     = 1,
-    };
-    scene_material trine_mat_rose = {
-        .albedo    = {230, 110, 170},   /* rose */
-        .albedo2   = {255, 200, 230},   /* pink */
-        .tex_kind  = SCENE_TEX_CLOUDS,
-        .tex_scale = 1.4f,
-        .unlit     = 1,
-    };
+    scene_material trine_mat_gold = scene_material_default();
+    trine_mat_gold.albedo   = (scene_color){235, 200,  90};
+    trine_mat_gold.albedo2  = (scene_color){255, 240, 180};
+    trine_mat_gold.tex_kind = SCENE_TEX_CLOUDS;
+    trine_mat_gold.tex_scale = 1.4f;
+    trine_mat_gold.unlit    = 1;
 
-    g_terrain_material = (scene_material){
-        .albedo       = {235, 225, 200},   /* warm sand */
-        .albedo2      = { 70, 100,  60},   /* dark moss */
-        .tex_kind     = SCENE_TEX_SPOTS,      /* leopard blotches */
-        .tex_scale    = 4.5f,
-        .reflectivity = 0.0f,
-    };
+    scene_material trine_mat_cyan = scene_material_default();
+    trine_mat_cyan.albedo   = (scene_color){ 90, 200, 230};
+    trine_mat_cyan.albedo2  = (scene_color){200, 240, 255};
+    trine_mat_cyan.tex_kind = SCENE_TEX_CLOUDS;
+    trine_mat_cyan.tex_scale = 1.4f;
+    trine_mat_cyan.unlit    = 1;
+
+    scene_material trine_mat_rose = scene_material_default();
+    trine_mat_rose.albedo   = (scene_color){230, 110, 170};
+    trine_mat_rose.albedo2  = (scene_color){255, 200, 230};
+    trine_mat_rose.tex_kind = SCENE_TEX_CLOUDS;
+    trine_mat_rose.tex_scale = 1.4f;
+    trine_mat_rose.unlit    = 1;
+
+    g_terrain_material = scene_material_default();
+    g_terrain_material.albedo       = (scene_color){235, 225, 200};
+    g_terrain_material.albedo2      = (scene_color){ 70, 100,  60};
+    g_terrain_material.tex_kind     = SCENE_TEX_SPOTS;
+    g_terrain_material.tex_scale    = 4.5f;
+    g_terrain_material.reflectivity = 0.0f;
 
     /* Sky sphere — a giant sphere surrounding the camera with a vertical
      * gradient. Set sky_radius = 0 to disable (black background). */
-    g_sky_material = (scene_material){
-        .albedo       = {235, 200, 170},   /* warm horizon */
-        .albedo2      = { 90, 130, 210},   /* blue zenith */
-        .tex_kind     = SCENE_TEX_GRADIENT,
-        .tex_scale    = 500.0f,            /* gradient spans y=0..500 */
-        .reflectivity = 0.0f,
-        .unlit        = 1,                 /* sky ignores scene lighting */
-    };
+    g_sky_material = scene_material_default();
+    g_sky_material.albedo       = (scene_color){235, 200, 170};
+    g_sky_material.albedo2      = (scene_color){ 90, 130, 210};
+    g_sky_material.tex_kind     = SCENE_TEX_GRADIENT;
+    g_sky_material.tex_scale    = 500.0f;
+    g_sky_material.reflectivity = 0.0f;
+    g_sky_material.unlit        = 1;
     g_sky_radius = 1000.0f;
 
     /* Load default map via the command system (after materials are set). */

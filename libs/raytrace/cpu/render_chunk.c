@@ -192,6 +192,14 @@ static inline scene_color color_lerp(scene_color a, scene_color b, float t) {
 static inline scene_color material_sample(const scene_material *m,
                                        const scene_texture *textures,
                                        vector p, float u, float v) {
+    /* Procedural textures sample the hit point. Transform from world to
+     * object space so textures follow the primitive's position/rotation.
+     * world_to_obj = identity (default) → world-space texturing (backward
+     * compatible). Image textures use (u,v) and are unaffected. */
+    if (m->tex_kind != SCENE_TEX_NONE &&
+        m->tex_kind != SCENE_TEX_IMAGE) {
+        p = mat4_transform_point(m->world_to_obj, p);
+    }
     if (m->tex_kind == SCENE_TEX_CHECKER) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         /* Bias by a tiny epsilon so that tile boundaries (especially hits

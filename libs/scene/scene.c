@@ -35,6 +35,7 @@ scene_material scene_material_default(void) {
     m.reflectivity = 0.0f;
     m.unlit        = 0;
     m.portal_index = -1;
+    m.world_to_obj = mat4_identity();
     return m;
 }
 

@@ -69,7 +69,7 @@ typedef struct {
     scene_color    albedo;        /* base color; checker: tile A */
     scene_color    albedo2;       /* checker: tile B */
     scene_tex_kind tex_kind;
-    float          tex_scale;     /* checker: world units per tile; image: UV repeat */
+    float          tex_scale;     /* checker: object units per tile; image: UV repeat */
     int            tex_index;     /* SCENE_TEX_IMAGE: index into scene->textures */
     float          reflectivity;  /* 0 = matte, 1 = perfect mirror */
     int            unlit;         /* 1 = skip shading, use raw albedo */
@@ -77,6 +77,11 @@ typedef struct {
                                    * When set, the surface acts as a portal:
                                    * rays are teleported via the portal's exit
                                    * frame rather than shaded/reflected. */
+    mat4           world_to_obj;  /* transforms world hit-point to object space
+                                   * for procedural textures. Identity = world
+                                   * space (backward-compatible default). Set
+                                   * per-frame to make textures follow the
+                                   * primitive (e.g. a rolling marble). */
 } scene_material;
 
 scene_material scene_material_default(void);
