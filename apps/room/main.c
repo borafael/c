@@ -71,14 +71,12 @@ static int build_room(scene *s) {
     int m_door = scene_add_material(s, (scene_material){
         .albedo = {145, 85, 45} });
     int m_doorknob = scene_add_material(s, (scene_material){
-        .albedo  = {220, 185, 95},
-        .reflectivity = 0.3f });
+        .albedo  = {220, 185, 95} });
     int m_window_glass = scene_add_material(s, (scene_material){
         .albedo  = {160, 200, 240},
         .albedo2 = {100, 160, 220},
         .tex_kind = SCENE_TEX_CHECKER,
-        .tex_scale = 0.15f,
-        .reflectivity = 0.15f });
+        .tex_scale = 0.15f });
     int m_bed_frame = scene_add_material(s, (scene_material){
         .albedo = {95, 60, 30} });
     int m_mattress = scene_add_material(s, (scene_material){
