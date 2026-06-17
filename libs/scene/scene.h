@@ -396,6 +396,20 @@ typedef struct {
     float  intensity;
 } scene_light;
 
+/* ============================ Black holes ================================
+ *
+ * A point mass that bends light (gravitational lensing). Consumed only by
+ * the curved-ray tracer in libs/raytrace; the straight-ray path ignores
+ * black holes entirely (zero cost when blackhole_count == 0). Units are
+ * geometric (G = c = 1): `mass` is the geometric mass M, and the event
+ * horizon (Schwarzschild) radius is r_s = 2M — a photon whose integrated
+ * path crosses r_s is captured. See libs/raytrace/geodesic.h for the
+ * null-geodesic force law that turns this into ray curvature. */
+typedef struct {
+    vector center;
+    float  mass;   /* geometric mass M; horizon radius r_s = 2*mass */
+} scene_blackhole;
+
 /* ============================== Nodes ====================================
  *
  * A node is a transform in space, optionally carrying a mesh. Nodes form
@@ -506,6 +520,7 @@ typedef struct {
     scene_sprite      *sprites;      int sprite_count,      sprite_capacity;
     scene_heightfield *heightfields; int heightfield_count, heightfield_capacity;
     scene_light       *lights;       int light_count,       light_capacity;
+    scene_blackhole   *blackholes;   int blackhole_count,   blackhole_capacity;
     scene_material    *materials;    int material_count,    material_capacity;
     scene_portal      *portals;      int portal_count,      portal_capacity;
     scene_texture     *textures;     int texture_count,     texture_capacity;
@@ -543,6 +558,7 @@ int scene_add_box(scene *s, scene_box box);
 int scene_add_sprite(scene *s, scene_sprite sprite);
 int scene_add_heightfield(scene *s, const scene_heightfield *hf);
 int scene_add_light(scene *s, scene_light light);
+int scene_add_blackhole(scene *s, scene_blackhole blackhole);
 int scene_add_material(scene *s, scene_material material);
 int scene_add_portal(scene *s, scene_portal portal);
 int scene_add_texture(scene *s, scene_texture texture);

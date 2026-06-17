@@ -13,7 +13,7 @@ endif
 
 noinst_HEADERS = viewport.h renderer.h scene_accel.h gl_compat.h \
                  sphere.h plane.h disc.h cylinder.h cone.h torus.h \
-                 triangle.h box.h \
+                 triangle.h box.h geodesic.h \
                  sprite.h heightfield.h mesh.h \
                  cpu/render_chunk.h cpu/bvh.h
 libraytrace_la_CPPFLAGS = -I$(top_srcdir)/libs/math \
@@ -27,6 +27,18 @@ if BUILD_OPENGL_BACKEND
 libraytrace_la_SOURCES += opengl/renderer.c
 libraytrace_la_CPPFLAGS += $(GL_CFLAGS)
 libraytrace_la_LIBADD += $(GL_LIBS)
+endif
+
+if BUILD_TESTS
+check_PROGRAMS = tests/check_geodesic
+tests_check_geodesic_SOURCES = tests/check_geodesic.c
+tests_check_geodesic_CFLAGS  = $(CHECK_CFLAGS) \
+                               -I$(srcdir) \
+                               -I$(top_srcdir)/libs/math \
+                               -I$(top_srcdir)/libs/scene
+tests_check_geodesic_LDADD   = $(top_builddir)/libs/scene/libscene.la \
+                               $(CHECK_LIBS) -lm
+TESTS = tests/check_geodesic
 endif
 
 if BUILD_VULKAN_BACKEND
