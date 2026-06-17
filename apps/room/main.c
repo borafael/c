@@ -9,8 +9,9 @@
  *   WASD       walk (yaw-aligned, no pitch)
  *   Mouse      look around (click to capture)
  *   M          toggle mouse capture
- *   B          toggle the black hole (CPU backend lenses; OpenGL doesn't)
- *   TAB        toggle CPU / OpenGL backend
+ *   B          spawn / collapse the black hole (grows in, then settles)
+ *   [ ]        shrink / grow the black hole's mass (r_s)
+ *   TAB        toggle CPU / OpenGL backend (OpenGL ignores the hole)
  *   1..4       resolution preset
  *   F11        fullscreen
  */
@@ -181,12 +182,14 @@ static int build_room(scene *s) {
         .radius   = 0.12f,
         .material = m_light_bulb });
 
-    /* A small black hole hovering in the middle of the room. mass 0.12
-     * → event-horizon radius r_s = 0.24: a dark marble that bends the
-     * room behind it. Curved-ray tracing is CPU-only — the OpenGL
-     * backend ignores black holes, so TAB shows the un-lensed room. */
+    /* A black hole hovering in the middle of the room. It starts hidden;
+     * main() drives its mass live (B spawns/collapses it, [ ] resize it),
+     * easing mass up from 0 so it grows in. Curved-ray tracing is
+     * CPU-only — the OpenGL backend ignores black holes (TAB to compare).
+     * The initial mass here is just a placeholder; main() overwrites it
+     * each frame. */
     scene_add_blackhole(s, (scene_blackhole){
-        .center = {0.0f, 1.4f, 0.0f}, .mass = 0.12f });
+        .center = {0.0f, 1.4f, 0.0f}, .mass = 0.0f });
 
     /* Lighting */
     scene_set_ambient(s, 0.25f);
@@ -226,7 +229,8 @@ int main(int argc, char *argv[]) {
             printf("Usage: %s [options]\n", argv[0]);
             printf("  -G, --gpu    Start with OpenGL raytrace backend\n");
             printf("  -h, --help   Show this help\n");
-            printf("\nWASD walk, mouse look, TAB toggle backend, M toggle mouse capture, B toggle black hole.\n");
+            printf("\nWASD walk, mouse look, TAB toggle backend, M toggle mouse capture.\n");
+            printf("B spawn/collapse the black hole, [ ] shrink/grow it.\n");
             return 0;
         }
     }
@@ -313,10 +317,18 @@ int main(int argc, char *argv[]) {
     int mouse_captured = 1;
     SDL_SetRelativeMouseMode(SDL_TRUE);
 
-    /* build_room added one black hole; remember it so B can toggle the
-     * curved tracer on/off by flipping blackhole_count between 1 and 0. */
-    int saved_blackhole_count = scn->blackhole_count;
-    int blackhole_on = saved_blackhole_count > 0;
+    /* Black hole growth animation. mass is eased toward bh_target each
+     * frame, so toggling/dialing the target makes the hole grow or
+     * shrink smoothly (mass == 0 → zero deflection, i.e. "not there").
+     * build_room added one hole; we drive its mass live and flip
+     * blackhole_count off whenever the mass eases back to ~0 so the
+     * straight path is taken (no marching cost) when the hole is gone. */
+    int   saved_blackhole_count = scn->blackhole_count;
+    float bh_mass   = 0.0f;        /* current, eased */
+    float bh_target = 0.0f;        /* commanded; B/[/] change it */
+    const float BH_FULL = 0.12f;   /* default "fully grown" mass */
+    const float BH_EASE = 2.5f;    /* growth rate (per second) */
+    scn->blackhole_count = 0;      /* starts hidden until spawned */
 
     int running = 1;
     Uint32 start_ticks = SDL_GetTicks();
@@ -343,13 +355,19 @@ int main(int argc, char *argv[]) {
                     SDL_SetRelativeMouseMode(mouse_captured ? SDL_TRUE : SDL_FALSE);
                 }
                 if (k == SDLK_b) {
-                    blackhole_on = !blackhole_on;
-                    scn->blackhole_count = blackhole_on ? saved_blackhole_count : 0;
+                    /* Spawn (grow in) if gone, else collapse (shrink out). */
+                    bh_target = (bh_target > 0.0f) ? 0.0f : BH_FULL;
                     fprintf(stderr, "Black hole: %s%s\n",
-                            blackhole_on ? "on" : "off",
-                            (blackhole_on && active == gpu_rnd)
+                            bh_target > 0.0f ? "growing" : "collapsing",
+                            (bh_target > 0.0f && active == gpu_rnd)
                                 ? " (CPU backend only — TAB to lens)" : "");
                 }
+                if (k == SDLK_RIGHTBRACKET) bh_target += 0.03f;  /* bigger */
+                if (k == SDLK_LEFTBRACKET) {                     /* smaller */
+                    bh_target -= 0.03f;
+                    if (bh_target < 0.0f) bh_target = 0.0f;
+                }
+                if (bh_target > 0.5f) bh_target = 0.5f;          /* r_s = 1.0 */
                 if (k == SDLK_TAB) {
                     if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
                     else if (active == gpu_rnd && cpu_rnd) active = cpu_rnd;
@@ -408,6 +426,15 @@ int main(int argc, char *argv[]) {
         vector cam_dir = cam_dir_from_yaw_pitch(cam_yaw, cam_pitch);
         scene_camera_place(cam, cam_pos, cam_dir);
 
+        /* Ease the hole's mass toward the commanded target (exponential,
+         * so it pops in fast then settles), then update the live scene. */
+        float ease = dt * BH_EASE;
+        if (ease > 1.0f) ease = 1.0f;
+        bh_mass += (bh_target - bh_mass) * ease;
+        if (bh_target <= 0.0f && bh_mass < 1e-4f) bh_mass = 0.0f;
+        scn->blackholes[0].mass = bh_mass;
+        scn->blackhole_count = (bh_mass > 1e-3f) ? saved_blackhole_count : 0;
+
         Uint32 r_start = SDL_GetTicks();
         rt_renderer_render(active, scn, cam, &viewport, pixels, NULL);
         render_ms_accum += SDL_GetTicks() - r_start;
@@ -423,9 +450,10 @@ int main(int argc, char *argv[]) {
         if (now - fps_last >= 1000) {
             float avg_ms = fps_frames ? (float)render_ms_accum / (float)fps_frames : 0.0f;
             snprintf(title_buf, sizeof(title_buf),
-                     "Room - %s %dx%d  %d FPS (%.1fms) %s",
+                     "Room - %s %dx%d  %d FPS (%.1fms)  BH r_s=%.2f %s",
                      rt_renderer_name(active), render_w, render_h,
-                     fps_frames, avg_ms, mouse_captured ? "[m]" : "");
+                     fps_frames, avg_ms, 2.0f * bh_mass,
+                     mouse_captured ? "[m]" : "");
             SDL_SetWindowTitle(window, title_buf);
             fps_frames = 0;
             render_ms_accum = 0;
