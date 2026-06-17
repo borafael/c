@@ -10,6 +10,7 @@
 #include "sprite.h"
 #include "heightfield.h"
 #include "mesh.h"
+#include "geodesic.h"
 #include <math.h>
 #include <float.h>
 #include <stddef.h>
@@ -1133,6 +1134,20 @@ static void portal_transform(vector exit_point, vector exit_normal,
     *out_dir    = nd;
 }
 
+/* Lambert-ish surface shade under the scene's directional lights, used
+ * by both the straight and the curved tracer. Mirrors the shading the
+ * per-pixel loop has always done: unlit surfaces are full-bright,
+ * otherwise ambient plus each light's n·l contribution, clamped to 1. */
+static inline float surface_shade(const scene *scene, const hit_info *h) {
+    if (h->unlit) return 1.0f;
+    float shade = scene->ambient;
+    for (int i = 0; i < scene->light_count; i++) {
+        float d = vector_dot(h->normal, scene->lights[i].direction);
+        if (d > 0.0f) shade += d * scene->lights[i].intensity;
+    }
+    return shade > 1.0f ? 1.0f : shade;
+}
+
 /* Trace one primary ray to its final colour, following reflection
  * bounces and portal jumps. This is the per-pixel loop body, extracted
  * verbatim so an alternate (curved-ray) tracer can sit beside it behind
@@ -1315,17 +1330,7 @@ static void trace_primary(vector ro, vector rd,
 
         if (!h.hit) break;
 
-        float shade;
-        if (h.unlit) {
-            shade = 1.0f;
-        } else {
-            shade = scene->ambient;
-            for (int i = 0; i < scene->light_count; i++) {
-                float d = vector_dot(h.normal, scene->lights[i].direction);
-                if (d > 0.0f) shade += d * scene->lights[i].intensity;
-            }
-            if (shade > 1.0f) shade = 1.0f;
-        }
+        float shade = surface_shade(scene, &h);
 
         float dw = 1.0f - h.reflectivity;
         result_r += thr_r * dw * (float)h.albedo.r * shade;
@@ -1369,6 +1374,197 @@ static void trace_primary(vector ro, vector rd,
     *out_b = result_b;
 }
 
+/* March a photon along its geodesic through the scene's gravity field,
+ * testing the existing primitives on each (locally straight) segment.
+ * This is what lets the curved tracer reuse closest_hit unchanged: every
+ * step is a short straight ray. Returns:
+ *     1  hit a surface  — *h_out / *rd_out filled (rd_out = the photon's
+ *                         direction AT the hit, for reflection), and
+ *                         *depth_io advanced by the curved path length
+ *                         from `ro` to the hit
+ *     0  captured       — the path crossed an event horizon (render black)
+ *    -1  escaped / miss — left the field without hitting anything
+ * On escape a final near-straight closest_hit is taken so a distant
+ * background (e.g. an enclosing star sphere) is still sampled. */
+static int geodesic_march(vector ro, vector rd, const scene *scene,
+                          const mat4 *mesh_world_inv, vector camera_origin,
+                          hit_info *h_out, vector *rd_out, float *depth_io) {
+    const scene_blackhole *bhs = scene->blackholes;
+    int n = scene->blackhole_count;
+
+    /* Largest horizon radius sets the step floor (fine enough to resolve
+     * the photon ring) and the escape radius (beyond it the field is
+     * weak and the path is effectively straight). */
+    float rs_max = 0.0f;
+    for (int i = 0; i < n; i++) {
+        float rs = 2.0f * bhs[i].mass;
+        if (rs > rs_max) rs_max = rs;
+    }
+    if (rs_max <= 0.0f) rs_max = 1.0f;
+    const float MIN_STEP      = 0.05f * rs_max;
+    const float ESCAPE_RADIUS = 40.0f * rs_max;
+    const int   MAX_STEPS     = 2000;
+
+    vector x = ro;
+    vector v = rd;             /* |rd| == 1 from the caller */
+    float  depth = 0.0f;
+
+    for (int i = 0; i < MAX_STEPS; i++) {
+        if (bh_captured(x, bhs, n)) return 0;
+
+        /* Distance to the nearest hole + whether we're receding from it. */
+        float  nearest = FLT_MAX;
+        vector to_near = {0, 0, 0};
+        for (int k = 0; k < n; k++) {
+            vector d  = vector_sub(x, bhs[k].center);
+            float  dl = vector_magnitude(d);
+            if (dl < nearest) { nearest = dl; to_near = d; }
+        }
+        int receding = vector_dot(v, to_near) > 0.0f;
+
+        /* Out of the field and heading away → finish with one straight
+         * shot (cheap, and reaches a far background). */
+        if (nearest > ESCAPE_RADIUS && receding) break;
+
+        /* Adaptive affine step: large in the weak field, shrinking to
+         * MIN_STEP near a horizon. No upper cap — a long step across
+         * empty space is fine because closest_hit tests the whole
+         * segment, so this also keeps the closest_hit count down. */
+        float step = 0.15f * nearest;
+        if (step < MIN_STEP) step = MIN_STEP;
+
+        vector x_prev = x;
+        bh_rk4_step(&x, &v, step, bhs, n);
+
+        vector seg     = vector_sub(x, x_prev);
+        float  seg_len = vector_magnitude(seg);
+        if (seg_len < 1e-8f) continue;
+        vector sdir = vector_scale(seg, 1.0f / seg_len);
+
+        hit_info h = closest_hit(x_prev, sdir, scene, mesh_world_inv,
+                                 camera_origin);
+        if (h.hit && h.distance <= seg_len) {
+            *h_out  = h;
+            *rd_out = sdir;
+            *depth_io += depth + h.distance;
+            return 1;
+        }
+        depth += seg_len;
+    }
+
+    /* Budget spent or escaped: straight shot for the background. */
+    vector sdir = vector_normalize(v);
+    hit_info h = closest_hit(x, sdir, scene, mesh_world_inv, camera_origin);
+    if (h.hit) {
+        *h_out  = h;
+        *rd_out = sdir;
+        *depth_io += depth + h.distance;
+        return 1;
+    }
+    return -1;
+}
+
+/* Curved-ray sibling of trace_primary, used when the scene has at least
+ * one black hole. The PRIMARY leg bends along the geodesic (geodesic_march
+ * above); reflection legs stay straight in this first cut. Shading,
+ * reflection, and the G-buffer policy match trace_primary so postfx sees
+ * consistent data. Portals are NOT given see-through treatment here yet —
+ * a portal surface shades like any other under lensing. */
+static void trace_primary_curved(vector ro, vector rd,
+                                 const scene *scene, const mat4 *mesh_world_inv,
+                                 vector camera_origin,
+                                 rt_gbuffer *gbuf, int gbuf_idx,
+                                 float *out_r, float *out_g, float *out_b) {
+    float result_r = 0.0f, result_g = 0.0f, result_b = 0.0f;
+    float thr_r = 1.0f, thr_g = 1.0f, thr_b = 1.0f;
+
+    const float RT_GBUF_MIRROR_THRESHOLD = 0.5f;
+    int   gbuf_done = 0;
+    float depth_acc = 0.0f;
+
+    vector cur_ro = ro;
+    vector cur_rd = rd;
+
+    for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {
+        hit_info h;
+        vector   rd_hit;
+        int      status;
+
+        if (bounce == 0) {
+            /* Primary leg bends. */
+            status = geodesic_march(cur_ro, cur_rd, scene, mesh_world_inv,
+                                    camera_origin, &h, &rd_hit, &depth_acc);
+        } else {
+            /* Reflection legs stay straight (first-cut scope). */
+            h = closest_hit(cur_ro, cur_rd, scene, mesh_world_inv,
+                            camera_origin);
+            rd_hit = cur_rd;
+            if (h.hit) { status = 1; depth_acc += h.distance; }
+            else       { status = -1; }
+        }
+
+        if (status == 0) {
+            /* Captured: the photon never returns. Renders black; the
+             * G-buffer sees it as empty space. */
+            break;
+        }
+        if (status < 0 || !h.hit) {
+            if (gbuf && !gbuf_done) {
+                gbuf->object_id[gbuf_idx]    = 0;
+                gbuf->depth[gbuf_idx]        = FLT_MAX;
+                gbuf->normal[gbuf_idx*3+0]   = 0.0f;
+                gbuf->normal[gbuf_idx*3+1]   = 0.0f;
+                gbuf->normal[gbuf_idx*3+2]   = 0.0f;
+                gbuf_done = 1;
+            }
+            break;
+        }
+
+        /* G-buffer capture: first surface at/under the mirror threshold,
+         * same policy as the straight path. depth_acc already holds the
+         * (curved) path length to this hit. */
+        if (gbuf && !gbuf_done &&
+            h.reflectivity <= RT_GBUF_MIRROR_THRESHOLD) {
+            gbuf->object_id[gbuf_idx]  = h.object_id;
+            gbuf->depth[gbuf_idx]      = depth_acc;
+            gbuf->normal[gbuf_idx*3+0] = h.normal.x;
+            gbuf->normal[gbuf_idx*3+1] = h.normal.y;
+            gbuf->normal[gbuf_idx*3+2] = h.normal.z;
+            gbuf_done = 1;
+        }
+
+        float shade = surface_shade(scene, &h);
+        float dw = 1.0f - h.reflectivity;
+        result_r += thr_r * dw * (float)h.albedo.r * shade;
+        result_g += thr_g * dw * (float)h.albedo.g * shade;
+        result_b += thr_b * dw * (float)h.albedo.b * shade;
+
+        if (h.reflectivity <= 0.0f) break;
+
+        thr_r *= h.reflectivity;
+        thr_g *= h.reflectivity;
+        thr_b *= h.reflectivity;
+
+        float ndotrd = vector_dot(h.normal, rd_hit);
+        cur_rd = vector_normalize(
+            vector_sub(rd_hit, vector_scale(h.normal, 2.0f * ndotrd)));
+        cur_ro = vector_add(h.point,
+                            vector_scale(h.normal, RT_REFLECT_EPSILON));
+    }
+
+    if (gbuf && !gbuf_done) {
+        gbuf->object_id[gbuf_idx]  = 0;
+        gbuf->depth[gbuf_idx]      = FLT_MAX;
+        gbuf->normal[gbuf_idx*3+0] = 0.0f;
+        gbuf->normal[gbuf_idx*3+1] = 0.0f;
+        gbuf->normal[gbuf_idx*3+2] = 0.0f;
+    }
+
+    *out_r = result_r;
+    *out_g = result_g;
+    *out_b = result_b;
+}
+
 void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
                      const rt_viewport *viewport,
                      int y_start, int y_end,
@@ -1397,14 +1593,19 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
                 vector_scale(camera->up, sy));
             dir = vector_normalize(dir);
 
-            /* Straight-ray path. A curved-ray (gravitational-lensing)
-             * tracer will sit beside this behind a `scene` capability
-             * gate; for now every ray is straight and this is the only
-             * arm. */
+            /* Gate: straight rays by default; only scenes that declare a
+             * black hole pay for the curved (gravitational-lensing)
+             * tracer. Every other scene takes the unchanged arm. */
             float result_r, result_g, result_b;
-            trace_primary(camera->origin, dir, scene, mesh_world_inv,
-                          camera->origin, gbuf, y * width + x,
-                          &result_r, &result_g, &result_b);
+            if (scene->blackhole_count == 0) {
+                trace_primary(camera->origin, dir, scene, mesh_world_inv,
+                              camera->origin, gbuf, y * width + x,
+                              &result_r, &result_g, &result_b);
+            } else {
+                trace_primary_curved(camera->origin, dir, scene, mesh_world_inv,
+                                     camera->origin, gbuf, y * width + x,
+                                     &result_r, &result_g, &result_b);
+            }
 
             uint8_t cr = result_r > 255.0f ? 255 : (result_r < 0.0f ? 0 : (uint8_t)result_r);
             uint8_t cg = result_g > 255.0f ? 255 : (result_g < 0.0f ? 0 : (uint8_t)result_g);
