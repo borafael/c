@@ -9,6 +9,7 @@
  *   WASD       walk (yaw-aligned, no pitch)
  *   Mouse      look around (click to capture)
  *   M          toggle mouse capture
+ *   B          toggle the black hole (CPU backend lenses; OpenGL doesn't)
  *   TAB        toggle CPU / OpenGL backend
  *   1..4       resolution preset
  *   F11        fullscreen
@@ -180,6 +181,13 @@ static int build_room(scene *s) {
         .radius   = 0.12f,
         .material = m_light_bulb });
 
+    /* A small black hole hovering in the middle of the room. mass 0.12
+     * → event-horizon radius r_s = 0.24: a dark marble that bends the
+     * room behind it. Curved-ray tracing is CPU-only — the OpenGL
+     * backend ignores black holes, so TAB shows the un-lensed room. */
+    scene_add_blackhole(s, (scene_blackhole){
+        .center = {0.0f, 1.4f, 0.0f}, .mass = 0.12f });
+
     /* Lighting */
     scene_set_ambient(s, 0.25f);
     scene_add_light(s, (scene_light){
@@ -218,7 +226,7 @@ int main(int argc, char *argv[]) {
             printf("Usage: %s [options]\n", argv[0]);
             printf("  -G, --gpu    Start with OpenGL raytrace backend\n");
             printf("  -h, --help   Show this help\n");
-            printf("\nWASD walk, mouse look, TAB toggle backend, M toggle mouse capture.\n");
+            printf("\nWASD walk, mouse look, TAB toggle backend, M toggle mouse capture, B toggle black hole.\n");
             return 0;
         }
     }
@@ -305,6 +313,11 @@ int main(int argc, char *argv[]) {
     int mouse_captured = 1;
     SDL_SetRelativeMouseMode(SDL_TRUE);
 
+    /* build_room added one black hole; remember it so B can toggle the
+     * curved tracer on/off by flipping blackhole_count between 1 and 0. */
+    int saved_blackhole_count = scn->blackhole_count;
+    int blackhole_on = saved_blackhole_count > 0;
+
     int running = 1;
     Uint32 start_ticks = SDL_GetTicks();
     Uint32 frame_last = start_ticks;
@@ -328,6 +341,14 @@ int main(int argc, char *argv[]) {
                 if (k == SDLK_m) {
                     mouse_captured = !mouse_captured;
                     SDL_SetRelativeMouseMode(mouse_captured ? SDL_TRUE : SDL_FALSE);
+                }
+                if (k == SDLK_b) {
+                    blackhole_on = !blackhole_on;
+                    scn->blackhole_count = blackhole_on ? saved_blackhole_count : 0;
+                    fprintf(stderr, "Black hole: %s%s\n",
+                            blackhole_on ? "on" : "off",
+                            (blackhole_on && active == gpu_rnd)
+                                ? " (CPU backend only — TAB to lens)" : "");
                 }
                 if (k == SDLK_TAB) {
                     if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
