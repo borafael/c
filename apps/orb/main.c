@@ -57,20 +57,21 @@
 static void build_scene(scene **scene_out, scene_camera **camera_out) {
     scene *scene = scene_create();
 
-    int m_inner = scene_add_material(scene, (scene_material){
-        .albedo       = INNER_ALBEDO_A,
-        .albedo2      = INNER_ALBEDO_B,
-        .tex_kind     = INNER_TEX_KIND,
-        .tex_scale    = INNER_TEX_SCALE,
-        .reflectivity = INNER_REFLECTIVITY,
-    });
-    int m_outer = scene_add_material(scene, (scene_material){
-        .albedo       = OUTER_ALBEDO_A,
-        .albedo2      = OUTER_ALBEDO_B,
-        .tex_kind     = OUTER_TEX_KIND,
-        .tex_scale    = OUTER_TEX_SCALE,
-        .reflectivity = OUTER_REFLECTIVITY,
-    });
+    scene_material inner = scene_material_default();
+    inner.albedo       = (scene_color)INNER_ALBEDO_A;
+    inner.albedo2      = (scene_color)INNER_ALBEDO_B;
+    inner.tex_kind     = INNER_TEX_KIND;
+    inner.tex_scale    = INNER_TEX_SCALE;
+    inner.reflectivity = INNER_REFLECTIVITY;
+    int m_inner = scene_add_material(scene, inner);
+
+    scene_material outer = scene_material_default();
+    outer.albedo       = (scene_color)OUTER_ALBEDO_A;
+    outer.albedo2      = (scene_color)OUTER_ALBEDO_B;
+    outer.tex_kind     = OUTER_TEX_KIND;
+    outer.tex_scale    = OUTER_TEX_SCALE;
+    outer.reflectivity = OUTER_REFLECTIVITY;
+    int m_outer = scene_add_material(scene, outer);
 
     scene_add_sphere(scene, (scene_sphere){
         .center   = {0.0f, 0.0f, 0.0f},

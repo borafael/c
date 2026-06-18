@@ -35,6 +35,7 @@ scene_material scene_material_default(void) {
     m.reflectivity = 0.0f;
     m.unlit        = 0;
     m.portal_index = -1;
+    m.world_to_obj = mat4_identity();
     return m;
 }
 
@@ -99,6 +100,7 @@ scene *scene_create(void) {
     s->sprite_capacity       = SCENE_DEFAULT_CAPACITY;
     s->heightfield_capacity  = SCENE_DEFAULT_CAPACITY;
     s->light_capacity        = SCENE_DEFAULT_CAPACITY;
+    s->blackhole_capacity    = SCENE_DEFAULT_CAPACITY;
     s->material_capacity     = SCENE_DEFAULT_CAPACITY;
     s->portal_capacity       = SCENE_DEFAULT_CAPACITY;
     s->texture_capacity      = SCENE_DEFAULT_CAPACITY;
@@ -119,6 +121,7 @@ scene *scene_create(void) {
     s->sprites      = malloc(sizeof(scene_sprite)      * s->sprite_capacity);
     s->heightfields = malloc(sizeof(scene_heightfield) * s->heightfield_capacity);
     s->lights       = malloc(sizeof(scene_light)       * s->light_capacity);
+    s->blackholes   = malloc(sizeof(scene_blackhole)   * s->blackhole_capacity);
     s->materials    = malloc(sizeof(scene_material)    * s->material_capacity);
     s->portals      = malloc(sizeof(scene_portal)      * s->portal_capacity);
     s->textures     = malloc(sizeof(scene_texture)     * s->texture_capacity);
@@ -129,7 +132,7 @@ scene *scene_create(void) {
 
     if (!s->spheres || !s->planes || !s->discs || !s->cylinders ||
         !s->cones || !s->toruses || !s->triangles || !s->boxes || !s->sprites ||
-        !s->heightfields || !s->lights || !s->materials || !s->portals ||
+        !s->heightfields || !s->lights || !s->blackholes || !s->materials || !s->portals ||
         !s->textures || !s->meshes || !s->skins || !s->nodes || !s->animations) {
         scene_destroy(s);
         return NULL;
@@ -191,6 +194,7 @@ void scene_clear(scene *s) {
     s->sprite_count      = 0;
     s->heightfield_count = 0;
     s->light_count       = 0;
+    s->blackhole_count   = 0;
     s->material_count    = 0;
     s->portal_count      = 0;
     s->texture_count     = 0;
@@ -216,6 +220,7 @@ void scene_destroy(scene *s) {
     free(s->sprites);
     free(s->heightfields);
     free(s->lights);
+    free(s->blackholes);
     free(s->materials);
     free(s->portals);
     free(s->textures);
@@ -304,8 +309,25 @@ int scene_add_light(scene *s, scene_light light) {
     return idx;
 }
 
+int scene_add_blackhole(scene *s, scene_blackhole blackhole) {
+    GROW_IF_NEEDED(s->blackholes, s->blackhole_count, s->blackhole_capacity, scene_blackhole);
+    int idx = s->blackhole_count;
+    s->blackholes[s->blackhole_count++] = blackhole;
+    return idx;
+}
+
 int scene_add_material(scene *s, scene_material material) {
     GROW_IF_NEEDED(s->materials, s->material_count, s->material_capacity, scene_material);
+    /* Materials are commonly built with compound literals (scene_material){...}
+     * that bypass scene_material_default(), leaving world_to_obj zero-filled.
+     * A zero matrix maps every hit point to the origin, collapsing procedural
+     * textures to a single constant color. Treat all-zero as the intended
+     * identity (world-space texturing). */
+    int all_zero = 1;
+    for (int i = 0; i < 16; i++) {
+        if (material.world_to_obj.m[i] != 0.0f) { all_zero = 0; break; }
+    }
+    if (all_zero) material.world_to_obj = mat4_identity();
     int idx = s->material_count;
     s->materials[s->material_count++] = material;
     return idx;

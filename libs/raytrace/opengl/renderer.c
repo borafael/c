@@ -108,10 +108,11 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                                                          tri_count,\n"
 "                                                          second_child_offset, _) */\n"
 "struct Material {\n"
-"    vec4  albedo;   /* tile A / base color */\n"
-"    vec4  albedo2;  /* tile B (checker) */\n"
-"    ivec4 kind;     /* .x = scene_tex_kind, .y = tex_index */\n"
-"    vec4  scale;    /* .x = tex_scale, .y = reflectivity */\n"
+"    vec4  albedo;      /* tile A / base color */\n"
+"    vec4  albedo2;     /* tile B (checker) */\n"
+"    ivec4 kind;        /* .x = scene_tex_kind, .y = tex_index */\n"
+"    vec4  scale;       /* .x = tex_scale, .y = reflectivity */\n"
+"    mat4  world_to_obj; /* identity = world-space texturing */\n"
 "};\n"
 "struct Texture { ivec4 size; };  /* .x = real_w, .y = real_h */\n"
 "struct Heightfield {\n"
@@ -747,6 +748,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "\n"
 "vec3 material_sample(int midx, vec3 p, vec2 uv) {\n"
 "    Material m = materials[midx];\n"
+"    p = (m.world_to_obj * vec4(p, 1.0)).xyz;\n"
 "    if (m.kind.x == 1) {\n"
 "        float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;\n"
 "        const float eps = 1e-4;\n"
@@ -1316,6 +1318,7 @@ typedef struct {
     float   albedo2[4];
     int32_t kind[4];
     float   scale[4];
+    float   world_to_obj[16];
 } gpu_material;
 typedef struct { int32_t size[4]; } gpu_texture;
 typedef struct {
@@ -1845,6 +1848,7 @@ static void upload_materials(opengl_backend_data *d, const scene *s) {
             buf[i].scale[1] = m->reflectivity;
             buf[i].scale[2] = 0.0f;
             buf[i].scale[3] = 0.0f;
+            memcpy(buf[i].world_to_obj, m->world_to_obj.m, sizeof(m->world_to_obj.m));
         }
     }
     upload_ssbo(d->ssbo[13], 13, buf, sizeof(gpu_material), n);

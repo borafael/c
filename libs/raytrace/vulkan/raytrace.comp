@@ -88,10 +88,11 @@ struct BvhNode  { vec4 aabb_min; vec4 aabb_max; ivec4 info; };
                                                           tri_count,
                                                           second_child_offset, _) */
 struct Material {
-    vec4  albedo;   /* tile A / base color */
-    vec4  albedo2;  /* tile B (checker) */
-    ivec4 kind;     /* .x = scene_tex_kind, .y = tex_index */
-    vec4  scale;    /* .x = tex_scale, .y = reflectivity */
+    vec4  albedo;
+    vec4  albedo2;
+    ivec4 kind;        /* .x = scene_tex_kind, .y = tex_index */
+    vec4  scale;       /* .x = tex_scale, .y = reflectivity */
+    mat4  world_to_obj; /* identity = world-space texturing */
 };
 struct Texture { ivec4 size; };  /* .x = real_w, .y = real_h */
 struct Heightfield {
@@ -727,6 +728,7 @@ vec3 color_lerp(vec3 a, vec3 b, float t) {
 
 vec3 material_sample(int midx, vec3 p, vec2 uv) {
     Material m = materials[midx];
+    p = (m.world_to_obj * vec4(p, 1.0)).xyz;
     if (m.kind.x == 1) {
         float s = (m.scale.x > 0.0) ? m.scale.x : 1.0;
         const float eps = 1e-4;

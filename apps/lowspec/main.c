@@ -32,7 +32,8 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-typedef enum { SCENE_SIMPLE, SCENE_MIRROR } scene_kind;
+typedef enum { SCENE_SIMPLE, SCENE_MIRROR, SCENE_BLACKHOLE,
+               SCENE_BHMIRROR } scene_kind;
 
 static double now_seconds(void) {
     struct timespec ts;
@@ -103,6 +104,93 @@ static void build_scene_mirror(scene **scene_out, scene_camera **cam_out) {
                                    (vector){-1.0f, 0.0f, 0.0f});
 }
 
+static void build_scene_blackhole(scene **scene_out, scene_camera **cam_out) {
+    scene *s = scene_create();
+
+    /* Starfield: a large enclosing unlit sphere with a SPOTS texture so
+     * the lensing has something to distort. The camera sits inside it. */
+    int m_stars = scene_add_material(s, (scene_material){
+        .albedo  = {2, 2, 8}, .albedo2 = {255, 255, 245},
+        .tex_kind = SCENE_TEX_SPOTS, .tex_scale = 2.0f, .unlit = 1,
+    });
+    scene_add_sphere(s, (scene_sphere){
+        .center = {0, 0, 0}, .radius = 100.0f, .material = m_stars,
+    });
+
+    /* Accretion disk: an unlit emissive torus in the xz-plane, a few
+     * Schwarzschild radii across, so the geodesics bend its far side up
+     * over the hole. */
+    int m_disk = scene_add_material(s, (scene_material){
+        .albedo = {255, 150, 40}, .tex_kind = SCENE_TEX_NONE, .unlit = 1,
+    });
+    scene_add_torus(s, (scene_torus){
+        .center = {0, 0, 0}, .axis = {0, 1, 0},
+        .major_radius = 3.0f, .minor_radius = 0.5f, .material = m_disk,
+    });
+
+    /* The hole itself: mass 0.5 → event-horizon radius r_s = 1.0. */
+    scene_add_blackhole(s, (scene_blackhole){
+        .center = {0, 0, 0}, .mass = 0.5f,
+    });
+
+    scene_set_ambient(s, 0.0f);
+
+    *scene_out = s;
+    /* Near the disk plane, looking across the hole. */
+    *cam_out = scene_camera_create((vector){0.0f, 1.5f, 16.0f},
+                                   (vector){0.0f, -1.5f, -16.0f});
+}
+
+static void build_scene_blackhole_mirror(scene **scene_out, scene_camera **cam_out) {
+    scene *s = scene_create();
+
+    /* Enclosing starfield: gives both the direct view AND the mirror a
+     * textured background for the lensing to distort. Camera sits inside. */
+    int m_stars = scene_add_material(s, (scene_material){
+        .albedo  = {2, 2, 8}, .albedo2 = {255, 255, 245},
+        .tex_kind = SCENE_TEX_SPOTS, .tex_scale = 2.0f, .unlit = 1,
+    });
+    scene_add_sphere(s, (scene_sphere){
+        .center = {0, 0, 0}, .radius = 100.0f, .material = m_stars,
+    });
+
+    /* Emissive accretion disk in the xz-plane, same as --scene blackhole. */
+    int m_disk = scene_add_material(s, (scene_material){
+        .albedo = {255, 150, 40}, .tex_kind = SCENE_TEX_NONE, .unlit = 1,
+    });
+    scene_add_torus(s, (scene_torus){
+        .center = {0, 0, 0}, .axis = {0, 1, 0},
+        .major_radius = 3.0f, .minor_radius = 0.5f, .material = m_disk,
+    });
+
+    /* A near-perfect mirror floor a few r_s below the hole. This is the
+     * point of the scene: reflected rays bounce up off it and graze the
+     * hole on the way out, so the floor shows a SECOND, lensed image of the
+     * disk + starfield — with a black core where reflected rays fall through
+     * the horizon. The reflection legs only bend because the tracer now
+     * marches every leg through the field. A near-black albedo keeps the
+     * reflected image clean rather than washed with the floor's own colour. */
+    int m_mirror = scene_add_material(s, (scene_material){
+        .albedo = {5, 5, 5}, .reflectivity = 0.92f,
+    });
+    scene_add_plane(s, (scene_plane){
+        .point = {0, -3.0f, 0}, .normal = {0, 1, 0}, .material = m_mirror,
+    });
+
+    /* The hole: mass 0.5 → event-horizon radius r_s = 1.0. */
+    scene_add_blackhole(s, (scene_blackhole){
+        .center = {0, 0, 0}, .mass = 0.5f,
+    });
+
+    scene_set_ambient(s, 0.0f);
+
+    *scene_out = s;
+    /* Up and back, angled down so a good share of the frame is mirror floor
+     * showing the lensed reflection, with the direct hole sitting above it. */
+    *cam_out = scene_camera_create((vector){0.0f, 3.0f, 16.0f},
+                                   (vector){0.0f, -3.0f, -16.0f});
+}
+
 /* Duplicate every other row into its blank neighbor so the PPM dump of
  * an interlaced render reads as chunky rather than as black gaps. */
 static void fill_interlace_gaps(uint32_t *pixels, int w, int h, int field) {
@@ -143,7 +231,10 @@ static void usage(const char *prog) {
 "  --threads N     pin CPU thread-pool size (default 1)\n"
 "  --frames N      number of frames to render and time (default 60)\n"
 "  --interlace     render only even rows (skipped rows duplicated for output)\n"
-"  --scene KIND    'simple' (2 spheres + checker plane) or 'mirror' (orb)\n"
+"  --scene KIND    'simple' (2 spheres + checker plane), 'mirror' (orb),\n"
+"                  'blackhole' (lensed disk + starfield), or\n"
+"                  'blackhole_mirror' (the hole + its lensed reflection in\n"
+"                  a mirror floor)\n"
 "  --out PATH      write the last frame as a PPM to PATH\n"
 "  --quiet         suppress the per-frame trace\n"
 "\n"
@@ -181,8 +272,10 @@ int main(int argc, char *argv[]) {
             interlace = 1;
         } else if (!strcmp(a, "--scene") && i + 1 < argc) {
             const char *v = argv[++i];
-            if      (!strcmp(v, "simple")) kind = SCENE_SIMPLE;
-            else if (!strcmp(v, "mirror")) kind = SCENE_MIRROR;
+            if      (!strcmp(v, "simple"))           kind = SCENE_SIMPLE;
+            else if (!strcmp(v, "mirror"))           kind = SCENE_MIRROR;
+            else if (!strcmp(v, "blackhole"))        kind = SCENE_BLACKHOLE;
+            else if (!strcmp(v, "blackhole_mirror")) kind = SCENE_BHMIRROR;
             else { fprintf(stderr, "lowspec: unknown --scene %s\n", v); return 1; }
         } else if (!strcmp(a, "--out") && i + 1 < argc) {
             out_path = argv[++i];
@@ -215,8 +308,10 @@ int main(int argc, char *argv[]) {
 
     scene *scn;
     scene_camera *cam;
-    if (kind == SCENE_MIRROR) build_scene_mirror(&scn, &cam);
-    else                      build_scene_simple(&scn, &cam);
+    if      (kind == SCENE_MIRROR)    build_scene_mirror(&scn, &cam);
+    else if (kind == SCENE_BLACKHOLE) build_scene_blackhole(&scn, &cam);
+    else if (kind == SCENE_BHMIRROR)  build_scene_blackhole_mirror(&scn, &cam);
+    else                              build_scene_simple(&scn, &cam);
 
     rt_viewport vp = { width, height, (float)(M_PI / 2.8) };
     uint32_t *pixels = calloc((size_t)width * (size_t)height, sizeof(uint32_t));
@@ -231,7 +326,9 @@ int main(int argc, char *argv[]) {
             "lowspec: %dx%d, %d thread%s, %s, scene=%s, frames=%d\n",
             width, height, threads, threads == 1 ? "" : "s",
             interlace ? "interlaced (even rows)" : "full",
-            kind == SCENE_MIRROR ? "mirror" : "simple",
+            kind == SCENE_MIRROR ? "mirror" :
+                kind == SCENE_BLACKHOLE ? "blackhole" :
+                    kind == SCENE_BHMIRROR ? "blackhole_mirror" : "simple",
             frames);
     }
 

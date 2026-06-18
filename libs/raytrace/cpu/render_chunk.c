@@ -10,6 +10,7 @@
 #include "sprite.h"
 #include "heightfield.h"
 #include "mesh.h"
+#include "geodesic.h"
 #include <math.h>
 #include <float.h>
 #include <stddef.h>
@@ -192,6 +193,14 @@ static inline scene_color color_lerp(scene_color a, scene_color b, float t) {
 static inline scene_color material_sample(const scene_material *m,
                                        const scene_texture *textures,
                                        vector p, float u, float v) {
+    /* Procedural textures sample the hit point. Transform from world to
+     * object space so textures follow the primitive's position/rotation.
+     * world_to_obj = identity (default) → world-space texturing (backward
+     * compatible). Image textures use (u,v) and are unaffected. */
+    if (m->tex_kind != SCENE_TEX_NONE &&
+        m->tex_kind != SCENE_TEX_IMAGE) {
+        p = mat4_transform_point(m->world_to_obj, p);
+    }
     if (m->tex_kind == SCENE_TEX_CHECKER) {
         float s = m->tex_scale > 0.0f ? m->tex_scale : 1.0f;
         /* Bias by a tiny epsilon so that tile boundaries (especially hits
@@ -1125,6 +1134,370 @@ static void portal_transform(vector exit_point, vector exit_normal,
     *out_dir    = nd;
 }
 
+/* Lambert-ish surface shade under the scene's directional lights, used
+ * by both the straight and the curved tracer. Mirrors the shading the
+ * per-pixel loop has always done: unlit surfaces are full-bright,
+ * otherwise ambient plus each light's n·l contribution, clamped to 1. */
+static inline float surface_shade(const scene *scene, const hit_info *h) {
+    if (h->unlit) return 1.0f;
+    float shade = scene->ambient;
+    for (int i = 0; i < scene->light_count; i++) {
+        float d = vector_dot(h->normal, scene->lights[i].direction);
+        if (d > 0.0f) shade += d * scene->lights[i].intensity;
+    }
+    return shade > 1.0f ? 1.0f : shade;
+}
+
+/* March a photon along its geodesic; defined below. Forward-declared so the
+ * single tracer can call it for every leg. */
+static int geodesic_march(vector ro, vector rd, const scene *scene,
+                          const mat4 *mesh_world_inv, vector camera_origin,
+                          hit_info *h_out, vector *rd_out, float *depth_io);
+
+/* Trace one primary ray to its final colour, following reflection
+ * bounces and portal jumps. The sole per-pixel tracer: every leg goes
+ * through geodesic_march, so gravitational lensing (and horizon capture)
+ * applies uniformly to the primary ray, reflections, and post-portal
+ * legs. In a black-hole-free scene geodesic_march is a straight
+ * closest_hit, so this path is byte-identical to the original straight
+ * tracer. `ro`/`rd` are the ray origin/direction (rd normalized);
+ * `camera_origin` feeds the sprite/billboard facing in closest_hit.
+ * When `gbuf` is non-NULL, the G-buffer entry at `gbuf_idx` is filled
+ * exactly as the inline loop used to fill `y * width + x`. The linear
+ * (un-clamped) radiance is written through out_r/out_g/out_b. */
+static void trace_primary(vector ro, vector rd,
+                          const scene *scene, const mat4 *mesh_world_inv,
+                          vector camera_origin,
+                          rt_gbuffer *gbuf, int gbuf_idx,
+                          float *out_r, float *out_g, float *out_b) {
+    float result_r = 0.0f, result_g = 0.0f, result_b = 0.0f;
+    float thr_r = 1.0f, thr_g = 1.0f, thr_b = 1.0f;
+
+    /* G-buffer capture follows reflection bounces: when the eye
+     * looks at a mostly-mirror surface, the colour we composite
+     * is dominated by the reflected scene, so the outline pass
+     * needs to see the reflected geometry too. We accumulate
+     * path length across mirror bounces and capture at the
+     * first hit whose reflectivity is below the mirror
+     * threshold (or on a sky miss). */
+    const float RT_GBUF_MIRROR_THRESHOLD = 0.5f;
+    int   gbuf_done = 0;
+    float depth_acc = 0.0f;
+
+    for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {
+        /* Every leg travels through the gravity field. geodesic_march bends
+         * the ray around any black holes and reports horizon capture; it
+         * degrades to a straight closest_hit when the scene has none. Because
+         * reflection legs march too, a black hole lenses and goes black in a
+         * mirror exactly as it does for the eye — no per-leg special-casing.
+         * `rd_hit` is the photon's direction AT the hit (== rd in flat
+         * space); reflection bounces off it. */
+        hit_info h = {0};
+        vector   rd_hit = rd;
+        int status = geodesic_march(ro, rd, scene, mesh_world_inv,
+                                    camera_origin, &h, &rd_hit, &depth_acc);
+
+        /* Captured by an event horizon: the photon never returns. We stop
+         * accumulating (the contribution stays black) and let the G-buffer
+         * fall through to its sky value. */
+        if (status == 0) break;
+
+        /* Portal branch: when the hit is on a portal surface, skip
+         * shading and G-buffer capture (the portal is "see-through")
+         * and continue tracing from the exit frame. Depth still
+         * accumulates so a downstream G-buffer reflects the total
+         * path length, not just the trip to the portal. The
+         * RT_MAX_BOUNCES budget bounds infinite-portal chains. */
+        if (h.hit && h.portal_index >= 0 &&
+            h.portal_index < scene->portal_count) {
+            const scene_portal *p = &scene->portals[h.portal_index];
+            vector exit_pos, exit_nrm;
+            int portal_ok = 0;
+            switch (p->kind) {
+                case SCENE_PORTAL_FIXED:
+                    exit_pos = p->target_position;
+                    exit_nrm = p->target_normal;
+                    portal_ok = 1;
+                    break;
+                case SCENE_PORTAL_PAIRED_RIGID:
+                    switch (p->partner_kind) {
+                        case SCENE_PRIM_DISC:
+                            /* Same world-space (u, v) offset
+                             * reproduced on the partner disc — a
+                             * literal geometric pass-through that
+                             * works cleanly when both discs share
+                             * scale. */
+                            if (p->partner_index >= 0 &&
+                                p->partner_index < scene->disc_count) {
+                                const scene_disc *pd =
+                                    &scene->discs[p->partner_index];
+                                vector etu, etv;
+                                tangent_basis(h.entry_normal, &etu, &etv);
+                                vector off = vector_sub(h.point, h.entry_center);
+                                float ou = vector_dot(off, etu);
+                                float ov = vector_dot(off, etv);
+                                vector xtu, xtv;
+                                tangent_basis(pd->normal, &xtu, &xtv);
+                                exit_pos = vector_add(pd->center,
+                                    vector_add(vector_scale(xtu, ou),
+                                               vector_scale(xtv, ov)));
+                                exit_nrm = pd->normal;
+                                portal_ok = 1;
+                            }
+                            break;
+                        case SCENE_PRIM_SPHERE:
+                            /* Antipodal correspondence: hit at
+                             * angular direction dA on A → exit at
+                             * -dA on B's surface, with the exit
+                             * normal pointing outward (-dA) at that
+                             * point. Combined with portal_transform's
+                             * flip_z, this gives "exit direction =
+                             * in direction" — the Portal-tube look:
+                             * walk in any side of A, emerge from the
+                             * opposite side of B going the same way. */
+                            if (p->partner_index >= 0 &&
+                                p->partner_index < scene->sphere_count) {
+                                const scene_sphere *ps =
+                                    &scene->spheres[p->partner_index];
+                                vector dA = h.entry_normal;
+                                exit_pos = vector_sub(ps->center,
+                                    vector_scale(dA, ps->radius));
+                                exit_nrm = vector_scale(dA, -1.0f);
+                                portal_ok = 1;
+                            }
+                            break;
+                    }
+                    break;
+                case SCENE_PORTAL_PAIRED_PARAMETRIC: {
+                    /* Same normalized (u, v) on the partner. The
+                     * entry's (entry_u, entry_v) was already
+                     * computed in the primitive's hit code; here we
+                     * invert it on the partner's shape to get the
+                     * exit point + normal. Works across mismatched
+                     * shapes: disc → sphere wraps the disc's circle
+                     * across the sphere's lat/long, sphere → disc
+                     * flattens the sphere's surface onto the disc. */
+                    switch (p->partner_kind) {
+                        case SCENE_PRIM_DISC:
+                            if (p->partner_index >= 0 &&
+                                p->partner_index < scene->disc_count) {
+                                const scene_disc *pd =
+                                    &scene->discs[p->partner_index];
+                                vector xtu, xtv;
+                                tangent_basis(pd->normal, &xtu, &xtv);
+                                exit_pos = vector_add(pd->center,
+                                    vector_add(vector_scale(xtu, h.entry_u * pd->radius),
+                                               vector_scale(xtv, h.entry_v * pd->radius)));
+                                exit_nrm = pd->normal;
+                                portal_ok = 1;
+                            }
+                            break;
+                        case SCENE_PRIM_SPHERE:
+                            if (p->partner_index >= 0 &&
+                                p->partner_index < scene->sphere_count) {
+                                const scene_sphere *ps =
+                                    &scene->spheres[p->partner_index];
+                                float phi   = h.entry_u * (float)M_PI;
+                                float theta = (h.entry_v + 1.0f) * (float)M_PI * 0.5f;
+                                float st = sinf(theta), ct = cosf(theta);
+                                float cp = cosf(phi),   sp = sinf(phi);
+                                vector dB = { st * cp, ct, st * sp };
+                                exit_pos = vector_add(ps->center,
+                                    vector_scale(dB, ps->radius));
+                                exit_nrm = dB;
+                                portal_ok = 1;
+                            }
+                            break;
+                    }
+                    break;
+                }
+            }
+            if (portal_ok) {
+                /* depth_acc was already advanced by geodesic_march for the
+                 * (possibly curved) leg up to this portal hit. */
+                vector new_ro, new_rd;
+                portal_transform(exit_pos, exit_nrm,
+                                 h.entry_normal, rd_hit,
+                                 &new_ro, &new_rd);
+                ro = new_ro;
+                rd = new_rd;
+                continue;
+            }
+            /* Mis-authored portal (e.g. partner index out of range):
+             * fall through and render the surface normally — better
+             * than crashing or showing a black hole. */
+        }
+
+        if (gbuf && !gbuf_done) {
+            int capture = !h.hit ||
+                          h.reflectivity <= RT_GBUF_MIRROR_THRESHOLD;
+            if (capture) {
+                int idx = gbuf_idx;
+                if (h.hit) {
+                    gbuf->object_id[idx]   = h.object_id;
+                    gbuf->depth[idx]       = depth_acc;
+                    gbuf->normal[idx*3+0]  = h.normal.x;
+                    gbuf->normal[idx*3+1]  = h.normal.y;
+                    gbuf->normal[idx*3+2]  = h.normal.z;
+                } else {
+                    gbuf->object_id[idx]   = 0;
+                    gbuf->depth[idx]       = FLT_MAX;
+                    gbuf->normal[idx*3+0]  = 0.0f;
+                    gbuf->normal[idx*3+1]  = 0.0f;
+                    gbuf->normal[idx*3+2]  = 0.0f;
+                }
+                gbuf_done = 1;
+            }
+        }
+
+        if (!h.hit) break;
+
+        float shade = surface_shade(scene, &h);
+
+        float dw = 1.0f - h.reflectivity;
+        result_r += thr_r * dw * (float)h.albedo.r * shade;
+        result_g += thr_g * dw * (float)h.albedo.g * shade;
+        result_b += thr_b * dw * (float)h.albedo.b * shade;
+
+        if (h.reflectivity <= 0.0f) break;
+
+        thr_r *= h.reflectivity;
+        thr_g *= h.reflectivity;
+        thr_b *= h.reflectivity;
+
+        float ndotrd = vector_dot(h.normal, rd_hit);
+        rd = vector_normalize(vector_sub(rd_hit, vector_scale(h.normal, 2.0f * ndotrd)));
+        /* Offset along the surface normal, not the reflected
+         * direction: at grazing reflection angles `rd` is nearly
+         * tangent to the surface, so a tiny step along it leaves
+         * the new origin within float epsilon of the same
+         * primitive and produces self-hit acne (black speckles
+         * on spherical mirrors). The normal is always
+         * perpendicular, so the offset clears the surface
+         * regardless of bounce angle. */
+        ro = vector_add(h.point, vector_scale(h.normal, RT_REFLECT_EPSILON));
+    }
+
+    /* Edge case: the entire bounce budget was spent inside
+     * mirror chains and we never landed on a non-reflective
+     * surface. Treat as sky for the G-buffer so the edge filter
+     * has consistent miss values. */
+    if (gbuf && !gbuf_done) {
+        int idx = gbuf_idx;
+        gbuf->object_id[idx]   = 0;
+        gbuf->depth[idx]       = FLT_MAX;
+        gbuf->normal[idx*3+0]  = 0.0f;
+        gbuf->normal[idx*3+1]  = 0.0f;
+        gbuf->normal[idx*3+2]  = 0.0f;
+    }
+
+    *out_r = result_r;
+    *out_g = result_g;
+    *out_b = result_b;
+}
+
+/* March a photon along its geodesic through the scene's gravity field,
+ * testing the existing primitives on each (locally straight) segment.
+ * This is what lets the curved tracer reuse closest_hit unchanged: every
+ * step is a short straight ray. Returns:
+ *     1  hit a surface  — *h_out / *rd_out filled (rd_out = the photon's
+ *                         direction AT the hit, for reflection), and
+ *                         *depth_io advanced by the curved path length
+ *                         from `ro` to the hit
+ *     0  captured       — the path crossed an event horizon (render black)
+ *    -1  escaped / miss — left the field without hitting anything
+ * On escape a final near-straight closest_hit is taken so a distant
+ * background (e.g. an enclosing star sphere) is still sampled. */
+static int geodesic_march(vector ro, vector rd, const scene *scene,
+                          const mat4 *mesh_world_inv, vector camera_origin,
+                          hit_info *h_out, vector *rd_out, float *depth_io) {
+    /* Flat space → a geodesic is a straight line. This single check is what
+     * lets geodesic_march be called on EVERY leg of EVERY scene: black-hole-
+     * free scenes route straight to closest_hit (byte-identical output, and
+     * none of the non-terminating weak-field marching below — a sky ray with
+     * no holes never satisfies the escape test). It is the one and only
+     * "is the medium curved?" branch in the tracer. */
+    if (scene->blackhole_count == 0) {
+        hit_info h = closest_hit(ro, rd, scene, mesh_world_inv, camera_origin);
+        if (h.hit) { *h_out = h; *rd_out = rd; *depth_io += h.distance; return 1; }
+        return -1;
+    }
+
+    const scene_blackhole *bhs = scene->blackholes;
+    int n = scene->blackhole_count;
+
+    /* Largest horizon radius sets the step floor (fine enough to resolve
+     * the photon ring) and the escape radius (beyond it the field is
+     * weak and the path is effectively straight). */
+    float rs_max = 0.0f;
+    for (int i = 0; i < n; i++) {
+        float rs = 2.0f * bhs[i].mass;
+        if (rs > rs_max) rs_max = rs;
+    }
+    if (rs_max <= 0.0f) rs_max = 1.0f;
+    const float MIN_STEP      = 0.05f * rs_max;
+    const float ESCAPE_RADIUS = 40.0f * rs_max;
+    const int   MAX_STEPS     = 2000;
+
+    vector x = ro;
+    vector v = rd;             /* |rd| == 1 from the caller */
+    float  depth = 0.0f;
+
+    for (int i = 0; i < MAX_STEPS; i++) {
+        if (bh_captured(x, bhs, n)) return 0;
+
+        /* Distance to the nearest hole + whether we're receding from it. */
+        float  nearest = FLT_MAX;
+        vector to_near = {0, 0, 0};
+        for (int k = 0; k < n; k++) {
+            vector d  = vector_sub(x, bhs[k].center);
+            float  dl = vector_magnitude(d);
+            if (dl < nearest) { nearest = dl; to_near = d; }
+        }
+        int receding = vector_dot(v, to_near) > 0.0f;
+
+        /* Out of the field and heading away → finish with one straight
+         * shot (cheap, and reaches a far background). */
+        if (nearest > ESCAPE_RADIUS && receding) break;
+
+        /* Adaptive affine step: large in the weak field, shrinking to
+         * MIN_STEP near a horizon. No upper cap — a long step across
+         * empty space is fine because closest_hit tests the whole
+         * segment, so this also keeps the closest_hit count down. */
+        float step = 0.15f * nearest;
+        if (step < MIN_STEP) step = MIN_STEP;
+
+        vector x_prev = x;
+        bh_rk4_step(&x, &v, step, bhs, n);
+
+        vector seg     = vector_sub(x, x_prev);
+        float  seg_len = vector_magnitude(seg);
+        if (seg_len < 1e-8f) continue;
+        vector sdir = vector_scale(seg, 1.0f / seg_len);
+
+        hit_info h = closest_hit(x_prev, sdir, scene, mesh_world_inv,
+                                 camera_origin);
+        if (h.hit && h.distance <= seg_len) {
+            *h_out  = h;
+            *rd_out = sdir;
+            *depth_io += depth + h.distance;
+            return 1;
+        }
+        depth += seg_len;
+    }
+
+    /* Budget spent or escaped: straight shot for the background. */
+    vector sdir = vector_normalize(v);
+    hit_info h = closest_hit(x, sdir, scene, mesh_world_inv, camera_origin);
+    if (h.hit) {
+        *h_out  = h;
+        *rd_out = sdir;
+        *depth_io += depth + h.distance;
+        return 1;
+    }
+    return -1;
+}
+
 void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
                      const rt_viewport *viewport,
                      int y_start, int y_end,
@@ -1153,224 +1526,15 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
                 vector_scale(camera->up, sy));
             dir = vector_normalize(dir);
 
-            float result_r = 0.0f, result_g = 0.0f, result_b = 0.0f;
-            float thr_r = 1.0f, thr_g = 1.0f, thr_b = 1.0f;
-            vector ro = camera->origin;
-            vector rd = dir;
-
-            /* G-buffer capture follows reflection bounces: when the eye
-             * looks at a mostly-mirror surface, the colour we composite
-             * is dominated by the reflected scene, so the outline pass
-             * needs to see the reflected geometry too. We accumulate
-             * path length across mirror bounces and capture at the
-             * first hit whose reflectivity is below the mirror
-             * threshold (or on a sky miss). */
-            const float RT_GBUF_MIRROR_THRESHOLD = 0.5f;
-            int   gbuf_done = 0;
-            float gbuf_depth_acc = 0.0f;
-
-            for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {
-                hit_info h = closest_hit(ro, rd, scene, mesh_world_inv,
-                                         camera->origin);
-
-                /* Portal branch: when the hit is on a portal surface, skip
-                 * shading and G-buffer capture (the portal is "see-through")
-                 * and continue tracing from the exit frame. Depth still
-                 * accumulates so a downstream G-buffer reflects the total
-                 * path length, not just the trip to the portal. The
-                 * RT_MAX_BOUNCES budget bounds infinite-portal chains. */
-                if (h.hit && h.portal_index >= 0 &&
-                    h.portal_index < scene->portal_count) {
-                    const scene_portal *p = &scene->portals[h.portal_index];
-                    vector exit_pos, exit_nrm;
-                    int portal_ok = 0;
-                    switch (p->kind) {
-                        case SCENE_PORTAL_FIXED:
-                            exit_pos = p->target_position;
-                            exit_nrm = p->target_normal;
-                            portal_ok = 1;
-                            break;
-                        case SCENE_PORTAL_PAIRED_RIGID:
-                            switch (p->partner_kind) {
-                                case SCENE_PRIM_DISC:
-                                    /* Same world-space (u, v) offset
-                                     * reproduced on the partner disc — a
-                                     * literal geometric pass-through that
-                                     * works cleanly when both discs share
-                                     * scale. */
-                                    if (p->partner_index >= 0 &&
-                                        p->partner_index < scene->disc_count) {
-                                        const scene_disc *pd =
-                                            &scene->discs[p->partner_index];
-                                        vector etu, etv;
-                                        tangent_basis(h.entry_normal, &etu, &etv);
-                                        vector off = vector_sub(h.point, h.entry_center);
-                                        float ou = vector_dot(off, etu);
-                                        float ov = vector_dot(off, etv);
-                                        vector xtu, xtv;
-                                        tangent_basis(pd->normal, &xtu, &xtv);
-                                        exit_pos = vector_add(pd->center,
-                                            vector_add(vector_scale(xtu, ou),
-                                                       vector_scale(xtv, ov)));
-                                        exit_nrm = pd->normal;
-                                        portal_ok = 1;
-                                    }
-                                    break;
-                                case SCENE_PRIM_SPHERE:
-                                    /* Antipodal correspondence: hit at
-                                     * angular direction dA on A → exit at
-                                     * -dA on B's surface, with the exit
-                                     * normal pointing outward (-dA) at that
-                                     * point. Combined with portal_transform's
-                                     * flip_z, this gives "exit direction =
-                                     * in direction" — the Portal-tube look:
-                                     * walk in any side of A, emerge from the
-                                     * opposite side of B going the same way. */
-                                    if (p->partner_index >= 0 &&
-                                        p->partner_index < scene->sphere_count) {
-                                        const scene_sphere *ps =
-                                            &scene->spheres[p->partner_index];
-                                        vector dA = h.entry_normal;
-                                        exit_pos = vector_sub(ps->center,
-                                            vector_scale(dA, ps->radius));
-                                        exit_nrm = vector_scale(dA, -1.0f);
-                                        portal_ok = 1;
-                                    }
-                                    break;
-                            }
-                            break;
-                        case SCENE_PORTAL_PAIRED_PARAMETRIC: {
-                            /* Same normalized (u, v) on the partner. The
-                             * entry's (entry_u, entry_v) was already
-                             * computed in the primitive's hit code; here we
-                             * invert it on the partner's shape to get the
-                             * exit point + normal. Works across mismatched
-                             * shapes: disc → sphere wraps the disc's circle
-                             * across the sphere's lat/long, sphere → disc
-                             * flattens the sphere's surface onto the disc. */
-                            switch (p->partner_kind) {
-                                case SCENE_PRIM_DISC:
-                                    if (p->partner_index >= 0 &&
-                                        p->partner_index < scene->disc_count) {
-                                        const scene_disc *pd =
-                                            &scene->discs[p->partner_index];
-                                        vector xtu, xtv;
-                                        tangent_basis(pd->normal, &xtu, &xtv);
-                                        exit_pos = vector_add(pd->center,
-                                            vector_add(vector_scale(xtu, h.entry_u * pd->radius),
-                                                       vector_scale(xtv, h.entry_v * pd->radius)));
-                                        exit_nrm = pd->normal;
-                                        portal_ok = 1;
-                                    }
-                                    break;
-                                case SCENE_PRIM_SPHERE:
-                                    if (p->partner_index >= 0 &&
-                                        p->partner_index < scene->sphere_count) {
-                                        const scene_sphere *ps =
-                                            &scene->spheres[p->partner_index];
-                                        float phi   = h.entry_u * (float)M_PI;
-                                        float theta = (h.entry_v + 1.0f) * (float)M_PI * 0.5f;
-                                        float st = sinf(theta), ct = cosf(theta);
-                                        float cp = cosf(phi),   sp = sinf(phi);
-                                        vector dB = { st * cp, ct, st * sp };
-                                        exit_pos = vector_add(ps->center,
-                                            vector_scale(dB, ps->radius));
-                                        exit_nrm = dB;
-                                        portal_ok = 1;
-                                    }
-                                    break;
-                            }
-                            break;
-                        }
-                    }
-                    if (portal_ok) {
-                        if (gbuf && !gbuf_done) gbuf_depth_acc += h.distance;
-                        vector new_ro, new_rd;
-                        portal_transform(exit_pos, exit_nrm,
-                                         h.entry_normal, rd,
-                                         &new_ro, &new_rd);
-                        ro = new_ro;
-                        rd = new_rd;
-                        continue;
-                    }
-                    /* Mis-authored portal (e.g. partner index out of range):
-                     * fall through and render the surface normally — better
-                     * than crashing or showing a black hole. */
-                }
-
-                if (gbuf && !gbuf_done) {
-                    if (h.hit) gbuf_depth_acc += h.distance;
-                    int capture = !h.hit ||
-                                  h.reflectivity <= RT_GBUF_MIRROR_THRESHOLD;
-                    if (capture) {
-                        int idx = y * width + x;
-                        if (h.hit) {
-                            gbuf->object_id[idx]   = h.object_id;
-                            gbuf->depth[idx]       = gbuf_depth_acc;
-                            gbuf->normal[idx*3+0]  = h.normal.x;
-                            gbuf->normal[idx*3+1]  = h.normal.y;
-                            gbuf->normal[idx*3+2]  = h.normal.z;
-                        } else {
-                            gbuf->object_id[idx]   = 0;
-                            gbuf->depth[idx]       = FLT_MAX;
-                            gbuf->normal[idx*3+0]  = 0.0f;
-                            gbuf->normal[idx*3+1]  = 0.0f;
-                            gbuf->normal[idx*3+2]  = 0.0f;
-                        }
-                        gbuf_done = 1;
-                    }
-                }
-
-                if (!h.hit) break;
-
-                float shade;
-                if (h.unlit) {
-                    shade = 1.0f;
-                } else {
-                    shade = scene->ambient;
-                    for (int i = 0; i < scene->light_count; i++) {
-                        float d = vector_dot(h.normal, scene->lights[i].direction);
-                        if (d > 0.0f) shade += d * scene->lights[i].intensity;
-                    }
-                    if (shade > 1.0f) shade = 1.0f;
-                }
-
-                float dw = 1.0f - h.reflectivity;
-                result_r += thr_r * dw * (float)h.albedo.r * shade;
-                result_g += thr_g * dw * (float)h.albedo.g * shade;
-                result_b += thr_b * dw * (float)h.albedo.b * shade;
-
-                if (h.reflectivity <= 0.0f) break;
-
-                thr_r *= h.reflectivity;
-                thr_g *= h.reflectivity;
-                thr_b *= h.reflectivity;
-
-                float ndotrd = vector_dot(h.normal, rd);
-                rd = vector_normalize(vector_sub(rd, vector_scale(h.normal, 2.0f * ndotrd)));
-                /* Offset along the surface normal, not the reflected
-                 * direction: at grazing reflection angles `rd` is nearly
-                 * tangent to the surface, so a tiny step along it leaves
-                 * the new origin within float epsilon of the same
-                 * primitive and produces self-hit acne (black speckles
-                 * on spherical mirrors). The normal is always
-                 * perpendicular, so the offset clears the surface
-                 * regardless of bounce angle. */
-                ro = vector_add(h.point, vector_scale(h.normal, RT_REFLECT_EPSILON));
-            }
-
-            /* Edge case: the entire bounce budget was spent inside
-             * mirror chains and we never landed on a non-reflective
-             * surface. Treat as sky for the G-buffer so the edge filter
-             * has consistent miss values. */
-            if (gbuf && !gbuf_done) {
-                int idx = y * width + x;
-                gbuf->object_id[idx]   = 0;
-                gbuf->depth[idx]       = FLT_MAX;
-                gbuf->normal[idx*3+0]  = 0.0f;
-                gbuf->normal[idx*3+1]  = 0.0f;
-                gbuf->normal[idx*3+2]  = 0.0f;
-            }
+            /* One tracer for all scenes. It marches every leg through the
+             * gravity field via geodesic_march, which degrades to a straight
+             * ray when the scene has no black holes — so flat scenes pay
+             * nothing extra and lensed scenes bend primary AND reflection
+             * legs alike. */
+            float result_r, result_g, result_b;
+            trace_primary(camera->origin, dir, scene, mesh_world_inv,
+                          camera->origin, gbuf, y * width + x,
+                          &result_r, &result_g, &result_b);
 
             uint8_t cr = result_r > 255.0f ? 255 : (result_r < 0.0f ? 0 : (uint8_t)result_r);
             uint8_t cg = result_g > 255.0f ? 255 : (result_g < 0.0f ? 0 : (uint8_t)result_g);
