@@ -318,6 +318,16 @@ int scene_add_blackhole(scene *s, scene_blackhole blackhole) {
 
 int scene_add_material(scene *s, scene_material material) {
     GROW_IF_NEEDED(s->materials, s->material_count, s->material_capacity, scene_material);
+    /* Materials are commonly built with compound literals (scene_material){...}
+     * that bypass scene_material_default(), leaving world_to_obj zero-filled.
+     * A zero matrix maps every hit point to the origin, collapsing procedural
+     * textures to a single constant color. Treat all-zero as the intended
+     * identity (world-space texturing). */
+    int all_zero = 1;
+    for (int i = 0; i < 16; i++) {
+        if (material.world_to_obj.m[i] != 0.0f) { all_zero = 0; break; }
+    }
+    if (all_zero) material.world_to_obj = mat4_identity();
     int idx = s->material_count;
     s->materials[s->material_count++] = material;
     return idx;
