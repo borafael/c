@@ -25,11 +25,25 @@
 #include <stdint.h>
 #include <math.h>       /* M_PI for the reference FOV */
 #include <time.h>       /* clock_gettime — timing */
+#ifdef _WIN32
+#include <windows.h>    /* GetSystemInfo — host core count */
+#else
 #include <unistd.h>     /* sysconf — host core count */
+#endif
 
 #define BENCH_W   240
 #define BENCH_H   150
 #define BENCH_FOV (M_PI / 2.6f)   /* mirrors the app's default FOV */
+
+static long bench_host_cores(void) {
+#ifdef _WIN32
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (long)si.dwNumberOfProcessors;
+#else
+    return sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+}
 
 static double bench_now_ms(void) {
     struct timespec ts;
@@ -90,7 +104,7 @@ int run_bench(void) {
      * thread pool's scheduling jitter (tens of %) dwarfs the sphere's
      * sub-ms cost, and the least-contended run is the cleanest estimate
      * of the actual compute. AVG/MAX are printed for context only. */
-    long nthreads = sysconf(_SC_NPROCESSORS_ONLN);
+    long nthreads = bench_host_cores();
     const char *thr_env = getenv("RT_CPU_THREADS");
     printf("R'lyeh reflective-sphere benchmark\n");
     printf("  res=%dx%d  bounce_budget=4  frames/measure=%d  host_cores=%ld  RT_CPU_THREADS=%s\n",

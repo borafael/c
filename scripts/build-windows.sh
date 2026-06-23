@@ -29,6 +29,7 @@ APPS=(
     "orb:"
     "pixelart:"
     "rlyeh:assets"
+    "room:"
     "rtdemo:"
     "showcase:"
     "toon:"
