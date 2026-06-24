@@ -108,6 +108,11 @@ apps/racer/racer
 apps/tty3d/tty3d
 apps/ttycam/ttycam
 apps/rlyeh/rlyeh
+apps/dungeon/dungeon
+apps/room/room
+apps/grand/grand
+apps/marble/marble
+libs/raytrace/tests/check_geodesic
 apps/portals/portals
 apps/portal_disc/portal_disc
 apps/portal_mesh/portal_mesh
@@ -134,6 +139,7 @@ libs/raytrace/cpu/.dirstamp
 libs/raytrace/opengl/.dirstamp
 libs/raytrace/vulkan/.dirstamp
 libs/ini/tests/.dirstamp
+libs/raytrace/tests/.dirstamp
 
 # --- Generated SPIR-V ---
 libs/raytrace/vulkan/raytrace.spv
