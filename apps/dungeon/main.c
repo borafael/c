@@ -314,7 +314,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    scene_texture wall_tex = {0}, floor_tex = {0};
+    scene_texture wall_tex = {0}, floor_tex = {0}, bg_tex = {0};
     int have_wall  = scene_texture_load(WALL_TEX_PATH, &wall_tex) == 0;
     int have_floor = scene_texture_load(FLOOR_TEX_PATH, &floor_tex) == 0;
     int ti_wall  = have_wall  ? scene_add_texture(scn, wall_tex)  : -1;
@@ -323,6 +323,12 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Warning: could not load %s, using procedural wall\n", WALL_TEX_PATH);
     if (!have_floor)
         fprintf(stderr, "Warning: could not load %s, using procedural floor\n", FLOOR_TEX_PATH);
+
+    int have_bg = scene_texture_load("apps/dungeon/deep-space.jpg", &bg_tex) == 0;
+    if (have_bg) {
+        int ti_bg = scene_add_texture(scn, bg_tex);
+        scene_set_background(scn, (scene_color){0,0,0}, ti_bg);
+    }
 
     if (build_dungeon(scn, ti_wall, ti_floor) < 0) {
         fprintf(stderr, "Failed to build dungeon scene\n");
@@ -516,6 +522,7 @@ int main(int argc, char *argv[]) {
     scene_destroy(scn);
     if (have_wall)  scene_texture_free(&wall_tex);
     if (have_floor) scene_texture_free(&floor_tex);
+    if (have_bg)    scene_texture_free(&bg_tex);
     SDL_GL_DeleteContext(gl_ctx);
     SDL_DestroyWindow(window);
     SDL_Quit();

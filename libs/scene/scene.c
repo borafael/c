@@ -108,6 +108,7 @@ scene *scene_create(void) {
     s->skin_capacity         = SCENE_DEFAULT_CAPACITY;
     s->node_capacity         = SCENE_DEFAULT_CAPACITY;
     s->animation_capacity    = SCENE_DEFAULT_CAPACITY;
+    s->background_tex_index  = -1;
     s->ambient               = 0.15f;
 
     s->spheres      = malloc(sizeof(scene_sphere)      * s->sphere_capacity);
@@ -183,6 +184,8 @@ void scene_clear(scene *s) {
     free_owned_mesh_buffers(s);
     free_owned_animation_buffers(s);
     free_owned_skin_buffers(s);
+    s->background        = (scene_color){0, 0, 0};
+    s->background_tex_index = -1;
     s->sphere_count      = 0;
     s->plane_count       = 0;
     s->disc_count        = 0;
@@ -609,4 +612,9 @@ void scene_resolve_world_transforms(const scene *s, mat4 *out_world) {
 
 void scene_set_ambient(scene *s, float ambient) {
     s->ambient = ambient;
+}
+
+void scene_set_background(scene *s, scene_color color, int tex_index) {
+    s->background          = color;
+    s->background_tex_index = tex_index;
 }

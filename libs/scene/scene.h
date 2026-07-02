@@ -528,6 +528,8 @@ typedef struct {
     scene_skin        *skins;        int skin_count,        skin_capacity;
     scene_node        *nodes;        int node_count,        node_capacity;
     scene_animation   *animations;   int animation_count,   animation_capacity;
+    scene_color        background;       /* solid fallback when no texture */
+    int                background_tex_index;  /* index into textures[], -1 = none */
     float              ambient;
 } scene;
 
@@ -615,5 +617,9 @@ void scene_resolve_world_transforms(const scene *s, mat4 *out_world);
 void scene_apply_skinning(scene *s, const mat4 *node_world);
 
 void scene_set_ambient(scene *s, float ambient);
+
+/* Set background: solid color and optionally an equirectangular texture
+ * loaded into scene->textures[]. Pass tex_index = -1 for solid color only. */
+void scene_set_background(scene *s, scene_color color, int tex_index);
 
 #endif /* SCENE_H */

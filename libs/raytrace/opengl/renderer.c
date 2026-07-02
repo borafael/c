@@ -49,6 +49,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "uniform vec3  u_cam_up;\n"
 "uniform float u_fov;\n"
 "uniform float u_ambient;\n"
+"uniform vec3  u_bg_color;\n"
+"uniform int   u_bg_tex_index;\n"
 "uniform int   u_sphere_count;\n"
 "uniform int   u_plane_count;\n"
 "uniform int   u_disc_count;\n"
@@ -1254,7 +1256,22 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            }\n"
 "        }\n"
 "\n"
-"        if (!h.hit) break;\n"
+"        if (!h.hit) {\n"
+"            if (u_bg_tex_index >= 0) {\n"
+"                float theta = atan(rd.z, rd.x);\n"
+"                float phi   = acos(rd.y);\n"
+"                float bg_u  = theta / (2.0 * 3.141592653589793) + 0.5;\n"
+"                float bg_v  = phi   / 3.141592653589793;\n"
+"                int sx = textures[u_bg_tex_index].size.x;\n"
+"                int sy = textures[u_bg_tex_index].size.y;\n"
+"                int px = clamp(int(bg_u * float(sx)), 0, sx - 1);\n"
+"                int py = clamp(int(bg_v * float(sy)), 0, sy - 1);\n"
+"                result += throughput * texelFetch(u_tex_atlas, ivec3(px, py, u_bg_tex_index), 0).rgb;\n"
+"            } else {\n"
+"                result += throughput * u_bg_color;\n"
+"            }\n"
+"            break;\n"
+"        }\n"
 "\n"
 "        float shade;\n"
 "        if (h.unlit) {\n"
@@ -1381,6 +1398,7 @@ typedef struct {
     /* Cached uniform locations */
     GLint u_cam_origin, u_cam_forward, u_cam_right, u_cam_up;
     GLint u_fov, u_ambient;
+    GLint u_bg_color, u_bg_tex_index;
     GLint u_sphere_count, u_plane_count, u_disc_count, u_cylinder_count, u_cone_count;
     GLint u_torus_count;
     GLint u_triangle_count, u_box_count, u_sprite_count;
@@ -1452,6 +1470,8 @@ static void cache_uniform_locs(opengl_backend_data *d) {
     d->u_cam_up             = glGetUniformLocation(d->program, "u_cam_up");
     d->u_fov                = glGetUniformLocation(d->program, "u_fov");
     d->u_ambient            = glGetUniformLocation(d->program, "u_ambient");
+    d->u_bg_color           = glGetUniformLocation(d->program, "u_bg_color");
+    d->u_bg_tex_index       = glGetUniformLocation(d->program, "u_bg_tex_index");
     d->u_sphere_count       = glGetUniformLocation(d->program, "u_sphere_count");
     d->u_plane_count        = glGetUniformLocation(d->program, "u_plane_count");
     d->u_disc_count         = glGetUniformLocation(d->program, "u_disc_count");
@@ -2133,6 +2153,11 @@ static void opengl_render(rt_renderer *r,
     glUniform3f(d->u_cam_up,      up.x,      up.y,      up.z);
     glUniform1f(d->u_fov,         viewport->fov);
     glUniform1f(d->u_ambient,     scn->ambient);
+    glUniform3f(d->u_bg_color,
+                (float)scn->background.r / 255.0f,
+                (float)scn->background.g / 255.0f,
+                (float)scn->background.b / 255.0f);
+    glUniform1i(d->u_bg_tex_index,      scn->background_tex_index);
     glUniform1i(d->u_sphere_count,      scn->sphere_count);
     glUniform1i(d->u_plane_count,       scn->plane_count);
     glUniform1i(d->u_disc_count,        scn->disc_count);

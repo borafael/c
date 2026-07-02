@@ -1350,7 +1350,29 @@ static void trace_primary(vector ro, vector rd,
             }
         }
 
-        if (!h.hit) break;
+        if (!h.hit) {
+            if (scene->background_tex_index >= 0 &&
+                scene->background_tex_index < scene->texture_count) {
+                float theta = atan2f(rd.z, rd.x);
+                float phi = acosf(rd.y);
+                float u = theta / (2.0f * (float)M_PI) + 0.5f;
+                float v = phi / (float)M_PI;
+                const scene_texture *bg = &scene->textures[scene->background_tex_index];
+                int ix = (int)(u * (float)bg->width);
+                int iy = (int)(v * (float)bg->height);
+                if (ix < 0) ix = 0; else if (ix >= bg->width)  ix = bg->width  - 1;
+                if (iy < 0) iy = 0; else if (iy >= bg->height) iy = bg->height - 1;
+                uint32_t pixel = bg->pixels[iy * bg->width + ix];
+                result_r += thr_r * (float)((pixel >> 16) & 0xFF);
+                result_g += thr_g * (float)((pixel >>  8) & 0xFF);
+                result_b += thr_b * (float)( pixel        & 0xFF);
+            } else {
+                result_r += thr_r * (float)scene->background.r;
+                result_g += thr_g * (float)scene->background.g;
+                result_b += thr_b * (float)scene->background.b;
+            }
+            break;
+        }
 
         float shade = surface_shade(scene, &h);
 
