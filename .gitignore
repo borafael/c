@@ -118,6 +118,7 @@ apps/portal_disc/portal_disc
 apps/portal_mesh/portal_mesh
 apps/portal_multi/portal_multi
 apps/portal_sphere/portal_sphere
+apps/bestiary/bestiary
 
 # Mesh assets are Wavefront OBJ (text geometry), not compiled object files
 # — exempt from the global *.obj ignore.
