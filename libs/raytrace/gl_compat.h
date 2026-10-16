@@ -23,8 +23,14 @@
  * dependency.
  */
 
+#ifdef __APPLE__
+/* macOS: core-profile GL (3.2+) comes from the framework header, which
+ * already declares the FBO/blit entry points the apps use. */
+#include <OpenGL/gl3.h>
+#else
 #include <GL/gl.h>
 #include <GL/glext.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
