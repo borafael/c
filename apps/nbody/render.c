@@ -1,6 +1,7 @@
 #include "render.h"
 #include <SDL2/SDL.h>
 #include "gl_compat.h"
+#include "sdl_display.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -22,9 +23,7 @@ int render_init(void) {
         return -1;
     }
 
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sdl_display_request_context();
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     window = SDL_CreateWindow("N-Body Simulation",

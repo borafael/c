@@ -31,6 +31,7 @@
 
 #define GL_GLEXT_PROTOTYPES 1
 #include "gl_compat.h"
+#include "sdl_display.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -432,9 +433,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
         return 1;
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sdl_display_request_context();
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     int window_w = WINDOW_W, window_h = WINDOW_H;
@@ -540,9 +539,13 @@ int main(int argc, char **argv) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
                 if (e.key.keysym.sym == SDLK_SPACE)  paused = !paused;
                 if (e.key.keysym.sym == SDLK_r)      orbit_reset(&cam_orbit);
-                if (e.key.keysym.sym == SDLK_TAB && cpu_rnd && gpu_rnd) {
-                    rnd = (rnd == cpu_rnd) ? gpu_rnd : cpu_rnd;
-                    fprintf(stderr, "anim: backend = %s\n", rt_renderer_name(rnd));
+                if (e.key.keysym.sym == SDLK_TAB) {
+                    if (!cpu_rnd || !gpu_rnd) {
+                        sdl_display_note_single_backend(rt_renderer_name(rnd));
+                    } else {
+                        rnd = (rnd == cpu_rnd) ? gpu_rnd : cpu_rnd;
+                        fprintf(stderr, "anim: backend = %s\n", rt_renderer_name(rnd));
+                    }
                 }
             }
             if (e.type == SDL_MOUSEMOTION) {

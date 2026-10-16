@@ -105,9 +105,9 @@ make                       # Build everything
 make check                 # Run unit tests (CHECK framework)
 ```
 
-Top-level `SUBDIRS` enforces build order: `libs/math libs/thread libs/physics libs/scene libs/raytrace libs/postfx libs/ini libs/slice libs/battleforge` then every app. `libs/term` and `apps/tty3d` are appended conditionally on `BUILD_TERM` (POSIX hosts only — skipped on MinGW).
+Top-level `SUBDIRS` enforces build order: `libs/math libs/thread libs/physics libs/scene libs/raytrace libs/postfx libs/ini libs/slice libs/battleforge` then every app. `libs/term` and `apps/tty3d` are appended conditionally on `BUILD_TERM` (POSIX hosts only — skipped on MinGW); `apps/ttycam` additionally needs `BUILD_TTYCAM` (Linux only — it captures via V4L2).
 
-The compute backend is gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`. CPU is always built; the OpenGL compute backend requires GL 4.3+ (Linux only). Display GL (used by every app for the FBO blit) is always linked: `-lGL` on Linux, `-lopengl32` on Windows; on Windows the GL≥3.0 entry points are loaded at runtime via `libs/raytrace/gl_compat.h`.
+The compute backend is gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`. CPU is always built; the OpenGL compute backend requires GL 4.3+ (Linux only). Display GL (used by every app for the FBO blit) is always linked: `-lGL` on Linux, `-lopengl32` on Windows, `-framework OpenGL` on macOS; on Windows the GL≥3.0 entry points are loaded at runtime via `libs/raytrace/gl_compat.h`. Apps request their GL context through `sdl_display_request_context()` (`libs/raytrace/sdl_display.h`, header-only): 4.3 core everywhere except macOS, which caps core contexts at 4.1 — so macOS builds are CPU-backend only, and TAB reports that via `sdl_display_note_single_backend()` instead of silently doing nothing.
 
 ### Cross-compile to Windows
 

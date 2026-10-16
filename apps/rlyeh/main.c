@@ -39,6 +39,7 @@
 
 #define GL_GLEXT_PROTOTYPES 1
 #include "gl_compat.h"
+#include "sdl_display.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -156,9 +157,7 @@ int main(int argc, char *argv[]) {
      * (dev) and from a staged dir next to its `assets/` (Win64 build). */
     if (audio_init("apps/rlyeh/assets/ambient.mp3") != 0)
         audio_init("assets/ambient.mp3");
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sdl_display_request_context();
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     int window_w = INIT_WINDOW_W, window_h = INIT_WINDOW_H;
@@ -331,6 +330,8 @@ int main(int argc, char *argv[]) {
                     set_render_res(render_w, render_h, &pixels, &gbuf,
                                    &viewport, display_tex);
                 }
+                if (k == SDLK_TAB && backend_count < 2)
+                    sdl_display_note_single_backend(rt_renderer_name(rnd));
                 if (k == SDLK_TAB && backend_count > 1) {
                     backend_idx   = (backend_idx + 1) % backend_count;
                     rnd           = backends[backend_idx];

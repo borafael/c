@@ -13,6 +13,7 @@
 
 #define GL_GLEXT_PROTOTYPES 1
 #include "gl_compat.h"
+#include "sdl_display.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -399,9 +400,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sdl_display_request_context();
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     int window_w = INIT_WINDOW_W;
@@ -496,7 +495,9 @@ int main(int argc, char *argv[]) {
             if (e.type == SDL_QUIT) running = 0;
             if (e.type == SDL_KEYDOWN) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
-                if (e.key.keysym.sym == SDLK_TAB) {
+                if (e.key.keysym.sym == SDLK_TAB && backend_count < 2) {
+                    sdl_display_note_single_backend(rt_renderer_name(active));
+                } else if (e.key.keysym.sym == SDLK_TAB) {
                     active_idx = (active_idx + 1) % backend_count;
                     active = backends[active_idx];
                     fprintf(stderr, "Active: %s\n", rt_renderer_name(active));

@@ -29,6 +29,7 @@
 
 #define GL_GLEXT_PROTOTYPES 1
 #include "gl_compat.h"
+#include "sdl_display.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -417,9 +418,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
         return 1;
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sdl_display_request_context();
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     int window_w = INIT_WINDOW_W, window_h = INIT_WINDOW_H, fullscreen = 0;
@@ -508,9 +507,12 @@ int main(int argc, char *argv[]) {
             if (e.type == SDL_KEYDOWN) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
                 if (e.key.keysym.sym == SDLK_TAB) {
-                    if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
-                    else if (active == gpu_rnd && cpu_rnd) active = cpu_rnd;
-                    fprintf(stderr, "Active: %s\n", rt_renderer_name(active));
+                    if (!cpu_rnd || !gpu_rnd) {
+                        sdl_display_note_single_backend(rt_renderer_name(active));
+                    } else {
+                        active = (active == cpu_rnd) ? gpu_rnd : cpu_rnd;
+                        fprintf(stderr, "Active: %s\n", rt_renderer_name(active));
+                    }
                 }
                 if (e.key.keysym.sym == SDLK_o) {
                     auto_orbit = !auto_orbit;

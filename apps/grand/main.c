@@ -37,6 +37,7 @@
 
 #define GL_GLEXT_PROTOTYPES 1
 #include "gl_compat.h"
+#include "sdl_display.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -163,28 +164,33 @@ static void draw_tree(scene *s, float x, float z, float scale,
     });
 }
 
+/* Cabin-local (px, pz) → world, rotated by the cabin's yaw (c = cos,
+ * sn = sin). A plain function rather than a nested one: nested
+ * functions are a GCC extension that clang rejects. */
+static vector cabin_point(float bx, float by, float bz, float c, float sn,
+                          float px, float pz) {
+    return (vector){bx + px * c - pz * sn, by, bz + px * sn + pz * c};
+}
+
 static void draw_cabin(scene *s, float bx, float by, float bz, float angle,
                         int m_wall, int m_roof, int m_trim) {
     float cw = 2.0f, cd = 2.4f, ch = 1.2f;
     float c = cosf(angle), sn = sinf(angle);
-    vector mt(float px, float pz) {
-        return (vector){bx + px * c - pz * sn, by, bz + px * sn + pz * c};
-    }
     float min_x = -cw * 0.5f, max_x = cw * 0.5f;
     float min_z = -cd * 0.5f, max_z = cd * 0.5f;
 
-    vector w_min = mt(min_x, min_z);
-    vector w_max = mt(max_x, max_z);
+    vector w_min = cabin_point(bx, by, bz, c, sn, min_x, min_z);
+    vector w_max = cabin_point(bx, by, bz, c, sn, max_x, max_z);
 
     scene_add_box(s, scene_box_aabb(
         (vector){w_min.x, by, w_min.z},
         (vector){w_max.x, by + ch, w_max.z}, m_wall
     ));
     float roof_h = 0.8f, rw = cw * 0.5f + 0.3f;
-    vector rr = mt(0.0f, min_z - 0.3f);
-    vector rf = mt(0.0f, min_z + 0.1f);
-    vector rl = mt(-rw, 0.0f);
-    vector rl2 = mt(rw, 0.0f);
+    vector rr = cabin_point(bx, by, bz, c, sn, 0.0f, min_z - 0.3f);
+    vector rf = cabin_point(bx, by, bz, c, sn, 0.0f, min_z + 0.1f);
+    vector rl = cabin_point(bx, by, bz, c, sn, -rw, 0.0f);
+    vector rl2 = cabin_point(bx, by, bz, c, sn, rw, 0.0f);
     scene_add_triangle(s, (scene_triangle){
         .v0 = {rr.x, by + ch, rr.z},
         .v1 = {rl.x, by + ch, rl.z},
@@ -202,12 +208,12 @@ static void draw_cabin(scene *s, float bx, float by, float bz, float angle,
         (vector){rf.x, by + ch + roof_h, rf.z}, m_roof
     ));
     float dr = 0.15f;
-    vector dd = mt(0.4f, min_z + 0.05f);
+    vector dd = cabin_point(bx, by, bz, c, sn, 0.4f, min_z + 0.05f);
     scene_add_box(s, scene_box_aabb(
         (vector){dd.x - dr, by + 0.05f, dd.z - dr},
         (vector){dd.x + dr, by + 0.55f, dd.z + dr}, m_trim
     ));
-    vector wd = mt(0.25f, min_z + 0.25f);
+    vector wd = cabin_point(bx, by, bz, c, sn, 0.25f, min_z + 0.25f);
     scene_add_box(s, scene_box_aabb(
         (vector){wd.x - 0.02f, by + 0.25f, wd.z - 0.02f},
         (vector){wd.x + 0.02f, by + 0.40f, wd.z + 0.02f}, m_trim
@@ -486,9 +492,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
         return 1;
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sdl_display_request_context();
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     int window_w = INIT_WINDOW_W, window_h = INIT_WINDOW_H;
@@ -601,9 +605,12 @@ int main(int argc, char *argv[]) {
                 SDL_Keycode k = e.key.keysym.sym;
                 if (k == SDLK_ESCAPE) running = 0;
                 if (k == SDLK_TAB) {
-                    if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
-                    else if (active == gpu_rnd && cpu_rnd) active = cpu_rnd;
-                    fprintf(stderr, "Renderer: %s\n", rt_renderer_name(active));
+                    if (!cpu_rnd || !gpu_rnd) {
+                        sdl_display_note_single_backend(rt_renderer_name(active));
+                    } else {
+                        active = (active == cpu_rnd) ? gpu_rnd : cpu_rnd;
+                        fprintf(stderr, "Renderer: %s\n", rt_renderer_name(active));
+                    }
                 }
                 if (k == SDLK_F11) {
                     fullscreen = !fullscreen;
