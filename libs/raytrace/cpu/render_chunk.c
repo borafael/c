@@ -1351,10 +1351,12 @@ static void trace_primary(vector ro, vector rd,
         }
 
         if (!h.hit) {
+            /* rd_hit is the escaped photon's (bent) direction, so the
+             * background itself is lensed — not just in-scene geometry. */
             if (scene->background_tex_index >= 0 &&
                 scene->background_tex_index < scene->texture_count) {
-                float theta = atan2f(rd.z, rd.x);
-                float phi = acosf(rd.y);
+                float theta = atan2f(rd_hit.z, rd_hit.x);
+                float phi = acosf(rd_hit.y);
                 float u = theta / (2.0f * (float)M_PI) + 0.5f;
                 float v = phi / (float)M_PI;
                 const scene_texture *bg = &scene->textures[scene->background_tex_index];
@@ -1427,7 +1429,9 @@ static void trace_primary(vector ro, vector rd,
  *                         *depth_io advanced by the curved path length
  *                         from `ro` to the hit
  *     0  captured       — the path crossed an event horizon (render black)
- *    -1  escaped / miss — left the field without hitting anything
+ *    -1  escaped / miss — left the field without hitting anything;
+ *                         *rd_out = the escaped direction, for the
+ *                         background lookup
  * On escape a final near-straight closest_hit is taken so a distant
  * background (e.g. an enclosing star sphere) is still sampled. */
 static int geodesic_march(vector ro, vector rd, const scene *scene,
@@ -1441,7 +1445,8 @@ static int geodesic_march(vector ro, vector rd, const scene *scene,
      * "is the medium curved?" branch in the tracer. */
     if (scene->blackhole_count == 0) {
         hit_info h = closest_hit(ro, rd, scene, mesh_world_inv, camera_origin);
-        if (h.hit) { *h_out = h; *rd_out = rd; *depth_io += h.distance; return 1; }
+        *rd_out = rd;
+        if (h.hit) { *h_out = h; *depth_io += h.distance; return 1; }
         return -1;
     }
 
@@ -1511,9 +1516,9 @@ static int geodesic_march(vector ro, vector rd, const scene *scene,
     /* Budget spent or escaped: straight shot for the background. */
     vector sdir = vector_normalize(v);
     hit_info h = closest_hit(x, sdir, scene, mesh_world_inv, camera_origin);
+    *rd_out = sdir;
     if (h.hit) {
         *h_out  = h;
-        *rd_out = sdir;
         *depth_io += depth + h.distance;
         return 1;
     }
