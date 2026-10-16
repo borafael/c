@@ -10,9 +10,10 @@
  *
  * Pure math: no scene traversal, no pixels, no allocation. This is the
  * physics half of the curved-ray (gravitational-lensing) tracer, kept
- * standalone so it can be unit-tested in isolation and mirrored verbatim
- * in a future GLSL port (the same parity discipline libs/raytrace/cpu/
- * torus.c documents for its SDF).
+ * standalone so it can be unit-tested in isolation; the OpenGL compute
+ * shader (libs/raytrace/opengl/renderer.c) mirrors it verbatim, so keep
+ * the two in sync (the same parity discipline libs/raytrace/cpu/torus.c
+ * documents for its SDF).
  *
  * A photon is a state (position x, velocity v). In flat space dv/dλ = 0
  * and x(λ) = x0 + λ v0 — exactly the straight ray every other renderer

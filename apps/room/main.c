@@ -181,8 +181,8 @@ static int build_room(scene *s) {
 
     /* A black hole hovering in the middle of the room. It starts hidden;
      * main() drives its mass live (B spawns/collapses it, [ ] resize it),
-     * easing mass up from 0 so it grows in. Curved-ray tracing is
-     * CPU-only — the OpenGL backend ignores black holes (TAB to compare).
+     * easing mass up from 0 so it grows in. Both the CPU and OpenGL
+     * backends trace the curved rays (TAB to compare).
      * The initial mass here is just a placeholder; main() overwrites it
      * each frame. */
     scene_add_blackhole(s, (scene_blackhole){
@@ -352,10 +352,8 @@ int main(int argc, char *argv[]) {
                 if (k == SDLK_b) {
                     /* Spawn (grow in) if gone, else collapse (shrink out). */
                     bh_target = (bh_target > 0.0f) ? 0.0f : BH_FULL;
-                    fprintf(stderr, "Black hole: %s%s\n",
-                            bh_target > 0.0f ? "growing" : "collapsing",
-                            (bh_target > 0.0f && active == gpu_rnd)
-                                ? " (CPU backend only — TAB to lens)" : "");
+                    fprintf(stderr, "Black hole: %s\n",
+                            bh_target > 0.0f ? "growing" : "collapsing");
                 }
                 if (k == SDLK_RIGHTBRACKET) bh_target += 0.03f;  /* bigger */
                 if (k == SDLK_LEFTBRACKET) {                     /* smaller */
