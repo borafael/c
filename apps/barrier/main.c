@@ -6,6 +6,7 @@
 #include <SDL2/SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include "gl_compat.h"
+#include "sdl_display.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -199,9 +200,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sdl_display_request_context();
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     int window_w = WINDOW_W;

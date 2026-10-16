@@ -17,6 +17,7 @@
 
 #define GL_GLEXT_PROTOTYPES 1
 #include "gl_compat.h"
+#include "sdl_display.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,9 +121,7 @@ int main(int argc, char *argv[]) {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1;
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sdl_display_request_context();
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     int ww = INIT_WINDOW_W, wh = INIT_WINDOW_H;

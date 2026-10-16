@@ -15,6 +15,7 @@
 
 #define GL_GLEXT_PROTOTYPES 1
 #include "gl_compat.h"
+#include "sdl_display.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,18 +141,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Display only needs FBO blits (GL 3.0). Ask for 4.3 where the
-     * OpenGL compute backend can use it; macOS caps core contexts at 4.1
-     * and refuses anything higher. */
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-#ifdef __APPLE__
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS,
-                        SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
-#else
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-#endif
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sdl_display_request_context();
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     int window_w = INIT_WINDOW_W;
@@ -267,11 +257,7 @@ int main(int argc, char *argv[]) {
             }
             if (k == SDLK_TAB) {
                 if (!cpu_rnd || !gpu_rnd) {
-                    /* configure drops the OpenGL compute backend where GL
-                     * 4.3 is missing — always the case on macOS (4.1). */
-                    fprintf(stderr, "Only the %s backend was built; nothing "
-                            "to toggle to (OpenGL compute needs GL 4.3).\n",
-                            rt_renderer_name(active));
+                    sdl_display_note_single_backend(rt_renderer_name(active));
                 } else {
                     active = (active == cpu_rnd) ? gpu_rnd : cpu_rnd;
                     fprintf(stderr, "Active: %s\n", rt_renderer_name(active));

@@ -150,6 +150,14 @@ case $host_os in
 esac
 AM_CONDITIONAL([BUILD_TERM], [test "x$build_term" = "xyes"])
 
+# apps/ttycam captures the webcam through V4L2 (<linux/videodev2.h>),
+# so it only builds on Linux; elsewhere libs/term and tty3d still do.
+case $host_os in
+    linux*) build_ttycam=$build_term ;;
+    *)      build_ttycam=no ;;
+esac
+AM_CONDITIONAL([BUILD_TTYCAM], [test "x$build_ttycam" = "xyes"])
+
 # Tell Autoconf which Makefiles to generate
 AC_CONFIG_FILES([
     Makefile
