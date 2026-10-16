@@ -87,7 +87,7 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │                         #   creatures.c; kit.c holds capsule-chain
 │                         #   tentacles + per-frame eye textures that track
 │                         #   the camera. Azathoth lenses via a black hole
-│                         #   (CPU only, heavy — L toggles).
+│                         #   (heavy — L toggles).
 ├── scripts/              # build-windows.sh (MinGW cross-compile, all apps), Blender sprite tools
 └── docs/                 # slice-sprite-guide.md, ideas/, plans/, superpowers/
 ```

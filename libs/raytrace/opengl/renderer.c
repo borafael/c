@@ -64,8 +64,16 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "uniform int   u_light_count;\n"
 "uniform int   u_mesh_count;\n"
 "uniform int   u_material_count;\n"
+"/* Black holes ride in a plain uniform array rather than an SSBO: the\n"
+" * shader already uses 16 storage blocks (the common\n"
+" * GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS), and a handful of point masses\n"
+" * is tiny. xyz = center, w = geometric mass M (horizon r_s = 2M). Must\n"
+" * match RT_GL_MAX_BLACKHOLES on the host. */\n"
+"const int RT_MAX_BLACKHOLES = 16;\n"
+"uniform int   u_blackhole_count;\n"
+"uniform vec4  u_blackholes[RT_MAX_BLACKHOLES];\n"
 "\n"
-"struct Sphere   { vec4 center_radius; ivec4 mat; };\n"
+"struct Sphere  { vec4 center_radius; ivec4 mat; };\n"
 "struct Plane    { vec4 point; vec4 normal; ivec4 mat; };\n"
 "struct Disc     { vec4 center_radius; vec4 normal; ivec4 mat; };\n"
 "struct Cylinder { vec4 center_hh; vec4 axis_radius; ivec4 mat; };\n"
@@ -1207,6 +1215,126 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    return h;\n"
 "}\n"
 "\n"
+"/* ---- Gravitational lensing (mirrors libs/raytrace/geodesic.h and\n"
+" *      geodesic_march in cpu/render_chunk.c) ------------------------- */\n"
+"\n"
+"/* Photon acceleration at (x, v), summed over every black hole:\n"
+" *   a = Σ −3 M h² (x − c) / r⁵,  h = |(x − c) × v|. */\n"
+"vec3 bh_accel(vec3 x, vec3 v) {\n"
+"    vec3 a = vec3(0.0);\n"
+"    for (int i = 0; i < u_blackhole_count; i++) {\n"
+"        vec3  d  = x - u_blackholes[i].xyz;\n"
+"        float r2 = dot(d, d);\n"
+"        if (r2 < 1e-12) continue;\n"
+"        vec3  L  = cross(d, v);\n"
+"        float h2 = dot(L, L);\n"
+"        float r  = sqrt(r2);\n"
+"        float inv_r5 = 1.0 / (r2 * r2 * r);\n"
+"        a += d * (-3.0 * u_blackholes[i].w * h2 * inv_r5);\n"
+"    }\n"
+"    return a;\n"
+"}\n"
+"\n"
+"/* One classic RK4 step of dx/dλ = v, dv/dλ = a(x, v). */\n"
+"void bh_rk4_step(inout vec3 x, inout vec3 v, float h) {\n"
+"    vec3 k1x = v;\n"
+"    vec3 k1v = bh_accel(x, v);\n"
+"    vec3 x2  = x + k1x * (0.5 * h);\n"
+"    vec3 v2  = v + k1v * (0.5 * h);\n"
+"    vec3 k2x = v2;\n"
+"    vec3 k2v = bh_accel(x2, v2);\n"
+"    vec3 x3  = x + k2x * (0.5 * h);\n"
+"    vec3 v3  = v + k2v * (0.5 * h);\n"
+"    vec3 k3x = v3;\n"
+"    vec3 k3v = bh_accel(x3, v3);\n"
+"    vec3 x4  = x + k3x * h;\n"
+"    vec3 v4  = v + k3v * h;\n"
+"    vec3 k4x = v4;\n"
+"    vec3 k4v = bh_accel(x4, v4);\n"
+"    x += (k1x + 2.0 * k2x + 2.0 * k3x + k4x) * (h / 6.0);\n"
+"    v += (k1v + 2.0 * k2v + 2.0 * k3v + k4v) * (h / 6.0);\n"
+"}\n"
+"\n"
+"bool bh_captured(vec3 x) {\n"
+"    for (int i = 0; i < u_blackhole_count; i++) {\n"
+"        vec3  d  = x - u_blackholes[i].xyz;\n"
+"        float rs = 2.0 * u_blackholes[i].w;\n"
+"        if (dot(d, d) <= rs * rs) return true;\n"
+"    }\n"
+"    return false;\n"
+"}\n"
+"\n"
+"/* March a photon along its geodesic, testing closest_hit on each locally\n"
+" * straight segment. Returns 1 = hit (h_out / rd_out = direction at the\n"
+" * hit / leg_depth = curved path length to it), 0 = captured by a\n"
+" * horizon, -1 = miss. With no black holes this is a single straight\n"
+" * closest_hit, so flat scenes render exactly as before. */\n"
+"const int BH_MAX_STEPS = 2000;\n"
+"\n"
+"int geodesic_march(vec3 ro, vec3 rd, out HitInfo h_out, out vec3 rd_out,\n"
+"                   out float leg_depth) {\n"
+"    rd_out = rd;\n"
+"    leg_depth = 0.0;\n"
+"    if (u_blackhole_count == 0) {\n"
+"        h_out = closest_hit(ro, rd);\n"
+"        if (h_out.hit) { leg_depth = h_out.distance; return 1; }\n"
+"        return -1;\n"
+"    }\n"
+"\n"
+"    float rs_max = 0.0;\n"
+"    for (int i = 0; i < u_blackhole_count; i++)\n"
+"        rs_max = max(rs_max, 2.0 * u_blackholes[i].w);\n"
+"    if (rs_max <= 0.0) rs_max = 1.0;\n"
+"    float min_step      = 0.05 * rs_max;\n"
+"    float escape_radius = 40.0 * rs_max;\n"
+"\n"
+"    vec3  x = ro;\n"
+"    vec3  v = rd;\n"
+"    float depth = 0.0;\n"
+"\n"
+"    for (int i = 0; i < BH_MAX_STEPS; i++) {\n"
+"        if (bh_captured(x)) { h_out.hit = false; return 0; }\n"
+"\n"
+"        float nearest = 1e30;\n"
+"        vec3  to_near = vec3(0.0);\n"
+"        for (int k = 0; k < u_blackhole_count; k++) {\n"
+"            vec3  d  = x - u_blackholes[k].xyz;\n"
+"            float dl = length(d);\n"
+"            if (dl < nearest) { nearest = dl; to_near = d; }\n"
+"        }\n"
+"        bool receding = dot(v, to_near) > 0.0;\n"
+"        if (nearest > escape_radius && receding) break;\n"
+"\n"
+"        float step = max(0.15 * nearest, min_step);\n"
+"        vec3 x_prev = x;\n"
+"        bh_rk4_step(x, v, step);\n"
+"\n"
+"        vec3  seg     = x - x_prev;\n"
+"        float seg_len = length(seg);\n"
+"        if (seg_len < 1e-8) continue;\n"
+"        vec3 sdir = seg / seg_len;\n"
+"\n"
+"        HitInfo h = closest_hit(x_prev, sdir);\n"
+"        if (h.hit && h.distance <= seg_len) {\n"
+"            h_out = h;\n"
+"            rd_out = sdir;\n"
+"            leg_depth = depth + h.distance;\n"
+"            return 1;\n"
+"        }\n"
+"        depth += seg_len;\n"
+"    }\n"
+"\n"
+"    /* Escaped or out of budget: one straight shot for the background. */\n"
+"    vec3 sdir = normalize(v);\n"
+"    h_out = closest_hit(x, sdir);\n"
+"    if (h_out.hit) {\n"
+"        rd_out = sdir;\n"
+"        leg_depth = depth + h_out.distance;\n"
+"        return 1;\n"
+"    }\n"
+"    return -1;\n"
+"}\n"
+"\n"
 "const int RT_MAX_BOUNCES = 4;\n"
 "\n"
 "/* ---- Main ------------------------------------------------------------ */\n"
@@ -1232,13 +1360,23 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    float gbuf_depth_acc = 0.0;\n"
 "\n"
 "    for (int bounce = 0; bounce < RT_MAX_BOUNCES; bounce++) {\n"
-"        HitInfo h = closest_hit(ro, rd);\n"
+"        /* Every leg (primary and reflections) marches through the\n"
+"         * gravity field, like the CPU tracer; rd_hit is the photon's\n"
+"         * direction at the hit, which reflection bounces off. */\n"
+"        HitInfo h;\n"
+"        vec3  rd_hit;\n"
+"        float leg_depth;\n"
+"        int status = geodesic_march(ro, rd, h, rd_hit, leg_depth);\n"
+"\n"
+"        /* Captured by an event horizon: the leg contributes black, and\n"
+"         * the G-buffer falls through to the sky write after the loop. */\n"
+"        if (status == 0) break;\n"
 "\n"
 "        /* Match CPU: capture G-buffer at first non-mirror surface.\n"
 "         * Accumulate path length so the depth channel reflects how far\n"
 "         * the eye actually 'looked' through any mirror chain. */\n"
 "        if (u_have_gbuf != 0 && !gbuf_done) {\n"
-"            if (h.hit) gbuf_depth_acc += h.distance;\n"
+"            if (h.hit) gbuf_depth_acc += leg_depth;\n"
 "            bool capture = (!h.hit) ||\n"
 "                           (h.reflectivity <= RT_GBUF_MIRROR_THRESHOLD);\n"
 "            if (capture) {\n"
@@ -1291,7 +1429,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "        if (h.reflectivity <= 0.0) break;\n"
 "\n"
 "        throughput *= h.reflectivity;\n"
-"        rd = reflect(rd, h.normal);\n"
+"        rd = reflect(rd_hit, h.normal);\n"
 "        ro = h.point + h.normal * 1e-4;\n"
 "    }\n"
 "\n"
@@ -1305,6 +1443,9 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "\n"
 "    imageStore(outputImage, pixel, vec4(min(result, vec3(1.0)), 1.0));\n"
 "}\n";
+
+/* Must match RT_MAX_BLACKHOLES in the shader (uniform array length). */
+#define RT_GL_MAX_BLACKHOLES 16
 
 /* -- GPU struct layouts (std430) -------------------------------------- */
 
@@ -1405,6 +1546,8 @@ typedef struct {
     GLint u_heightfield_count, u_light_count, u_mesh_count, u_material_count;
     GLint u_sprite_atlas, u_tex_atlas;
     GLint u_have_gbuf;
+    GLint u_blackhole_count, u_blackholes;
+    int   warned_blackhole_overflow;
 
     /* Per-frame node/mesh transform scratch (shared with CPU path). */
     rt_scene_accel accel;
@@ -1488,6 +1631,8 @@ static void cache_uniform_locs(opengl_backend_data *d) {
     d->u_sprite_atlas       = glGetUniformLocation(d->program, "u_sprite_atlas");
     d->u_tex_atlas          = glGetUniformLocation(d->program, "u_tex_atlas");
     d->u_have_gbuf          = glGetUniformLocation(d->program, "u_have_gbuf");
+    d->u_blackhole_count    = glGetUniformLocation(d->program, "u_blackhole_count");
+    d->u_blackholes         = glGetUniformLocation(d->program, "u_blackholes");
 }
 
 static void ensure_output_tex(opengl_backend_data *d, int w, int h) {
@@ -1845,6 +1990,29 @@ static void upload_lights(opengl_backend_data *d, const scene *s) {
     free(buf);
 }
 
+/* Black holes go in a fixed-size uniform array (see the shader). Extras
+ * past RT_GL_MAX_BLACKHOLES are dropped with a one-time warning. */
+static void upload_blackholes(opengl_backend_data *d, const scene *s) {
+    int n = s->blackhole_count;
+    if (n > RT_GL_MAX_BLACKHOLES) {
+        if (!d->warned_blackhole_overflow) {
+            fprintf(stderr, "rt_opengl: scene has %d black holes, only the "
+                            "first %d are rendered\n",
+                    n, RT_GL_MAX_BLACKHOLES);
+            d->warned_blackhole_overflow = 1;
+        }
+        n = RT_GL_MAX_BLACKHOLES;
+    }
+    float buf[RT_GL_MAX_BLACKHOLES * 4];
+    for (int i = 0; i < n; i++) {
+        set_vec4(&buf[i * 4], s->blackholes[i].center.x,
+                 s->blackholes[i].center.y, s->blackholes[i].center.z,
+                 s->blackholes[i].mass);
+    }
+    glUniform1i(d->u_blackhole_count, n);
+    if (n > 0) glUniform4fv(d->u_blackholes, n, buf);
+}
+
 static void upload_materials(opengl_backend_data *d, const scene *s) {
     int n = s->material_count;
     gpu_material *buf = NULL;
@@ -2140,6 +2308,7 @@ static void opengl_render(rt_renderer *r,
     upload_boxes(d, scn);
     upload_sprites(d, scn);         /* must run before sprite atlas bind */
     upload_lights(d, scn);
+    upload_blackholes(d, scn);
     upload_heightfields(d, scn);
     upload_materials(d, scn);
     upload_textures(d, scn);
