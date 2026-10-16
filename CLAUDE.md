@@ -76,9 +76,18 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   used to estimate the floor of host CPUs the
 │   │                     #   raytracer can hit real-time on.
 │   ├── barrier/          # Game prototype using battleforge (ECS + sprites + maps)
-│   └── racer/            # Anti-grav racer prototype (Hi Octane / Wipeout vibe).
-│                         #   Reflective track, glowing torus pickups, chase cam,
-│                         #   interlaced 320x240 + chromatic/vignette/grain postfx
+│   ├── racer/            # Anti-grav racer prototype (Hi Octane / Wipeout vibe).
+│   │                     #   Reflective track, glowing torus pickups, chase cam,
+│   │                     #   interlaced 320x240 + chromatic/vignette/grain postfx
+│   └── bestiary/         # Gallery of Lovecraftian entities, each a handful of
+│                         #   primitives on a plinth (Ophan, Yog-Sothoth,
+│                         #   Cthulhu, Shoggoth, Elder Thing, Yithian, Haunter,
+│                         #   Azathoth, Colour Out of Space). One pure
+│                         #   build(scene, t, cam) per creature in
+│                         #   creatures.c; kit.c holds capsule-chain
+│                         #   tentacles + per-frame eye textures that track
+│                         #   the camera. Azathoth lenses via a black hole
+│                         #   (CPU only, heavy — L toggles).
 ├── scripts/              # build-windows.sh (MinGW cross-compile, all apps), Blender sprite tools
 └── docs/                 # slice-sprite-guide.md, ideas/, plans/, superpowers/
 ```
@@ -107,7 +116,7 @@ scripts/build-windows.sh             # produces build/win64/<app>/
 scripts/build-windows.sh --clean     # wipe build/win64-build first
 ```
 
-Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bloom`, `comic`, `crt`, `halftone`, `mech`, `mirrors`, `nbody`, `orb`, `pixelart`, `rlyeh`, `rtdemo`, `showcase`, `toon`). Requires `gcc-mingw-w64-x86-64-posix` and `deps/SDL2-2.30.11/x86_64-w64-mingw32/`. Each app gets its own staged dir with the `.exe`, `SDL2.dll`, `libwinpthread-1.dll`, and any per-app asset directories. `bloom`, `comic`, `crt`, `halftone`, `pixelart`, `showcase`, and `toon` are listed in `SHARED_VALKYRIE_APPS` so the script also copies `apps/mech/assets/valkyrie.{obj,mtl}` next to their EXEs. The script does an out-of-tree build under `build/win64-build/`, so an in-tree Linux build (if any) must be `make distclean`'d first.
+Builds every app in the `APPS` array (currently: `anim`, `barrier`, `bestiary`, `bloom`, `comic`, `crt`, `halftone`, `mech`, `mirrors`, `nbody`, `orb`, `pixelart`, `rlyeh`, `rtdemo`, `showcase`, `toon`). Requires `gcc-mingw-w64-x86-64-posix` and `deps/SDL2-2.30.11/x86_64-w64-mingw32/`. Each app gets its own staged dir with the `.exe`, `SDL2.dll`, `libwinpthread-1.dll`, and any per-app asset directories. `bloom`, `comic`, `crt`, `halftone`, `pixelart`, `showcase`, and `toon` are listed in `SHARED_VALKYRIE_APPS` so the script also copies `apps/mech/assets/valkyrie.{obj,mtl}` next to their EXEs. The script does an out-of-tree build under `build/win64-build/`, so an in-tree Linux build (if any) must be `make distclean`'d first.
 
 ## Running
 
@@ -137,6 +146,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 ./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
 ./apps/barrier/barrier                   # Game prototype
 ./apps/racer/racer                       # Anti-grav racer prototype (A/D strafe, W/S boost/brake)
+./apps/bestiary/bestiary [-c N]          # Eldritch bestiary — N/P or 1..9 cycle creatures, arrows orbit, W/S zoom, SPACE auto-orbit, F postfx, L lensing
 ./apps/lowspec/lowspec --threads 1       # Headless CPU-raytrace bench (no SDL); --res, --interlace, --out
 ```
 

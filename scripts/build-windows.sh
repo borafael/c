@@ -19,6 +19,7 @@ PKGCONFIG_DIR="$BUILD_DIR/pkgconfig"
 APPS=(
     "anim:"
     "barrier:assets,maps,units"
+    "bestiary:"
     "bloom:"
     "comic:"
     "crt:"

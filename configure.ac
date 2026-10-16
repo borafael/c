@@ -48,6 +48,12 @@ case $host_os in
         GL_LIBS="-lopengl32"
         GL_CFLAGS=""
         ;;
+    darwin*)
+        # macOS ships GL as a framework (headers under <OpenGL/>), not
+        # libGL; gl_compat.h picks the right header on __APPLE__.
+        GL_LIBS="-framework OpenGL"
+        GL_CFLAGS="-DGL_SILENCE_DEPRECATION"
+        ;;
     *)
         PKG_CHECK_MODULES([GL], [gl], [], [
             AC_CHECK_LIB([GL], [glViewport],
@@ -77,6 +83,12 @@ if test "x$enable_opengl" != "xno"; then
         mingw*|cygwin*|msys*)
             if test "x$enable_opengl" = "xyes"; then
                 AC_MSG_ERROR([OpenGL compute backend not yet supported on Windows])
+            fi
+            ;;
+        darwin*)
+            # macOS caps OpenGL at 4.1 — no compute shaders.
+            if test "x$enable_opengl" = "xyes"; then
+                AC_MSG_ERROR([OpenGL compute backend needs GL 4.3; macOS stops at 4.1])
             fi
             ;;
         *)
@@ -176,6 +188,7 @@ AC_CONFIG_FILES([
     apps/grand/Makefile
     apps/marble/Makefile
     apps/dungeon/Makefile
+    apps/bestiary/Makefile
 ])
 if test "x$build_term" = "xyes"; then
     AC_CONFIG_FILES([libs/term/Makefile apps/tty3d/Makefile apps/ttycam/Makefile])
