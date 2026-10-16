@@ -79,10 +79,12 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   ├── racer/            # Anti-grav racer prototype (Hi Octane / Wipeout vibe).
 │   │                     #   Reflective track, glowing torus pickups, chase cam,
 │   │                     #   interlaced 320x240 + chromatic/vignette/grain postfx
-│   └── bestiary/         # Gallery of Lovecraftian entities, each a handful of
-│                         #   primitives on a plinth (Ophan, Yog-Sothoth,
-│                         #   Cthulhu, Shoggoth, Elder Thing, Yithian, Haunter,
-│                         #   Azathoth, Colour Out of Space). One pure
+│   └── bestiary/         # Gallery of eldritch / sci-fi horror entities, each a
+│                         #   handful of primitives on a plinth (Ophan,
+│                         #   Yog-Sothoth, Cthulhu, Shoggoth, Elder Thing,
+│                         #   Yithian, Haunter, Azathoth, Colour Out of Space,
+│                         #   Mi-Go, Hound of Tindalos, Dhole, Star Vampire,
+│                         #   Returned Probe, Last Astronaut). One pure
 │                         #   build(scene, t, cam) per creature in
 │                         #   creatures.c; kit.c holds capsule-chain
 │                         #   tentacles + per-frame eye textures that track
@@ -146,7 +148,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 ./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
 ./apps/barrier/barrier                   # Game prototype
 ./apps/racer/racer                       # Anti-grav racer prototype (A/D strafe, W/S boost/brake)
-./apps/bestiary/bestiary [-c N]          # Eldritch bestiary — N/P or 1..9 cycle creatures, arrows orbit, W/S zoom, SPACE auto-orbit, F postfx, L lensing
+./apps/bestiary/bestiary [-c N]          # Eldritch bestiary — N/P or 1..9/0 cycle creatures, arrows orbit, W/S zoom, SPACE auto-orbit, F postfx, L lensing
 ./apps/lowspec/lowspec --threads 1       # Headless CPU-raytrace bench (no SDL); --res, --interlace, --out
 ```
 

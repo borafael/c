@@ -124,7 +124,7 @@ int main(int argc, char *argv[]) {
             printf("  -G, --gpu          Start with OpenGL raytrace backend (falls back to CPU)\n");
             printf("  -c, --creature N   Start on creature N (1..%d)\n", bst_creature_count);
             printf("  -h, --help         Show this help\n");
-            printf("\nN/P next/previous creature, 1..9 jump, SPACE auto-orbit,\n"
+            printf("\nN/P next/previous creature, 1..9/0 jump to 1..10, SPACE auto-orbit,\n"
                    "arrows orbit, W/S zoom, F postfx, L lensing, -/= render scale,\n"
                    "TAB backend, F11 fullscreen, ESC quit.\n");
             printf("\nThe bestiary:\n");
@@ -240,6 +240,7 @@ int main(int argc, char *argv[]) {
                                   % bst_creature_count;
             if (k >= SDLK_1 && k <= SDLK_9 && k - SDLK_1 < bst_creature_count)
                 next = k - SDLK_1;
+            if (k == SDLK_0 && bst_creature_count >= 10) next = 9;
             if (next >= 0 && next != current) {
                 current = next;
                 cam_dist = bst_creatures[current].view_dist;

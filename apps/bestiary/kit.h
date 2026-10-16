@@ -75,6 +75,7 @@ extern const kit_eye_style KIT_EYE_GOLD;     /* the ophan's staring eye */
 extern const kit_eye_style KIT_EYE_SLIT;     /* yellow, goat/cat slit */
 extern const kit_eye_style KIT_EYE_SHOGGOTH; /* green, glassy, all pupil */
 extern const kit_eye_style KIT_EYE_YITH;     /* black eyes on a yellow globe */
+extern const kit_eye_style KIT_EYE_LENS;     /* camera lens: red ring, hot core */
 
 void kit_frame_begin(void);   /* recycle the eye-texture pool */
 
