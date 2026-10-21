@@ -126,6 +126,9 @@ const kit_eye_style KIT_EYE_SHOGGOTH = {
 const kit_eye_style KIT_EYE_YITH = {
     .sclera = 0xFFD8C060, .iris = 0xFF201810, .pupil = 0xFF000000,
     .iris_angle = 0.32f, .pupil_frac = 0.5f, .slit = 0.0f };
+const kit_eye_style KIT_EYE_LENS = {
+    .sclera = 0xFF101014, .iris = 0xFFE02010, .pupil = 0xFFFFD860,
+    .iris_angle = 0.7f, .pupil_frac = 0.3f, .slit = 0.0f };
 
 #define EYE_W     128
 #define EYE_H      64
