@@ -96,7 +96,7 @@ make                       # Build everything
 make check                 # Run unit tests (CHECK framework)
 ```
 
-Top-level `SUBDIRS` enforces build order: `libs/math libs/thread libs/physics libs/scene libs/raytrace libs/postfx libs/ini libs/slice libs/battleforge` then every app. `libs/term` and `apps/tty3d` are appended conditionally on `BUILD_TERM` (POSIX hosts only — skipped on MinGW).
+Top-level `SUBDIRS` enforces build order: `libs/math libs/thread libs/physics libs/scene libs/raytrace libs/postfx libs/ini libs/slice libs/battleforge` then every app. `libs/term` and `apps/tty3d` are appended conditionally on `BUILD_TERM` (POSIX hosts only — skipped on MinGW). `apps/ttycam` is further gated on `BUILD_TTYCAM`, set only when `configure` finds `linux/videodev2.h` (V4L2 webcam capture — Linux-only, skipped on macOS).
 
 The compute backend is gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`. CPU is always built; the OpenGL compute backend requires GL 4.3+ (Linux only). Display GL (used by every app for the FBO blit) is always linked: `-lGL` on Linux, `-lopengl32` on Windows; on Windows the GL≥3.0 entry points are loaded at runtime via `libs/raytrace/gl_compat.h`.
 

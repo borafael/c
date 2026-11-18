@@ -150,6 +150,14 @@ case $host_os in
 esac
 AM_CONDITIONAL([BUILD_TERM], [test "x$build_term" = "xyes"])
 
+# apps/ttycam reads a webcam through Video4Linux2 — Linux-only. Skip it
+# wherever the V4L2 header is missing (macOS, BSDs).
+build_ttycam=no
+if test "x$build_term" = "xyes"; then
+    AC_CHECK_HEADER([linux/videodev2.h], [build_ttycam=yes])
+fi
+AM_CONDITIONAL([BUILD_TTYCAM], [test "x$build_ttycam" = "xyes"])
+
 # Tell Autoconf which Makefiles to generate
 AC_CONFIG_FILES([
     Makefile
@@ -190,6 +198,9 @@ AC_CONFIG_FILES([
     apps/dungeon/Makefile
 ])
 if test "x$build_term" = "xyes"; then
-    AC_CONFIG_FILES([libs/term/Makefile apps/tty3d/Makefile apps/ttycam/Makefile])
+    AC_CONFIG_FILES([libs/term/Makefile apps/tty3d/Makefile])
+fi
+if test "x$build_ttycam" = "xyes"; then
+    AC_CONFIG_FILES([apps/ttycam/Makefile])
 fi
 AC_OUTPUT
