@@ -167,9 +167,9 @@ static void draw_cabin(scene *s, float bx, float by, float bz, float angle,
                         int m_wall, int m_roof, int m_trim) {
     float cw = 2.0f, cd = 2.4f, ch = 1.2f;
     float c = cosf(angle), sn = sinf(angle);
-    vector mt(float px, float pz) {
-        return (vector){bx + px * c - pz * sn, by, bz + px * sn + pz * c};
-    }
+    /* Cabin-local (px, pz) -> world. A macro rather than a nested
+     * function: nested functions are a GCC extension clang rejects. */
+#define mt(px, pz) ((vector){bx + (px) * c - (pz) * sn, by, bz + (px) * sn + (pz) * c})
     float min_x = -cw * 0.5f, max_x = cw * 0.5f;
     float min_z = -cd * 0.5f, max_z = cd * 0.5f;
 
@@ -212,6 +212,7 @@ static void draw_cabin(scene *s, float bx, float by, float bz, float angle,
         (vector){wd.x - 0.02f, by + 0.25f, wd.z - 0.02f},
         (vector){wd.x + 0.02f, by + 0.40f, wd.z + 0.02f}, m_trim
     ));
+#undef mt
 }
 
 static void build_scene(scene **scn_out, scene_camera **cam_out) {
