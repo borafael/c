@@ -79,6 +79,13 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   ├── racer/            # Anti-grav racer prototype (Hi Octane / Wipeout vibe).
 │   │                     #   Reflective track, glowing torus pickups, chase cam,
 │   │                     #   interlaced 320x240 + chromatic/vignette/grain postfx
+│   ├── kmeans/           # K-means clustering animated in 3D: points as
+│   │                     #   spheres colored by cluster (data: overlapping
+│   │                     #   blobs + noise / uniform / clean blobs, D
+│   │                     #   cycles), reflective centroids
+│   │                     #   gliding to their means, link cylinders, one
+│   │                     #   ASSIGN/UPDATE half-step at a time. k-means++ or
+│   │                     #   random init. --shot out.ppm for a headless frame.
 │   └── outpost/          # Top-down jeep roaming an island military base.
 │                         #   ASCII tile map (soil / shallow / deep water,
 │                         #   walls, turrets, hangars, tents, ...) greedily
@@ -144,6 +151,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 ./apps/barrier/barrier                   # Game prototype
 ./apps/racer/racer                       # Anti-grav racer prototype (A/D strafe, W/S boost/brake)
 ./apps/outpost/outpost                   # Top-down jeep on an island base (WASD/arrows, SPACE handbrake, -/= zoom, M minimap)
+./apps/kmeans/kmeans                     # K-means in 3D (SPACE pause, N step, R new data, D data mode, J/K clusters, I init, L links; --shot out.ppm headless)
 ./apps/lowspec/lowspec --threads 1       # Headless CPU-raytrace bench (no SDL); --res, --interlace, --out
 ```
 

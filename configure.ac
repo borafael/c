@@ -197,6 +197,7 @@ AC_CONFIG_FILES([
     apps/marble/Makefile
     apps/dungeon/Makefile
     apps/outpost/Makefile
+    apps/kmeans/Makefile
 ])
 if test "x$build_term" = "xyes"; then
     AC_CONFIG_FILES([libs/term/Makefile apps/tty3d/Makefile])
