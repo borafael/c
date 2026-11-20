@@ -28,6 +28,7 @@ APPS=(
     "nbody:"
     "orb:"
     "pixelart:"
+    "ricochet:"
     "rlyeh:assets"
     "room:"
     "rtdemo:"
@@ -44,7 +45,8 @@ SHARED_VALKYRIE_APPS=(bloom comic crt halftone pixelart showcase toon)
 
 if ! command -v "$CC" >/dev/null 2>&1; then
     echo "Error: $CC not found." >&2
-    echo "Install with: sudo apt install gcc-mingw-w64-x86-64-posix" >&2
+    echo "Install with: sudo apt install gcc-mingw-w64-x86-64-posix   (Linux)" >&2
+    echo "          or: brew install mingw-w64                          (macOS)" >&2
     exit 1
 fi
 
@@ -55,6 +57,20 @@ if [ ! -d "$SDL2_DIR" ]; then
     echo "  curl -L -o SDL2-devel-mingw.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-2.30.11/SDL2-devel-2.30.11-mingw.tar.gz && \\" >&2
     echo "  tar xzf SDL2-devel-mingw.tar.gz" >&2
     exit 1
+fi
+
+# libtool emits the C wrappers for uninstalled .exe files through a sed
+# program that relies on GNU sed (`[^\n]` = "not a newline"); macOS's BSD
+# sed turns them into broken C. Use GNU sed when the system sed isn't.
+GNU_SED=sed
+if ! sed --version 2>/dev/null | grep -q "GNU sed"; then
+    if command -v gsed >/dev/null 2>&1; then
+        GNU_SED=gsed
+    else
+        echo "Error: GNU sed required (system sed is BSD sed)." >&2
+        echo "Install with: brew install gnu-sed" >&2
+        exit 1
+    fi
 fi
 
 if [ "${1:-}" = "--clean" ]; then
@@ -97,6 +113,7 @@ if [ ! -f "$BUILD_DIR/Makefile" ]; then
         cd "$BUILD_DIR"
         PKG_CONFIG_PATH="$PKGCONFIG_DIR" \
         PKG_CONFIG_LIBDIR="$PKGCONFIG_DIR" \
+        SED="$GNU_SED" \
         "$ROOT/configure" \
             --host="$HOST" \
             --disable-opengl \
@@ -108,7 +125,24 @@ fi
 # --- Build ------------------------------------------------------------------
 
 echo "Building..."
-make -C "$BUILD_DIR" -j"$(nproc)"
+# nproc is GNU coreutils; macOS hosts (Homebrew mingw-w64) use sysctl.
+JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+make -C "$BUILD_DIR" -j"$JOBS"
+
+# The winpthread runtime DLL lives in a toolchain-specific place (apt:
+# /usr/x86_64-w64-mingw32/lib, Homebrew: under its mingw-w64 prefix); ask
+# the compiler, falling back to the Debian/Ubuntu path.
+WINPTHREAD_DLL=""
+for cand in \
+    "$("$CC" -print-file-name=libwinpthread-1.dll)" \
+    "$("$CC" -print-sysroot 2>/dev/null)/$HOST/bin/libwinpthread-1.dll" \
+    "/usr/$HOST/lib/libwinpthread-1.dll"; do
+    if [ -f "$cand" ]; then WINPTHREAD_DLL="$cand"; break; fi
+done
+if [ -z "$WINPTHREAD_DLL" ]; then
+    echo "Error: libwinpthread-1.dll not found for $CC" >&2
+    exit 1
+fi
 
 # --- Stage per-app outputs ---------------------------------------------------
 
@@ -129,7 +163,7 @@ for entry in "${APPS[@]}"; do
     mkdir -p "$out"
     cp "$exe_src" "$out/"
     cp "$SDL2_DIR/bin/SDL2.dll" "$out/"
-    cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll "$out/"
+    cp "$WINPTHREAD_DLL" "$out/"
 
     if [ -n "$assets" ]; then
         IFS=',' read -ra dirs <<< "$assets"
