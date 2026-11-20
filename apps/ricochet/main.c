@@ -19,6 +19,9 @@
  *   V cycle render resolution (- / = step down / up)   B bloom
  *   TAB CPU/OpenGL   F11 fullscreen   ESC quit
  *
+ * Starts on the OpenGL compute backend when the driver has GL 4.3
+ * (Linux / Windows), otherwise on the CPU tracer; --cpu forces the CPU.
+ *
  * Flags: --fullscreen (start fullscreen), --no-reflections (matte surfaces,
  * roughly 40% cheaper on the CPU tracer).
  *
@@ -1242,7 +1245,8 @@ static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
 
 static void usage(const char *argv0) {
     printf("Usage: %s [options]\n", argv0);
-    printf("  -G, --gpu          Start on the OpenGL backend (falls back to CPU)\n");
+    printf("  --cpu              Start on the CPU tracer (default: OpenGL when available)\n");
+    printf("  -G, --gpu          Start on the OpenGL backend (the default; kept for scripts)\n");
     printf("  --bot              Let the autopilot play\n");
     printf("  --fullscreen       Start in desktop fullscreen (F11 toggles)\n");
     printf("  --no-reflections   Matte surfaces only: much cheaper on the CPU tracer\n");
@@ -1260,7 +1264,7 @@ static void usage(const char *argv0) {
 }
 
 int main(int argc, char *argv[]) {
-    rt_backend preferred = RT_BACKEND_CPU;
+    rt_backend preferred = RT_BACKEND_OPENGL;   /* falls back to CPU */
     const char *shot_path = NULL, *dump_dir = NULL;
     int shot_w = INIT_WINDOW_W, shot_h = INIT_WINDOW_H, bot = 0, start_fullscreen = 0;
     float sim_seconds = 6.0f;
@@ -1269,6 +1273,7 @@ int main(int argc, char *argv[]) {
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-G") || !strcmp(argv[i], "--gpu")) preferred = RT_BACKEND_OPENGL;
+        else if (!strcmp(argv[i], "--cpu")) preferred = RT_BACKEND_CPU;
         else if (!strcmp(argv[i], "--bot")) bot = 1;
         else if (!strcmp(argv[i], "--fullscreen")) start_fullscreen = 1;
         else if (!strcmp(argv[i], "--no-reflections")) no_reflections = 1;

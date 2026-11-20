@@ -94,6 +94,8 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   --bot autopilot, --shot out.ppm headless (prints
 │   │                     #   sound-event counts), --dump-sfx DIR writes WAVs,
 │   │                     #   --bench N times CPU renders with features off.
+│   │                     #   Starts on the OpenGL backend when GL 4.3 is
+│   │                     #   available (Linux/Windows), else CPU; --cpu forces CPU.
 │   └── outpost/          # Top-down jeep roaming an island military base.
 │                         #   ASCII tile map (soil / shallow / deep water,
 │                         #   walls, turrets, hangars, tents, ...) greedily
@@ -158,7 +160,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 ./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
 ./apps/barrier/barrier                   # Game prototype
 ./apps/racer/racer                       # Anti-grav racer prototype (A/D strafe, W/S boost/brake)
-./apps/ricochet/ricochet                 # Sphere FPS (WASD + mouse, hold LMB/SPACE to fire, walk over spheres to recollect, R restart, V cycle render resolution; --bot, --fullscreen, --no-reflections)
+./apps/ricochet/ricochet                 # Sphere FPS (WASD + mouse, hold LMB/SPACE to fire, walk over spheres to recollect, R restart, V cycle render resolution, TAB CPU/GPU; GPU by default when available; --cpu, --bot, --fullscreen, --no-reflections)
 ./apps/outpost/outpost                   # Top-down jeep on an island base (WASD/arrows, SPACE handbrake, -/= zoom, M minimap)
 ./apps/kmeans/kmeans                     # K-means in 3D (SPACE pause, N step, R new data, D data mode, J/K clusters, I init, L links; --shot out.ppm headless)
 ./apps/lowspec/lowspec --threads 1       # Headless CPU-raytrace bench (no SDL); --res, --interlace, --out
