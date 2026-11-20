@@ -18,7 +18,9 @@
  *                          benchmarking on a machine that does not
  *                          represent the target hardware.
  *   RT_CPU_INTERLACE=0|1   render only even (0) or odd (1) rows;
- *                          unset or any other value renders all rows. */
+ *                          unset or any other value renders all rows.
+ *   RT_CPU_BVH=0           disable the per-frame scene BVH and test every
+ *                          primitive linearly (A/B checks; same pixels). */
 static int env_int_or(const char *name, int fallback) {
     const char *s = getenv(name);
     if (!s || !*s) return fallback;
@@ -46,6 +48,7 @@ typedef struct {
     int y_end;
     const scene_camera *camera;
     const scene *scene;
+    const rt_scene_bvh *sbvh;     /* may be NULL: linear primitive tests */
     const mat4 *mesh_world_inv;
     int interlace_field;
 } cpu_render_task;
@@ -56,12 +59,14 @@ typedef struct {
     cpu_render_task *tasks;       /* scratch buffer sized [num_threads] */
     rt_scene_accel accel;         /* per-frame node/mesh transform scratch */
     int interlace_field;          /* -1 full, 0/1 even/odd rows only */
+    int use_bvh;                  /* RT_CPU_BVH, default on */
+    rt_scene_bvh sbvh;            /* rebuilt every frame, buffers reused */
 } cpu_backend_data;
 
 static void cpu_render_task_fn(void *arg) {
     cpu_render_task *t = arg;
     rt_render_chunk(t->pixels, t->gbuf, t->viewport, t->y_start, t->y_end,
-                    t->camera, t->scene, t->mesh_world_inv,
+                    t->camera, t->scene, t->sbvh, t->mesh_world_inv,
                     t->interlace_field);
 }
 
@@ -70,6 +75,7 @@ static void cpu_destroy(rt_renderer *r) {
     thread_pool_destroy(d->pool);
     free(d->tasks);
     rt_scene_accel_dispose(&d->accel);
+    rt_scene_bvh_free(&d->sbvh);
     free(d);
     free(r);
 }
@@ -98,6 +104,12 @@ static void cpu_render(rt_renderer *r,
         mesh_world_inv = d->accel.mesh_world_inv;
     }
 
+    /* Top-level BVH over the bounded primitives, rebuilt each frame (the
+     * scene may have changed arbitrarily since the last call). On OOM
+     * fall back to linear tests rather than dropping primitives. */
+    const rt_scene_bvh *sbvh = NULL;
+    if (d->use_bvh && rt_scene_bvh_build(&d->sbvh, scn)) sbvh = &d->sbvh;
+
     for (int i = 0; i < n; i++) {
         d->tasks[i] = (cpu_render_task){
             .pixels          = pixels,
@@ -107,6 +119,7 @@ static void cpu_render(rt_renderer *r,
             .y_end           = (i == n - 1) ? viewport->height : (i + 1) * rows_per,
             .camera          = camera,
             .scene           = scn,
+            .sbvh            = sbvh,
             .mesh_world_inv  = mesh_world_inv,
             .interlace_field = d->interlace_field,
         };
@@ -147,6 +160,7 @@ rt_renderer *rt_cpu_renderer_create(void) {
 
     d->num_threads = n;
     d->interlace_field = field;
+    d->use_bvh = env_int_or("RT_CPU_BVH", 1) != 0;
     d->pool = thread_pool_create(n);
     if (!d->pool) {
         free(d);

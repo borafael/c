@@ -6,6 +6,7 @@
 #include "scene.h"
 #include "matrix.h"
 #include "renderer.h"   /* rt_gbuffer */
+#include "scene_bvh.h"
 
 /**
  * Render a chunk of scanlines [y_start, y_end) into pixel_buf.
@@ -15,6 +16,10 @@
  * If gbuf is non-NULL, the chunk also writes per-pixel object_id, depth
  * and normal at the primary hit. Each chunk only touches its own row
  * range, so concurrent calls with the same gbuf are safe.
+ *
+ * `sbvh` is the scene's top-level BVH over bounded analytic primitives
+ * (built once per frame by the caller). Pass NULL to test every primitive
+ * linearly; output is identical either way, only speed differs.
  *
  * `mesh_world_inv` is parallel to scene->meshes (one mat4 per mesh) and
  * holds the inverse of each mesh's resolved world transform. Pass NULL
@@ -35,6 +40,7 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
                      const rt_viewport *viewport,
                      int y_start, int y_end,
                      const scene_camera *camera, const scene *scene,
+                     const rt_scene_bvh *sbvh,
                      const mat4 *mesh_world_inv,
                      int interlace_field);
 

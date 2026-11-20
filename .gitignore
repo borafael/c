@@ -113,6 +113,7 @@ apps/room/room
 apps/grand/grand
 apps/marble/marble
 libs/raytrace/tests/check_geodesic
+libs/raytrace/tests/check_scene_bvh
 apps/portals/portals
 apps/portal_disc/portal_disc
 apps/portal_mesh/portal_mesh

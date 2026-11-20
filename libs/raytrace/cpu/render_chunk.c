@@ -11,6 +11,7 @@
 #include "heightfield.h"
 #include "mesh.h"
 #include "geodesic.h"
+#include "scene_bvh.h"
 #include <math.h>
 #include <float.h>
 #include <stddef.h>
@@ -531,15 +532,291 @@ static inline void fill_sphere_hit(hit_info *h, const scene *sc,
     h->object_id = RT_OBJ_ID(RT_OBJ_KIND_SPHERE, sphere_idx);
 }
 
+/* ---------------------------------------------------------------------
+ * Per-primitive hit fills. Shared by the linear loops in closest_hit and
+ * by the deferred fill of the scene-BVH winner, so both paths produce
+ * byte-identical hit_info.
+ * ------------------------------------------------------------------- */
+
+static inline void fill_disc_hit(hit_info *h, const scene *sc, int i,
+                                 vector ro, vector rd, float t) {
+    const scene_disc *d = &sc->discs[i];
+    vector hp = vector_add(ro, vector_scale(rd, t));
+    h->point = hp;
+    vector authored_n = rt_normal_disc(d);
+    h->normal = authored_n;
+    /* Discs are double-sided: flip the authored normal to face
+     * the camera so the back side shades and reflects. */
+    if (vector_dot(h->normal, rd) > 0.0f)
+        h->normal = vector_scale(h->normal, -1.0f);
+    float u, v;
+    uv_planar(hp, d->center, h->normal, &u, &v);
+    const scene_material *m = &sc->materials[d->material];
+    h->albedo = material_sample(m, sc->textures, hp, u, v);
+    h->reflectivity = m->reflectivity;
+    h->unlit = m->unlit;
+    h->portal_index = m->portal_index;
+    h->entry_center = d->center;
+    h->entry_normal = authored_n;
+    {
+        /* Normalized portal UV: project (hit - center) onto the
+         * disc's tangent basis, divide by radius. Range [-1, 1]
+         * within the disc; matches the convention used by
+         * inverse_disc() in the PARAMETRIC dispatch. */
+        vector etu, etv;
+        tangent_basis(authored_n, &etu, &etv);
+        vector offset = vector_sub(hp, d->center);
+        float r = d->radius > 0.0f ? d->radius : 1.0f;
+        h->entry_u = vector_dot(offset, etu) / r;
+        h->entry_v = vector_dot(offset, etv) / r;
+    }
+    h->hit = 1;
+    h->distance = t;
+    h->object_id = RT_OBJ_ID(RT_OBJ_KIND_DISC, i);
+}
+
+static inline void fill_cylinder_hit(hit_info *h, const scene *sc, int i,
+                                     vector ro, vector rd, float t) {
+    const scene_cylinder *c = &sc->cylinders[i];
+    vector hp = vector_add(ro, vector_scale(rd, t));
+    h->point = hp;
+    h->normal = rt_normal_cylinder(hp, c);
+    /* Two-sided so inside-view (camera enclosed by the cylinder)
+     * shades and reflects against the inner wall — matches the
+     * disc convention above. Without this, racer-style tunnels
+     * built from cylinders go pitch-black inside. */
+    if (vector_dot(h->normal, rd) > 0.0f)
+        h->normal = vector_scale(h->normal, -1.0f);
+    float u, v;
+    uv_cylinder(hp, c, &u, &v);
+    const scene_material *m = &sc->materials[c->material];
+    h->albedo = material_sample(m, sc->textures, hp, u, v);
+    h->reflectivity = m->reflectivity;
+    h->unlit = m->unlit;
+    h->portal_index = m->portal_index;
+    h->hit = 1;
+    h->distance = t;
+    h->object_id = RT_OBJ_ID(RT_OBJ_KIND_CYLINDER, i);
+}
+
+static inline void fill_cone_hit(hit_info *h, const scene *sc, int i,
+                                 vector ro, vector rd, float t) {
+    const scene_cone *c = &sc->cones[i];
+    vector hp = vector_add(ro, vector_scale(rd, t));
+    h->point = hp;
+    h->normal = rt_normal_cone(hp, c);
+    float u, v;
+    uv_cone(hp, c, &u, &v);
+    const scene_material *m = &sc->materials[c->material];
+    h->albedo = material_sample(m, sc->textures, hp, u, v);
+    h->reflectivity = m->reflectivity;
+    h->unlit = m->unlit;
+    h->portal_index = m->portal_index;
+    h->hit = 1;
+    h->distance = t;
+    h->object_id = RT_OBJ_ID(RT_OBJ_KIND_CONE, i);
+}
+
+static inline void fill_torus_hit(hit_info *h, const scene *sc, int i,
+                                  vector ro, vector rd, float t) {
+    const scene_torus *tr = &sc->toruses[i];
+    vector hp = vector_add(ro, vector_scale(rd, t));
+    h->point = hp;
+    h->normal = rt_normal_torus(hp, tr);
+    float u, v;
+    uv_torus(hp, tr, &u, &v);
+    const scene_material *m = &sc->materials[tr->material];
+    h->albedo = material_sample(m, sc->textures, hp, u, v);
+    h->reflectivity = m->reflectivity;
+    h->unlit = m->unlit;
+    h->portal_index = m->portal_index;
+    h->hit = 1;
+    h->distance = t;
+    h->object_id = RT_OBJ_ID(RT_OBJ_KIND_TORUS, i);
+}
+
+static inline void fill_triangle_hit(hit_info *h, const scene *sc, int i,
+                                     vector ro, vector rd, float t) {
+    const scene_triangle *tri = &sc->triangles[i];
+    vector hp = vector_add(ro, vector_scale(rd, t));
+    h->point = hp;
+    h->normal = rt_normal_triangle(tri);
+    /* Scene triangles are double-sided: flip the geometric normal
+     * to face the camera so the back side shades and reflects. */
+    if (vector_dot(h->normal, rd) > 0.0f)
+        h->normal = vector_scale(h->normal, -1.0f);
+    float u, v;
+    uv_planar(hp, tri->v0, h->normal, &u, &v);
+    const scene_material *m = &sc->materials[tri->material];
+    h->albedo = material_sample(m, sc->textures, hp, u, v);
+    h->reflectivity = m->reflectivity;
+    h->unlit = m->unlit;
+    h->portal_index = m->portal_index;
+    h->hit = 1;
+    h->distance = t;
+    h->object_id = RT_OBJ_ID(RT_OBJ_KIND_TRIANGLE, i);
+}
+
+static inline void fill_box_hit(hit_info *h, const scene *sc, int i,
+                                vector ro, vector rd, float t) {
+    const scene_box *b = &sc->boxes[i];
+    vector hp = vector_add(ro, vector_scale(rd, t));
+    h->point = hp;
+    h->normal = rt_normal_box(hp, b);
+    float u, v;
+    rt_box_uv(hp, b, &u, &v);
+    const scene_material *m = &sc->materials[b->material];
+    h->albedo = material_sample(m, sc->textures, hp, u, v);
+    h->reflectivity = m->reflectivity;
+    h->unlit = m->unlit;
+    h->portal_index = m->portal_index;
+    h->hit = 1;
+    h->distance = t;
+    h->object_id = RT_OBJ_ID(RT_OBJ_KIND_BOX, i);
+}
+
+/* ---------------------------------------------------------------------
+ * Scene-BVH traversal.
+ *
+ * Ties: the linear closest_hit uses strict `<`, so on an exact t tie the
+ * primitive visited first wins — kind order (sphere, plane, disc,
+ * cylinder, cone, torus, triangle, mesh, box, sprite, heightfield), then
+ * index. The BVH visits primitives in spatial order instead, so every
+ * comparison against a BVH candidate breaks t ties with that same
+ * (rank, index) key. Output therefore matches the linear path exactly.
+ * ------------------------------------------------------------------- */
+
+static const uint8_t SBVH_RANK[12] = {
+    [RT_OBJ_KIND_SPHERE] = 0,   [RT_OBJ_KIND_PLANE] = 1,
+    [RT_OBJ_KIND_DISC] = 2,     [RT_OBJ_KIND_CYLINDER] = 3,
+    [RT_OBJ_KIND_CONE] = 4,     [RT_OBJ_KIND_TORUS] = 5,
+    [RT_OBJ_KIND_TRIANGLE] = 6, [RT_OBJ_KIND_MESH] = 7,
+    [RT_OBJ_KIND_BOX] = 8,      [RT_OBJ_KIND_SPRITE] = 9,
+    [RT_OBJ_KIND_HEIGHTFIELD] = 10,
+};
+
+static inline uint32_t sbvh_order_key(int kind, int index) {
+    return ((uint32_t)SBVH_RANK[kind] << 24) | ((uint32_t)index & 0x00FFFFFFu);
+}
+
+static inline float sbvh_intersect(const scene *sc, uint32_t ref,
+                                   vector ro, vector rd) {
+    int i = RT_SBVH_INDEX(ref);
+    switch (RT_SBVH_KIND(ref)) {
+    case RT_OBJ_KIND_SPHERE:   return rt_intersect_sphere(ro, rd, &sc->spheres[i]);
+    case RT_OBJ_KIND_DISC:     return rt_intersect_disc(ro, rd, &sc->discs[i]);
+    case RT_OBJ_KIND_CYLINDER: return rt_intersect_cylinder(ro, rd, &sc->cylinders[i]);
+    case RT_OBJ_KIND_CONE:     return rt_intersect_cone(ro, rd, &sc->cones[i]);
+    case RT_OBJ_KIND_TORUS:    return rt_intersect_torus(ro, rd, &sc->toruses[i]);
+    case RT_OBJ_KIND_TRIANGLE: return rt_intersect_triangle(ro, rd, &sc->triangles[i]);
+    case RT_OBJ_KIND_BOX:      return rt_intersect_box(ro, rd, &sc->boxes[i]);
+    default:                   return -1.0f;
+    }
+}
+
+/* Nearest BVH primitive along the ray. Returns 1 and sets *t_out / *ref_out
+ * on a hit. Nearer child first; any node entered beyond the best t so far
+ * is skipped (ties still visited, so the tie-break above sees them). */
+static int sbvh_closest(const rt_scene_bvh *b, const scene *sc,
+                        vector ro, vector rd, float *t_out, uint32_t *ref_out) {
+    if (b->prim_count == 0) return 0;
+    vector inv = {1.0f / rd.x, 1.0f / rd.y, 1.0f / rd.z};
+
+    struct { int node; float t; } stack[128];
+    int sp = 0;
+    float te;
+    if (!rt_bvh_ray_aabb(ro, inv, b->nodes[0].aabb_min, b->nodes[0].aabb_max, &te))
+        return 0;
+    stack[sp].node = 0; stack[sp].t = te; sp++;
+
+    int found = 0;
+    float best = FLT_MAX;
+    uint32_t best_ref = 0, best_key = 0xFFFFFFFFu;
+
+    while (sp > 0) {
+        sp--;
+        if (stack[sp].t > best) continue;
+        const rt_bvh_node *n = &b->nodes[stack[sp].node];
+        if (n->tri_count > 0) {
+            for (int k = n->tri_start; k < n->tri_start + n->tri_count; k++) {
+                uint32_t ref = b->prims[k];
+                float t = sbvh_intersect(sc, ref, ro, rd);
+                if (!(t > 0.0f) || t > best) continue;
+                uint32_t key = sbvh_order_key(RT_SBVH_KIND(ref), RT_SBVH_INDEX(ref));
+                if (t < best || key < best_key) {
+                    best = t; best_ref = ref; best_key = key; found = 1;
+                }
+            }
+            continue;
+        }
+        int li = stack[sp].node + 1;
+        int ri = stack[sp].node + n->second_child_offset;
+        float tl, tr;
+        int hl = rt_bvh_ray_aabb(ro, inv, b->nodes[li].aabb_min, b->nodes[li].aabb_max, &tl) && tl <= best;
+        int hr = rt_bvh_ray_aabb(ro, inv, b->nodes[ri].aabb_min, b->nodes[ri].aabb_max, &tr) && tr <= best;
+        if (hl && hr) {
+            /* Push the farther child first so the nearer pops next. */
+            if (tl <= tr) {
+                stack[sp].node = ri; stack[sp].t = tr; sp++;
+                stack[sp].node = li; stack[sp].t = tl; sp++;
+            } else {
+                stack[sp].node = li; stack[sp].t = tl; sp++;
+                stack[sp].node = ri; stack[sp].t = tr; sp++;
+            }
+        } else if (hl) {
+            stack[sp].node = li; stack[sp].t = tl; sp++;
+        } else if (hr) {
+            stack[sp].node = ri; stack[sp].t = tr; sp++;
+        }
+    }
+    if (found) { *t_out = best; *ref_out = best_ref; }
+    return found;
+}
+
+static inline void fill_sbvh_hit(hit_info *h, const scene *sc, uint32_t ref,
+                                 vector ro, vector rd, float t) {
+    int i = RT_SBVH_INDEX(ref);
+    switch (RT_SBVH_KIND(ref)) {
+    case RT_OBJ_KIND_SPHERE:
+        fill_sphere_hit(h, sc, &sc->spheres[i], i,
+                        vector_add(ro, vector_scale(rd, t)), t);
+        break;
+    case RT_OBJ_KIND_DISC:     fill_disc_hit(h, sc, i, ro, rd, t); break;
+    case RT_OBJ_KIND_CYLINDER: fill_cylinder_hit(h, sc, i, ro, rd, t); break;
+    case RT_OBJ_KIND_CONE:     fill_cone_hit(h, sc, i, ro, rd, t); break;
+    case RT_OBJ_KIND_TORUS:    fill_torus_hit(h, sc, i, ro, rd, t); break;
+    case RT_OBJ_KIND_TRIANGLE: fill_triangle_hit(h, sc, i, ro, rd, t); break;
+    case RT_OBJ_KIND_BOX:      fill_box_hit(h, sc, i, ro, rd, t); break;
+    default: break;
+    }
+}
+
 static hit_info closest_hit(vector ro, vector rd, const scene *scene,
+                            const rt_scene_bvh *sbvh,
                             const mat4 *mesh_world_inv,
                             vector camera_origin) {
     hit_info h = {0};
     h.portal_index = -1;
     float closest_t = FLT_MAX;
 
+    /* Bounded analytic primitives come from the scene BVH (when one was
+     * built): find the nearest first, fill it last — only if no linear
+     * primitive below beats it. */
+    uint32_t bvh_ref = 0;
+    int bvh_found = sbvh ? sbvh_closest(sbvh, scene, ro, rd, &closest_t, &bvh_ref) : 0;
+    uint32_t bvh_key = bvh_found
+        ? sbvh_order_key(RT_SBVH_KIND(bvh_ref), RT_SBVH_INDEX(bvh_ref)) : 0;
+
+    /* Does a linear primitive's hit at t beat the current closest? Equal t
+     * against a still-standing BVH candidate falls back to loop order. */
+    #define LIN_BEATS(t, kind, idx)                                         \
+        ((t) > 0.0f && ((t) < closest_t ||                                  \
+            (bvh_found && (t) == closest_t &&                               \
+             sbvh_order_key((kind), (idx)) < bvh_key)))
+
     for (int i = 0; i < scene->sphere_count; i++) {
         const scene_sphere *sph = &scene->spheres[i];
+        if (sbvh && !rt_sbvh_sphere_is_linear(sph)) continue;   /* in the BVH */
 
         /* Portal-traversal: each non-zero entry in sph->portal_disc1 is
          * a paired-rigid disc portal this sphere is straddling. The
@@ -556,7 +833,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
 
         /* --- Original hit, clipped against all tagged portals --- */
         float t = rt_intersect_sphere(ro, rd, sph);
-        if (t > 0.0f && t < closest_t) {
+        if (LIN_BEATS(t, RT_OBJ_KIND_SPHERE, i)) {
             vector hp = vector_add(ro, vector_scale(rd, t));
             int keep = 1;
             /* Disc clips: must be in front of every tagged disc. */
@@ -580,6 +857,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             }
             if (keep) {
                 closest_t = t;
+                bvh_found = 0;
                 fill_sphere_hit(&h, scene, sph, i, hp, t);
             }
         }
@@ -618,7 +896,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                 /* portal_disc1[*] / portal_sphere1[*] all zero — no recursion */
             };
             float tv = rt_intersect_sphere(ro, rd, &virt);
-            if (tv > 0.0f && tv < closest_t) {
+            if (LIN_BEATS(tv, RT_OBJ_KIND_SPHERE, i)) {
                 vector hpv = vector_add(ro, vector_scale(rd, tv));
                 float depth = vector_dot(vector_sub(hpv, exit_disc->center),
                                           exit_disc->normal);
@@ -633,6 +911,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                             sph->portal_disc1, p,
                             sph->portal_sphere1, 0)) {
                         closest_t = tv;
+                        bvh_found = 0;
                         fill_sphere_hit(&h, scene, &virt, i, hpv, tv);
                     }
                 }
@@ -659,7 +938,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                 .material = sph->material,
             };
             float tv = rt_intersect_sphere(ro, rd, &virt);
-            if (tv > 0.0f && tv < closest_t) {
+            if (LIN_BEATS(tv, RT_OBJ_KIND_SPHERE, i)) {
                 vector hpv = vector_add(ro, vector_scale(rd, tv));
                 vector d = vector_sub(hpv, exit_sph->center);
                 if (vector_dot(d, d) >= exit_sph->radius * exit_sph->radius) {
@@ -674,6 +953,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
                             SCENE_MAX_PORTAL_TRAVERSALS,
                             sph->portal_sphere1, p)) {
                         closest_t = tv;
+                        bvh_found = 0;
                         fill_sphere_hit(&h, scene, &virt, i, hpv, tv);
                     }
                 }
@@ -683,8 +963,9 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
 
     for (int i = 0; i < scene->plane_count; i++) {
         float t = rt_intersect_plane(ro, rd, &scene->planes[i]);
-        if (t > 0.0f && t < closest_t) {
+        if (LIN_BEATS(t, RT_OBJ_KIND_PLANE, i)) {
             closest_t = t;
+            bvh_found = 0;
             vector hp = vector_add(ro, vector_scale(rd, t));
             h.point = hp;
             h.normal = rt_normal_plane(&scene->planes[i]);
@@ -701,132 +982,43 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
         }
     }
 
-    for (int i = 0; i < scene->disc_count; i++) {
+    for (int i = 0; i < (sbvh ? 0 : scene->disc_count); i++) {
         float t = rt_intersect_disc(ro, rd, &scene->discs[i]);
         if (t > 0.0f && t < closest_t) {
             closest_t = t;
-            vector hp = vector_add(ro, vector_scale(rd, t));
-            h.point = hp;
-            vector authored_n = rt_normal_disc(&scene->discs[i]);
-            h.normal = authored_n;
-            /* Discs are double-sided: flip the authored normal to face
-             * the camera so the back side shades and reflects. */
-            if (vector_dot(h.normal, rd) > 0.0f)
-                h.normal = vector_scale(h.normal, -1.0f);
-            float u, v;
-            uv_planar(hp, scene->discs[i].center, h.normal, &u, &v);
-            const scene_material *m = &scene->materials[scene->discs[i].material];
-            h.albedo = material_sample(m, scene->textures, hp, u, v);
-            h.reflectivity = m->reflectivity;
-            h.unlit = m->unlit;
-            h.portal_index = m->portal_index;
-            h.entry_center = scene->discs[i].center;
-            h.entry_normal = authored_n;
-            {
-                /* Normalized portal UV: project (hit - center) onto the
-                 * disc's tangent basis, divide by radius. Range [-1, 1]
-                 * within the disc; matches the convention used by
-                 * inverse_disc() in the PARAMETRIC dispatch. */
-                vector etu, etv;
-                tangent_basis(authored_n, &etu, &etv);
-                vector offset = vector_sub(hp, scene->discs[i].center);
-                float r = scene->discs[i].radius > 0.0f ? scene->discs[i].radius : 1.0f;
-                h.entry_u = vector_dot(offset, etu) / r;
-                h.entry_v = vector_dot(offset, etv) / r;
-            }
-            h.hit = 1;
-            h.distance = t;
-            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_DISC, i);
+            fill_disc_hit(&h, scene, i, ro, rd, t);
         }
     }
 
-    for (int i = 0; i < scene->cylinder_count; i++) {
+    for (int i = 0; i < (sbvh ? 0 : scene->cylinder_count); i++) {
         float t = rt_intersect_cylinder(ro, rd, &scene->cylinders[i]);
         if (t > 0.0f && t < closest_t) {
             closest_t = t;
-            vector hp = vector_add(ro, vector_scale(rd, t));
-            h.point = hp;
-            h.normal = rt_normal_cylinder(hp, &scene->cylinders[i]);
-            /* Two-sided so inside-view (camera enclosed by the cylinder)
-             * shades and reflects against the inner wall — matches the
-             * disc convention above. Without this, racer-style tunnels
-             * built from cylinders go pitch-black inside. */
-            if (vector_dot(h.normal, rd) > 0.0f)
-                h.normal = vector_scale(h.normal, -1.0f);
-            float u, v;
-            uv_cylinder(hp, &scene->cylinders[i], &u, &v);
-            const scene_material *m = &scene->materials[scene->cylinders[i].material];
-            h.albedo = material_sample(m, scene->textures, hp, u, v);
-            h.reflectivity = m->reflectivity;
-            h.unlit = m->unlit;
-            h.portal_index = m->portal_index;
-            h.hit = 1;
-            h.distance = t;
-            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_CYLINDER, i);
+            fill_cylinder_hit(&h, scene, i, ro, rd, t);
         }
     }
 
-    for (int i = 0; i < scene->cone_count; i++) {
+    for (int i = 0; i < (sbvh ? 0 : scene->cone_count); i++) {
         float t = rt_intersect_cone(ro, rd, &scene->cones[i]);
         if (t > 0.0f && t < closest_t) {
             closest_t = t;
-            vector hp = vector_add(ro, vector_scale(rd, t));
-            h.point = hp;
-            h.normal = rt_normal_cone(hp, &scene->cones[i]);
-            float u, v;
-            uv_cone(hp, &scene->cones[i], &u, &v);
-            const scene_material *m = &scene->materials[scene->cones[i].material];
-            h.albedo = material_sample(m, scene->textures, hp, u, v);
-            h.reflectivity = m->reflectivity;
-            h.unlit = m->unlit;
-            h.portal_index = m->portal_index;
-            h.hit = 1;
-            h.distance = t;
-            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_CONE, i);
+            fill_cone_hit(&h, scene, i, ro, rd, t);
         }
     }
 
-    for (int i = 0; i < scene->torus_count; i++) {
+    for (int i = 0; i < (sbvh ? 0 : scene->torus_count); i++) {
         float t = rt_intersect_torus(ro, rd, &scene->toruses[i]);
         if (t > 0.0f && t < closest_t) {
             closest_t = t;
-            vector hp = vector_add(ro, vector_scale(rd, t));
-            h.point = hp;
-            h.normal = rt_normal_torus(hp, &scene->toruses[i]);
-            float u, v;
-            uv_torus(hp, &scene->toruses[i], &u, &v);
-            const scene_material *m = &scene->materials[scene->toruses[i].material];
-            h.albedo = material_sample(m, scene->textures, hp, u, v);
-            h.reflectivity = m->reflectivity;
-            h.unlit = m->unlit;
-            h.portal_index = m->portal_index;
-            h.hit = 1;
-            h.distance = t;
-            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_TORUS, i);
+            fill_torus_hit(&h, scene, i, ro, rd, t);
         }
     }
 
-    for (int i = 0; i < scene->triangle_count; i++) {
+    for (int i = 0; i < (sbvh ? 0 : scene->triangle_count); i++) {
         float t = rt_intersect_triangle(ro, rd, &scene->triangles[i]);
         if (t > 0.0f && t < closest_t) {
             closest_t = t;
-            vector hp = vector_add(ro, vector_scale(rd, t));
-            h.point = hp;
-            h.normal = rt_normal_triangle(&scene->triangles[i]);
-            /* Scene triangles are double-sided: flip the geometric normal
-             * to face the camera so the back side shades and reflects. */
-            if (vector_dot(h.normal, rd) > 0.0f)
-                h.normal = vector_scale(h.normal, -1.0f);
-            float u, v;
-            uv_planar(hp, scene->triangles[i].v0, h.normal, &u, &v);
-            const scene_material *m = &scene->materials[scene->triangles[i].material];
-            h.albedo = material_sample(m, scene->textures, hp, u, v);
-            h.reflectivity = m->reflectivity;
-            h.unlit = m->unlit;
-            h.portal_index = m->portal_index;
-            h.hit = 1;
-            h.distance = t;
-            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_TRIANGLE, i);
+            fill_triangle_hit(&h, scene, i, ro, rd, t);
         }
     }
 
@@ -858,12 +1050,13 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             h.hit = 1;                                                    \
             h.distance = (mhv).t;                                         \
             h.object_id = RT_OBJ_ID(RT_OBJ_KIND_MESH, i);                 \
+            bvh_found = 0;                                                \
         } while (0)
 
         /* --- Original mesh, clipped to all tagged portal half-spaces --- */
         rt_mesh_hit mh;
         if (rt_intersect_mesh(ro, rd, mesh, winv, &mh)) {
-            if (mh.t > 0.0f && mh.t < closest_t) {
+            if (LIN_BEATS(mh.t, RT_OBJ_KIND_MESH, i)) {
                 vector hp = vector_add(ro, vector_scale(rd, mh.t));
                 int keep = 1;
                 /* Disc clips. */
@@ -910,7 +1103,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
 
             rt_mesh_hit mhv;
             if (rt_intersect_mesh(ro, rd, mesh, &virt_winv, &mhv)) {
-                if (mhv.t > 0.0f && mhv.t < closest_t) {
+                if (LIN_BEATS(mhv.t, RT_OBJ_KIND_MESH, i)) {
                     vector hpv = vector_add(ro, vector_scale(rd, mhv.t));
                     float depth = vector_dot(
                         vector_sub(hpv, exit_disc->center),
@@ -965,7 +1158,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
 
             rt_mesh_hit mhv;
             if (rt_intersect_mesh(ro, rd, mesh, &virt_winv, &mhv)) {
-                if (mhv.t > 0.0f && mhv.t < closest_t) {
+                if (LIN_BEATS(mhv.t, RT_OBJ_KIND_MESH, i)) {
                     vector hpv = vector_add(ro, vector_scale(rd, mhv.t));
                     vector d = vector_sub(hpv, exit_sph->center);
                     if (vector_dot(d, d) >=
@@ -989,23 +1182,11 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
         #undef MESH_FILL_HIT
     }
 
-    for (int i = 0; i < scene->box_count; i++) {
+    for (int i = 0; i < (sbvh ? 0 : scene->box_count); i++) {
         float t = rt_intersect_box(ro, rd, &scene->boxes[i]);
         if (t > 0.0f && t < closest_t) {
             closest_t = t;
-            vector hp = vector_add(ro, vector_scale(rd, t));
-            h.point = hp;
-            h.normal = rt_normal_box(hp, &scene->boxes[i]);
-            float u, v;
-            rt_box_uv(hp, &scene->boxes[i], &u, &v);
-            const scene_material *m = &scene->materials[scene->boxes[i].material];
-            h.albedo = material_sample(m, scene->textures, hp, u, v);
-            h.reflectivity = m->reflectivity;
-            h.unlit = m->unlit;
-            h.portal_index = m->portal_index;
-            h.hit = 1;
-            h.distance = t;
-            h.object_id = RT_OBJ_ID(RT_OBJ_KIND_BOX, i);
+            fill_box_hit(&h, scene, i, ro, rd, t);
         }
     }
 
@@ -1013,7 +1194,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
         vector spr_right, spr_up, spr_normal;
         float t = rt_intersect_sprite(ro, rd, &scene->sprites[i],
                                        camera_origin, &spr_right, &spr_up, &spr_normal);
-        if (t > 0.0f && t < closest_t) {
+        if (LIN_BEATS(t, RT_OBJ_KIND_SPRITE, i)) {
             int frame_idx = rt_sprite_select_frame(&scene->sprites[i], camera_origin);
             const scene_frame *frame = &scene->sprites[i].frames[frame_idx];
             vector hp = vector_add(ro, vector_scale(rd, t));
@@ -1023,6 +1204,7 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
             if (alpha == 0) continue;
 
             closest_t = t;
+            bvh_found = 0;
             h.point = hp;
             h.normal = spr_normal;
             h.albedo.r = (pixel >> 16) & 0xFF;
@@ -1043,8 +1225,9 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
         vector hn;
         int cell_r, cell_c;
         if (rt_intersect_heightfield(hf, ro, rd, &t, &hn, &cell_r, &cell_c)) {
-            if (t > 0.0f && t < closest_t) {
+            if (LIN_BEATS(t, RT_OBJ_KIND_HEIGHTFIELD, i)) {
                 closest_t = t;
+                bvh_found = 0;
                 h.point = vector_add(ro, vector_scale(rd, t));
                 h.normal = hn;
                 int cells_per_row = hf->cols - 1;
@@ -1077,6 +1260,9 @@ static hit_info closest_hit(vector ro, vector rd, const scene *scene,
         }
     }
 
+    #undef LIN_BEATS
+
+    if (bvh_found) fill_sbvh_hit(&h, scene, bvh_ref, ro, rd, closest_t);
     return h;
 }
 
@@ -1151,6 +1337,7 @@ static inline float surface_shade(const scene *scene, const hit_info *h) {
 /* March a photon along its geodesic; defined below. Forward-declared so the
  * single tracer can call it for every leg. */
 static int geodesic_march(vector ro, vector rd, const scene *scene,
+                          const rt_scene_bvh *sbvh,
                           const mat4 *mesh_world_inv, vector camera_origin,
                           hit_info *h_out, vector *rd_out, float *depth_io);
 
@@ -1166,7 +1353,8 @@ static int geodesic_march(vector ro, vector rd, const scene *scene,
  * exactly as the inline loop used to fill `y * width + x`. The linear
  * (un-clamped) radiance is written through out_r/out_g/out_b. */
 static void trace_primary(vector ro, vector rd,
-                          const scene *scene, const mat4 *mesh_world_inv,
+                          const scene *scene, const rt_scene_bvh *sbvh,
+                          const mat4 *mesh_world_inv,
                           vector camera_origin,
                           rt_gbuffer *gbuf, int gbuf_idx,
                           float *out_r, float *out_g, float *out_b) {
@@ -1194,7 +1382,7 @@ static void trace_primary(vector ro, vector rd,
          * space); reflection bounces off it. */
         hit_info h = {0};
         vector   rd_hit = rd;
-        int status = geodesic_march(ro, rd, scene, mesh_world_inv,
+        int status = geodesic_march(ro, rd, scene, sbvh, mesh_world_inv,
                                     camera_origin, &h, &rd_hit, &depth_acc);
 
         /* Captured by an event horizon: the photon never returns. We stop
@@ -1431,6 +1619,7 @@ static void trace_primary(vector ro, vector rd,
  * On escape a final near-straight closest_hit is taken so a distant
  * background (e.g. an enclosing star sphere) is still sampled. */
 static int geodesic_march(vector ro, vector rd, const scene *scene,
+                          const rt_scene_bvh *sbvh,
                           const mat4 *mesh_world_inv, vector camera_origin,
                           hit_info *h_out, vector *rd_out, float *depth_io) {
     /* Flat space → a geodesic is a straight line. This single check is what
@@ -1440,7 +1629,7 @@ static int geodesic_march(vector ro, vector rd, const scene *scene,
      * no holes never satisfies the escape test). It is the one and only
      * "is the medium curved?" branch in the tracer. */
     if (scene->blackhole_count == 0) {
-        hit_info h = closest_hit(ro, rd, scene, mesh_world_inv, camera_origin);
+        hit_info h = closest_hit(ro, rd, scene, sbvh, mesh_world_inv, camera_origin);
         if (h.hit) { *h_out = h; *rd_out = rd; *depth_io += h.distance; return 1; }
         return -1;
     }
@@ -1497,7 +1686,7 @@ static int geodesic_march(vector ro, vector rd, const scene *scene,
         if (seg_len < 1e-8f) continue;
         vector sdir = vector_scale(seg, 1.0f / seg_len);
 
-        hit_info h = closest_hit(x_prev, sdir, scene, mesh_world_inv,
+        hit_info h = closest_hit(x_prev, sdir, scene, sbvh, mesh_world_inv,
                                  camera_origin);
         if (h.hit && h.distance <= seg_len) {
             *h_out  = h;
@@ -1510,7 +1699,7 @@ static int geodesic_march(vector ro, vector rd, const scene *scene,
 
     /* Budget spent or escaped: straight shot for the background. */
     vector sdir = vector_normalize(v);
-    hit_info h = closest_hit(x, sdir, scene, mesh_world_inv, camera_origin);
+    hit_info h = closest_hit(x, sdir, scene, sbvh, mesh_world_inv, camera_origin);
     if (h.hit) {
         *h_out  = h;
         *rd_out = sdir;
@@ -1524,6 +1713,7 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
                      const rt_viewport *viewport,
                      int y_start, int y_end,
                      const scene_camera *camera, const scene *scene,
+                     const rt_scene_bvh *sbvh,
                      const mat4 *mesh_world_inv,
                      int interlace_field) {
     int width = viewport->width;
@@ -1554,7 +1744,7 @@ void rt_render_chunk(uint32_t *pixel_buf, rt_gbuffer *gbuf,
              * nothing extra and lensed scenes bend primary AND reflection
              * legs alike. */
             float result_r, result_g, result_b;
-            trace_primary(camera->origin, dir, scene, mesh_world_inv,
+            trace_primary(camera->origin, dir, scene, sbvh, mesh_world_inv,
                           camera->origin, gbuf, y * width + x,
                           &result_r, &result_g, &result_b);
 
