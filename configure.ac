@@ -198,6 +198,7 @@ AC_CONFIG_FILES([
     apps/dungeon/Makefile
     apps/outpost/Makefile
     apps/kmeans/Makefile
+    apps/ricochet/Makefile
 ])
 if test "x$build_term" = "xyes"; then
     AC_CONFIG_FILES([libs/term/Makefile apps/tty3d/Makefile])

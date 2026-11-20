@@ -157,3 +157,4 @@ samples/
 libs/math/tests/check_matrix
 apps/outpost/outpost
 apps/kmeans/kmeans
+apps/ricochet/ricochet
