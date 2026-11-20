@@ -70,8 +70,11 @@ AC_SUBST([GL_CFLAGS])
 # --enable-opengl to fail configure if compute is unavailable, or
 # --disable-opengl to skip the backend.
 #
-# Windows is not yet supported (would need a runtime loader for the
-# full GL 4.3 surface, not just the FBO subset gl_compat handles).
+# On Windows opengl32.dll only exports GL 1.1, so the backend's GL 4.3
+# entry points are loaded at runtime by libs/raytrace/gl_compat.c; there
+# is nothing to link-test, so we only check that the headers declare the
+# compute API. At runtime the backend declines (apps fall back to CPU)
+# when the driver lacks GL 4.3.
 AC_ARG_ENABLE([opengl],
     AS_HELP_STRING([--enable-opengl], [Enable OpenGL compute backend (default: auto)]),
     [enable_opengl=$enableval],
@@ -81,9 +84,14 @@ have_opengl_backend=no
 if test "x$enable_opengl" != "xno"; then
     case $host_os in
         mingw*|cygwin*|msys*)
-            if test "x$enable_opengl" = "xyes"; then
-                AC_MSG_ERROR([OpenGL compute backend not yet supported on Windows])
-            fi
+            AC_CHECK_TYPE([PFNGLDISPATCHCOMPUTEPROC],
+                [have_opengl_backend=yes],
+                [if test "x$enable_opengl" = "xyes"; then
+                     AC_MSG_ERROR([OpenGL compute backend requested but GL/glext.h lacks GL 4.3 compute declarations])
+                 fi],
+                [[#include <windows.h>
+#include <GL/gl.h>
+#include <GL/glext.h>]])
             ;;
         darwin*)
             # macOS caps OpenGL at 4.1 — no compute shaders.

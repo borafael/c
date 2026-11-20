@@ -21,8 +21,11 @@
 #include "matrix.h"
 
 #define GL_GLEXT_PROTOTYPES 1
-#include <GL/gl.h>
-#include <GL/glext.h>
+/* gl_compat.h pulls in GL/gl.h + GL/glext.h. On Linux it adds nothing (the
+ * prototypes above resolve against libGL at link time); on Windows it
+ * aliases every post-1.1 entry point used below to a pointer loaded by
+ * gl_compat_init(), since opengl32.dll only exports GL 1.1. */
+#include "gl_compat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -2221,6 +2224,14 @@ static const char *opengl_name(const rt_renderer *r) {
 
 rt_renderer *rt_opengl_renderer_create(void) {
     if (!check_gl_context()) return NULL;
+    if (!gl_compat_has_compute()) {
+        /* Windows: gl_compat_init() wasn't called before creating this
+         * renderer, or the driver lacks a GL 4.3 entry point. Decline so
+         * callers fall back to the CPU backend instead of calling NULL. */
+        fprintf(stderr, "rt_opengl: GL 4.3 entry points not loaded "
+                        "(call gl_compat_init first)\n");
+        return NULL;
+    }
 
     rt_renderer *r = calloc(1, sizeof(*r));
     if (!r) return NULL;

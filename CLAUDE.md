@@ -119,7 +119,7 @@ make check                 # Run unit tests (CHECK framework)
 
 Top-level `SUBDIRS` enforces build order: `libs/math libs/thread libs/physics libs/scene libs/raytrace libs/postfx libs/ini libs/slice libs/battleforge` then every app. `libs/term` and `apps/tty3d` are appended conditionally on `BUILD_TERM` (POSIX hosts only — skipped on MinGW). `apps/ttycam` is further gated on `BUILD_TTYCAM`, set only when `configure` finds `linux/videodev2.h` (V4L2 webcam capture — Linux-only, skipped on macOS).
 
-The compute backend is gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`. CPU is always built; the OpenGL compute backend requires GL 4.3+ (Linux only). Display GL (used by every app for the FBO blit) is always linked: `-lGL` on Linux, `-lopengl32` on Windows; on Windows the GL≥3.0 entry points are loaded at runtime via `libs/raytrace/gl_compat.h`.
+The compute backend is gated in `configure.ac` via `AM_CONDITIONAL` + `AC_DEFINE`. CPU is always built; the OpenGL compute backend requires GL 4.3+ (Linux and Windows; macOS stops at GL 4.1). Display GL (used by every app for the FBO blit) is always linked: `-lGL` on Linux, `-lopengl32` on Windows. On Windows `opengl32.dll` only exports GL 1.1, so every newer entry point — the FBO/blit set and the compute backend's GL 4.3 surface — is loaded at runtime by `gl_compat_init()` (`libs/raytrace/gl_compat.{h,c}`, one X-macro list per group). Apps must call it after creating the GL context and before creating an `RT_BACKEND_OPENGL` renderer; if the driver lacks any compute entry point, `gl_compat_has_compute()` is 0 and the backend declines so apps fall back to CPU. `build-windows.sh` passes `--enable-opengl`.
 
 ### Cross-compile to Windows
 
@@ -168,7 +168,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 
 - SDL2 (pkg-config)
 - CHECK >= 0.9.6 (pkg-config) — unit test framework
-- OpenGL 4.3+ (optional, pkg-config `gl`) — compute-shader raytrace backend
+- OpenGL 4.3+ (optional, pkg-config `gl` on Linux; runtime-loaded on Windows) — compute-shader raytrace backend
 - libm, pthreads
 - ufbx — vendored under `libs/scene/vendor/ufbx/`, no external dependency
 

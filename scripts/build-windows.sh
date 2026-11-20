@@ -116,7 +116,7 @@ if [ ! -f "$BUILD_DIR/Makefile" ]; then
         SED="$GNU_SED" \
         "$ROOT/configure" \
             --host="$HOST" \
-            --disable-opengl \
+            --enable-opengl \
             --disable-tests \
             CFLAGS="-O2"
     )
