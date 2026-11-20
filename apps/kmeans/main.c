@@ -291,13 +291,15 @@ static void km_update(kmeans *km) {
         } else {
             /* Empty cluster: re-seed on the point farthest from its
              * centroid, the usual fix-up. */
-            int far = 0;
+            /* Not named `far`: <windows.h> (via SDL on MinGW) #defines
+             * far/near as empty macros. */
+            int farthest = 0;
             float fd = -1.0f;
             for (int i = 0; i < km->n; i++) {
                 float d = dist2(km->pts[i], km->cent[km->assign[i]]);
-                if (d > fd) { fd = d; far = i; }
+                if (d > fd) { fd = d; farthest = i; }
             }
-            km->cent[c] = km->pts[far];
+            km->cent[c] = km->pts[farthest];
         }
     }
     km->iteration++;

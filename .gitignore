@@ -155,3 +155,4 @@ samples/
 # --- New test binaries ---
 libs/math/tests/check_matrix
 apps/outpost/outpost
+apps/kmeans/kmeans
