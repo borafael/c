@@ -18,6 +18,7 @@
 #include "mesh.h"
 #include "scene_accel.h"
 #include "cpu/bvh.h"   /* rt_bvh_node — shared BVH node format across backends */
+#include "cpu/scene_bvh.h"
 #include "matrix.h"
 
 #define GL_GLEXT_PROTOTYPES 1
@@ -67,6 +68,9 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "uniform int   u_light_count;\n"
 "uniform int   u_mesh_count;\n"
 "uniform int   u_material_count;\n"
+"uniform int   u_sbvh_count;      /* scene BVH prims; 0 = linear scan */\n"
+"uniform int   u_sbvh_node_base;  /* first scene BVH node in bvh_nodes[] */\n"
+"uniform int   u_sbvh_ref_base;   /* first leaf ref in hf_data[] */\n"
 "\n"
 "struct Sphere   { vec4 center_radius; ivec4 mat; };\n"
 "struct Plane    { vec4 point; vec4 normal; ivec4 mat; };\n"
@@ -880,7 +884,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    uint  object_id;\n"
 "};\n"
 "\n"
-"HitInfo closest_hit(vec3 ro, vec3 rd) {\n"
+"HitInfo hit_none() {\n"
 "    HitInfo h;\n"
 "    h.hit = false;\n"
 "    h.unlit = false;\n"
@@ -890,131 +894,260 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "    h.reflectivity = 0.0;\n"
 "    h.distance = 0.0;\n"
 "    h.object_id = 0u;\n"
-"    float closest_t = 1e30;\n"
+"    return h;\n"
+"}\n"
 "\n"
-"    for (int i = 0; i < u_sphere_count; i++) {\n"
-"        float t = isect_sphere(ro, rd, spheres[i]);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            vec3 hp = ro + rd * t;\n"
-"            h.point  = hp;\n"
-"            h.normal = normalize(hp - spheres[i].center_radius.xyz);\n"
-"            vec2 uv  = uv_sphere(hp, spheres[i].center_radius.xyz);\n"
-"            int midx = spheres[i].mat.x;\n"
-"            h.albedo = material_sample(midx, hp, uv);\n"
-"            h.reflectivity = materials[midx].scale.y;\n"
-"            h.unlit = (materials[midx].kind.z != 0);\n"
-"            h.hit = true;\n"
-"            h.distance = t;\n"
-"            h.object_id = (RT_OBJ_KIND_SPHERE << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"/* Exact-t ties go to the primitive the old one-loop-per-kind scan visited\n"
+" * first: kind rank (sphere, plane, disc, cylinder, cone, torus, triangle,\n"
+" * mesh, box, sprite, heightfield), then index. (t, key) is a strict total\n"
+" * order, so the result is the same whatever order primitives are tested\n"
+" * in — which lets the scene BVH below visit them spatially and still\n"
+" * match the linear scan pixel for pixel (same rule as cpu/render_chunk.c). */\n"
+"const uint RT_NO_KEY = 0xFFFFFFFFu;\n"
+"uint hit_key(uint rank, int i) { return (rank << 24) | (uint(i) & 0x00FFFFFFu); }\n"
+"bool hit_better(float t, uint key, float ct, uint ck) {\n"
+"    return t > 0.0 && (t < ct || (t == ct && key < ck));\n"
+"}\n"
+"\n"
+"void try_sphere(int i, vec3 ro, vec3 rd, inout float ct, inout uint ck, inout HitInfo h) {\n"
+"    float t = isect_sphere(ro, rd, spheres[i]);\n"
+"    uint key = hit_key(0u, i);\n"
+"    if (!hit_better(t, key, ct, ck)) return;\n"
+"    ct = t; ck = key;\n"
+"    vec3 hp = ro + rd * t;\n"
+"    h.point  = hp;\n"
+"    h.normal = normalize(hp - spheres[i].center_radius.xyz);\n"
+"    vec2 uv  = uv_sphere(hp, spheres[i].center_radius.xyz);\n"
+"    int midx = spheres[i].mat.x;\n"
+"    h.albedo = material_sample(midx, hp, uv);\n"
+"    h.reflectivity = materials[midx].scale.y;\n"
+"    h.unlit = (materials[midx].kind.z != 0);\n"
+"    h.hit = true;\n"
+"    h.distance = t;\n"
+"    h.object_id = (RT_OBJ_KIND_SPHERE << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"}\n"
+"void try_plane(int i, vec3 ro, vec3 rd, inout float ct, inout uint ck, inout HitInfo h) {\n"
+"    float t = isect_plane(ro, rd, planes[i]);\n"
+"    uint key = hit_key(1u, i);\n"
+"    if (!hit_better(t, key, ct, ck)) return;\n"
+"    ct = t; ck = key;\n"
+"    vec3 hp = ro + rd * t;\n"
+"    h.point  = hp;\n"
+"    h.normal = planes[i].normal.xyz;\n"
+"    vec2 uv  = uv_planar(hp, planes[i].point.xyz, h.normal);\n"
+"    int midx = planes[i].mat.x;\n"
+"    h.albedo = material_sample(midx, hp, uv);\n"
+"    h.reflectivity = materials[midx].scale.y;\n"
+"    h.unlit = (materials[midx].kind.z != 0);\n"
+"    h.hit = true;\n"
+"    h.distance = t;\n"
+"    h.object_id = (RT_OBJ_KIND_PLANE << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"}\n"
+"void try_disc(int i, vec3 ro, vec3 rd, inout float ct, inout uint ck, inout HitInfo h) {\n"
+"    float t = isect_disc(ro, rd, discs[i]);\n"
+"    uint key = hit_key(2u, i);\n"
+"    if (!hit_better(t, key, ct, ck)) return;\n"
+"    ct = t; ck = key;\n"
+"    vec3 hp = ro + rd * t;\n"
+"    h.point  = hp;\n"
+"    h.normal = discs[i].normal.xyz;\n"
+"    /* Discs are double-sided: flip to face the camera. */\n"
+"    if (dot(h.normal, rd) > 0.0) h.normal = -h.normal;\n"
+"    vec2 uv  = uv_planar(hp, discs[i].center_radius.xyz, h.normal);\n"
+"    int midx = discs[i].mat.x;\n"
+"    h.albedo = material_sample(midx, hp, uv);\n"
+"    h.reflectivity = materials[midx].scale.y;\n"
+"    h.unlit = (materials[midx].kind.z != 0);\n"
+"    h.hit = true;\n"
+"    h.distance = t;\n"
+"    h.object_id = (RT_OBJ_KIND_DISC << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"}\n"
+"void try_cylinder(int i, vec3 ro, vec3 rd, inout float ct, inout uint ck, inout HitInfo h) {\n"
+"    vec3 hp;\n"
+"    float t = isect_cylinder(ro, rd, cylinders[i], hp);\n"
+"    uint key = hit_key(3u, i);\n"
+"    if (!hit_better(t, key, ct, ck)) return;\n"
+"    ct = t; ck = key;\n"
+"    h.point  = hp;\n"
+"    h.normal = normal_cylinder(hp, cylinders[i]);\n"
+"    vec2 uv  = uv_cyl(hp, cylinders[i]);\n"
+"    int midx = cylinders[i].mat.x;\n"
+"    h.albedo = material_sample(midx, hp, uv);\n"
+"    h.reflectivity = materials[midx].scale.y;\n"
+"    h.unlit = (materials[midx].kind.z != 0);\n"
+"    h.hit = true;\n"
+"    h.distance = t;\n"
+"    h.object_id = (RT_OBJ_KIND_CYLINDER << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"}\n"
+"void try_cone(int i, vec3 ro, vec3 rd, inout float ct, inout uint ck, inout HitInfo h) {\n"
+"    vec3 hp;\n"
+"    float t = isect_cone(ro, rd, cones[i], hp);\n"
+"    uint key = hit_key(4u, i);\n"
+"    if (!hit_better(t, key, ct, ck)) return;\n"
+"    ct = t; ck = key;\n"
+"    h.point  = hp;\n"
+"    h.normal = normal_cone(hp, cones[i]);\n"
+"    vec2 uv  = uv_cone(hp, cones[i]);\n"
+"    int midx = cones[i].mat.x;\n"
+"    h.albedo = material_sample(midx, hp, uv);\n"
+"    h.reflectivity = materials[midx].scale.y;\n"
+"    h.unlit = (materials[midx].kind.z != 0);\n"
+"    h.hit = true;\n"
+"    h.distance = t;\n"
+"    h.object_id = (RT_OBJ_KIND_CONE << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"}\n"
+"void try_torus(int i, vec3 ro, vec3 rd, inout float ct, inout uint ck, inout HitInfo h) {\n"
+"    float t = isect_torus(ro, rd, toruses[i]);\n"
+"    uint key = hit_key(5u, i);\n"
+"    if (!hit_better(t, key, ct, ck)) return;\n"
+"    ct = t; ck = key;\n"
+"    vec3 hp = ro + rd * t;\n"
+"    h.point  = hp;\n"
+"    h.normal = normal_torus(hp, toruses[i]);\n"
+"    vec2 uv  = uv_torus(hp, toruses[i]);\n"
+"    int midx = toruses[i].mat.x;\n"
+"    h.albedo = material_sample(midx, hp, uv);\n"
+"    h.reflectivity = materials[midx].scale.y;\n"
+"    h.unlit = (materials[midx].kind.z != 0);\n"
+"    h.hit = true;\n"
+"    h.distance = t;\n"
+"    h.object_id = (RT_OBJ_KIND_TORUS << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"}\n"
+"void try_triangle(int i, vec3 ro, vec3 rd, inout float ct, inout uint ck, inout HitInfo h) {\n"
+"    float t = isect_triangle(ro, rd, triangles[i]);\n"
+"    uint key = hit_key(6u, i);\n"
+"    if (!hit_better(t, key, ct, ck)) return;\n"
+"    ct = t; ck = key;\n"
+"    vec3 hp = ro + rd * t;\n"
+"    h.point  = hp;\n"
+"    h.normal = normal_triangle(triangles[i]);\n"
+"    /* Scene triangles are double-sided: flip to face the camera. */\n"
+"    if (dot(h.normal, rd) > 0.0) h.normal = -h.normal;\n"
+"    vec2 uv  = uv_planar(hp, triangles[i].v0.xyz, h.normal);\n"
+"    int midx = triangles[i].mat.x;\n"
+"    h.albedo = material_sample(midx, hp, uv);\n"
+"    h.reflectivity = materials[midx].scale.y;\n"
+"    h.unlit = (materials[midx].kind.z != 0);\n"
+"    h.hit = true;\n"
+"    h.distance = t;\n"
+"    h.object_id = (RT_OBJ_KIND_TRIANGLE << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"}\n"
+"void try_box(int i, vec3 ro, vec3 rd, inout float ct, inout uint ck, inout HitInfo h) {\n"
+"    vec3 hp, lhp;\n"
+"    float t = isect_box(ro, rd, boxes[i], hp, lhp);\n"
+"    uint key = hit_key(8u, i);\n"
+"    if (!hit_better(t, key, ct, ck)) return;\n"
+"    ct = t; ck = key;\n"
+"    h.point  = hp;\n"
+"    h.normal = normal_box(lhp, boxes[i]);\n"
+"    vec2 uv  = uv_box_face(lhp, boxes[i]);\n"
+"    int midx = boxes[i].mat.x;\n"
+"    h.albedo = material_sample(midx, hp, uv);\n"
+"    h.reflectivity = materials[midx].scale.y;\n"
+"    h.unlit = (materials[midx].kind.z != 0);\n"
+"    h.hit = true;\n"
+"    h.distance = t;\n"
+"    h.object_id = (RT_OBJ_KIND_BOX << 24) | (uint(i) & 0x00FFFFFFu);\n"
+"}\n"
+"\n"
+"/* ---- Scene BVH ------------------------------------------------------- */\n"
+"/* The host builds the CPU backend's top-level BVH (cpu/scene_bvh.c) each\n"
+" * frame and appends it to the shared buffers: nodes after the mesh BVH\n"
+" * nodes in bvh_nodes[] (from u_sbvh_node_base, same layout: left child =\n"
+" * idx + 1, right = idx + info.z, leaf = info.y prims from info.x), and the\n"
+" * leaf primitive refs ((kind << 24) | index) after the heightfield data in\n"
+" * hf_data[] (from u_sbvh_ref_base). Sharing those two blocks keeps the\n"
+" * shader within 16 storage blocks. u_sbvh_count == 0 means no BVH this\n"
+" * frame: fall back to testing every primitive. */\n"
+"\n"
+"/* Ray-AABB entry distance (clamped to 0 when starting inside), or -1. */\n"
+"float sbvh_enter(int node, vec3 ro, vec3 inv_rd) {\n"
+"    BvhNode n = bvh_nodes[u_sbvh_node_base + node];\n"
+"    vec3 t0 = (n.aabb_min.xyz - ro) * inv_rd;\n"
+"    vec3 t1 = (n.aabb_max.xyz - ro) * inv_rd;\n"
+"    vec3 tmin3 = min(t0, t1);\n"
+"    vec3 tmax3 = max(t0, t1);\n"
+"    float tmn = max(max(tmin3.x, tmin3.y), tmin3.z);\n"
+"    float tmx = min(min(tmax3.x, tmax3.y), tmax3.z);\n"
+"    if (tmx < 0.0 || tmn > tmx) return -1.0;\n"
+"    return max(tmn, 0.0);\n"
+"}\n"
+"\n"
+"void sbvh_closest(vec3 ro, vec3 rd, inout float ct, inout uint ck, inout HitInfo h) {\n"
+"    vec3 inv_rd;\n"
+"    inv_rd.x = (abs(rd.x) > 1e-20) ? 1.0 / rd.x : (rd.x >= 0.0 ? 1e30 : -1e30);\n"
+"    inv_rd.y = (abs(rd.y) > 1e-20) ? 1.0 / rd.y : (rd.y >= 0.0 ? 1e30 : -1e30);\n"
+"    inv_rd.z = (abs(rd.z) > 1e-20) ? 1.0 / rd.z : (rd.z >= 0.0 ? 1e30 : -1e30);\n"
+"\n"
+"    const int STACK = 64;\n"
+"    int   stack_node[STACK];\n"
+"    float stack_t[STACK];\n"
+"    int sp = 0;\n"
+"    float t_root = sbvh_enter(0, ro, inv_rd);\n"
+"    if (t_root < 0.0) return;\n"
+"    stack_node[sp] = 0; stack_t[sp] = t_root; sp++;\n"
+"\n"
+"    while (sp > 0) {\n"
+"        sp--;\n"
+"        int node = stack_node[sp];\n"
+"        /* `>` not `>=`: a box entered exactly at ct may still hold an\n"
+"         * exact-t tie with a lower key. */\n"
+"        if (stack_t[sp] > ct) continue;\n"
+"        BvhNode n = bvh_nodes[u_sbvh_node_base + node];\n"
+"        int count = n.info.y;\n"
+"        if (count > 0) {\n"
+"            int base = u_sbvh_ref_base + n.info.x;\n"
+"            for (int k = 0; k < count; k++) {\n"
+"                uint ref = hf_data[base + k];\n"
+"                uint kind = ref >> 24;\n"
+"                int  idx  = int(ref & 0x00FFFFFFu);\n"
+"                if      (kind == RT_OBJ_KIND_SPHERE)   try_sphere  (idx, ro, rd, ct, ck, h);\n"
+"                else if (kind == RT_OBJ_KIND_BOX)      try_box     (idx, ro, rd, ct, ck, h);\n"
+"                else if (kind == RT_OBJ_KIND_DISC)     try_disc    (idx, ro, rd, ct, ck, h);\n"
+"                else if (kind == RT_OBJ_KIND_CYLINDER) try_cylinder(idx, ro, rd, ct, ck, h);\n"
+"                else if (kind == RT_OBJ_KIND_TRIANGLE) try_triangle(idx, ro, rd, ct, ck, h);\n"
+"                else if (kind == RT_OBJ_KIND_CONE)     try_cone    (idx, ro, rd, ct, ck, h);\n"
+"                else if (kind == RT_OBJ_KIND_TORUS)    try_torus   (idx, ro, rd, ct, ck, h);\n"
+"            }\n"
+"            continue;\n"
+"        }\n"
+"        int l = node + 1;\n"
+"        int r = node + n.info.z;\n"
+"        float tl = sbvh_enter(l, ro, inv_rd);\n"
+"        float tr = sbvh_enter(r, ro, inv_rd);\n"
+"        bool hl = tl >= 0.0 && tl <= ct;\n"
+"        bool hr = tr >= 0.0 && tr <= ct;\n"
+"        /* Push the far child first so the near one pops next: an early\n"
+"         * close hit then prunes the far subtree. */\n"
+"        if (hl && hr) {\n"
+"            if (sp + 2 > STACK) continue;   /* unreachable for sane trees */\n"
+"            bool l_first = tl <= tr;\n"
+"            stack_node[sp] = l_first ? r : l; stack_t[sp] = l_first ? tr : tl; sp++;\n"
+"            stack_node[sp] = l_first ? l : r; stack_t[sp] = l_first ? tl : tr; sp++;\n"
+"        } else if (hl || hr) {\n"
+"            stack_node[sp] = hl ? l : r; stack_t[sp] = hl ? tl : tr; sp++;\n"
 "        }\n"
 "    }\n"
-"    for (int i = 0; i < u_plane_count; i++) {\n"
-"        float t = isect_plane(ro, rd, planes[i]);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            vec3 hp = ro + rd * t;\n"
-"            h.point  = hp;\n"
-"            h.normal = planes[i].normal.xyz;\n"
-"            vec2 uv  = uv_planar(hp, planes[i].point.xyz, h.normal);\n"
-"            int midx = planes[i].mat.x;\n"
-"            h.albedo = material_sample(midx, hp, uv);\n"
-"            h.reflectivity = materials[midx].scale.y;\n"
-"            h.unlit = (materials[midx].kind.z != 0);\n"
-"            h.hit = true;\n"
-"            h.distance = t;\n"
-"            h.object_id = (RT_OBJ_KIND_PLANE << 24) | (uint(i) & 0x00FFFFFFu);\n"
-"        }\n"
+"}\n"
+"\n"
+"HitInfo closest_hit(vec3 ro, vec3 rd) {\n"
+"    HitInfo h = hit_none();\n"
+"    float closest_t = 1e30;\n"
+"    uint  closest_key = RT_NO_KEY;\n"
+"\n"
+"    if (u_sbvh_count > 0) {\n"
+"        sbvh_closest(ro, rd, closest_t, closest_key, h);\n"
+"    } else {\n"
+"        for (int i = 0; i < u_sphere_count;   i++) try_sphere  (i, ro, rd, closest_t, closest_key, h);\n"
+"        for (int i = 0; i < u_disc_count;     i++) try_disc    (i, ro, rd, closest_t, closest_key, h);\n"
+"        for (int i = 0; i < u_cylinder_count; i++) try_cylinder(i, ro, rd, closest_t, closest_key, h);\n"
+"        for (int i = 0; i < u_cone_count;     i++) try_cone    (i, ro, rd, closest_t, closest_key, h);\n"
+"        for (int i = 0; i < u_torus_count;    i++) try_torus   (i, ro, rd, closest_t, closest_key, h);\n"
+"        for (int i = 0; i < u_triangle_count; i++) try_triangle(i, ro, rd, closest_t, closest_key, h);\n"
+"        for (int i = 0; i < u_box_count;      i++) try_box     (i, ro, rd, closest_t, closest_key, h);\n"
 "    }\n"
-"    for (int i = 0; i < u_disc_count; i++) {\n"
-"        float t = isect_disc(ro, rd, discs[i]);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            vec3 hp = ro + rd * t;\n"
-"            h.point  = hp;\n"
-"            h.normal = discs[i].normal.xyz;\n"
-"            /* Discs are double-sided: flip to face the camera. */\n"
-"            if (dot(h.normal, rd) > 0.0) h.normal = -h.normal;\n"
-"            vec2 uv  = uv_planar(hp, discs[i].center_radius.xyz, h.normal);\n"
-"            int midx = discs[i].mat.x;\n"
-"            h.albedo = material_sample(midx, hp, uv);\n"
-"            h.reflectivity = materials[midx].scale.y;\n"
-"            h.unlit = (materials[midx].kind.z != 0);\n"
-"            h.hit = true;\n"
-"            h.distance = t;\n"
-"            h.object_id = (RT_OBJ_KIND_DISC << 24) | (uint(i) & 0x00FFFFFFu);\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_cylinder_count; i++) {\n"
-"        vec3 hp;\n"
-"        float t = isect_cylinder(ro, rd, cylinders[i], hp);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            h.point  = hp;\n"
-"            h.normal = normal_cylinder(hp, cylinders[i]);\n"
-"            vec2 uv  = uv_cyl(hp, cylinders[i]);\n"
-"            int midx = cylinders[i].mat.x;\n"
-"            h.albedo = material_sample(midx, hp, uv);\n"
-"            h.reflectivity = materials[midx].scale.y;\n"
-"            h.unlit = (materials[midx].kind.z != 0);\n"
-"            h.hit = true;\n"
-"            h.distance = t;\n"
-"            h.object_id = (RT_OBJ_KIND_CYLINDER << 24) | (uint(i) & 0x00FFFFFFu);\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_cone_count; i++) {\n"
-"        vec3 hp;\n"
-"        float t = isect_cone(ro, rd, cones[i], hp);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            h.point  = hp;\n"
-"            h.normal = normal_cone(hp, cones[i]);\n"
-"            vec2 uv  = uv_cone(hp, cones[i]);\n"
-"            int midx = cones[i].mat.x;\n"
-"            h.albedo = material_sample(midx, hp, uv);\n"
-"            h.reflectivity = materials[midx].scale.y;\n"
-"            h.unlit = (materials[midx].kind.z != 0);\n"
-"            h.hit = true;\n"
-"            h.distance = t;\n"
-"            h.object_id = (RT_OBJ_KIND_CONE << 24) | (uint(i) & 0x00FFFFFFu);\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_torus_count; i++) {\n"
-"        float t = isect_torus(ro, rd, toruses[i]);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            vec3 hp = ro + rd * t;\n"
-"            h.point  = hp;\n"
-"            h.normal = normal_torus(hp, toruses[i]);\n"
-"            vec2 uv  = uv_torus(hp, toruses[i]);\n"
-"            int midx = toruses[i].mat.x;\n"
-"            h.albedo = material_sample(midx, hp, uv);\n"
-"            h.reflectivity = materials[midx].scale.y;\n"
-"            h.unlit = (materials[midx].kind.z != 0);\n"
-"            h.hit = true;\n"
-"            h.distance = t;\n"
-"            h.object_id = (RT_OBJ_KIND_TORUS << 24) | (uint(i) & 0x00FFFFFFu);\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_triangle_count; i++) {\n"
-"        float t = isect_triangle(ro, rd, triangles[i]);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            vec3 hp = ro + rd * t;\n"
-"            h.point  = hp;\n"
-"            h.normal = normal_triangle(triangles[i]);\n"
-"            /* Scene triangles are double-sided: flip to face the camera. */\n"
-"            if (dot(h.normal, rd) > 0.0) h.normal = -h.normal;\n"
-"            vec2 uv  = uv_planar(hp, triangles[i].v0.xyz, h.normal);\n"
-"            int midx = triangles[i].mat.x;\n"
-"            h.albedo = material_sample(midx, hp, uv);\n"
-"            h.reflectivity = materials[midx].scale.y;\n"
-"            h.unlit = (materials[midx].kind.z != 0);\n"
-"            h.hit = true;\n"
-"            h.distance = t;\n"
-"            h.object_id = (RT_OBJ_KIND_TRIANGLE << 24) | (uint(i) & 0x00FFFFFFu);\n"
-"        }\n"
-"    }\n"
+"    /* Planes are unbounded: always linear. */\n"
+"    for (int i = 0; i < u_plane_count; i++) try_plane(i, ro, rd, closest_t, closest_key, h);\n"
 "    /* --- Mesh triangles via per-mesh BVH (mesh-local space) ----------- */\n"
 "    for (int mi = 0; mi < u_mesh_count; mi++) {\n"
 "        Mesh mesh = meshes[mi];\n"
@@ -1050,6 +1183,8 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "        vec3  best_n_l = vec3(0.0);\n"
 "        vec2  best_uv  = vec2(0.0);\n"
 "        int   best_mat = -1;\n"
+"        uint  mesh_key = hit_key(7u, mi);\n"
+"        bool  tie_ok   = mesh_key < closest_key;\n"
 "        bool  hit_this_mesh = false;\n"
 "\n"
 "        if (bvh_count <= 0) {\n"
@@ -1057,7 +1192,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            for (int ti = tri_base; ti < end; ti++) {\n"
 "                float bu, bv;\n"
 "                float t = isect_triangle_bary(ro_l, rd_l, triangles[ti], bu, bv);\n"
-"                if (t > 0.0 && t < best_t) {\n"
+"                if (t > 0.0 && (t < best_t || (t == best_t && !hit_this_mesh && tie_ok))) {\n"
 "                    best_t = t;\n"
 "                    float bw = 1.0 - bu - bv;\n"
 "                    Triangle tr = triangles[ti];\n"
@@ -1093,7 +1228,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "                    for (int ti = start; ti < end; ti++) {\n"
 "                        float bu, bv;\n"
 "                        float t = isect_triangle_bary(ro_l, rd_l, triangles[ti], bu, bv);\n"
-"                        if (t > 0.0 && t < best_t) {\n"
+"                        if (t > 0.0 && (t < best_t || (t == best_t && !hit_this_mesh && tie_ok))) {\n"
 "                            best_t = t;\n"
 "                            float bw = 1.0 - bu - bv;\n"
 "                            Triangle tr = triangles[ti];\n"
@@ -1117,6 +1252,7 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "\n"
 "        if (hit_this_mesh) {\n"
 "            closest_t = best_t;\n"
+"            closest_key = mesh_key;\n"
 "            /* t is preserved across the linear ray transform, so the\n"
 "             * world-space hit point is just ro + rd * t. */\n"
 "            h.point  = ro + rd * best_t;\n"
@@ -1134,23 +1270,6 @@ static const char *RAYTRACE_SHADER_SOURCE =
 "            h.hit = true;\n"
 "            h.distance = best_t;\n"
 "            h.object_id = (RT_OBJ_KIND_MESH << 24) | (uint(mi) & 0x00FFFFFFu);\n"
-"        }\n"
-"    }\n"
-"    for (int i = 0; i < u_box_count; i++) {\n"
-"        vec3 hp, lhp;\n"
-"        float t = isect_box(ro, rd, boxes[i], hp, lhp);\n"
-"        if (t > 0.0 && t < closest_t) {\n"
-"            closest_t = t;\n"
-"            h.point  = hp;\n"
-"            h.normal = normal_box(lhp, boxes[i]);\n"
-"            vec2 uv  = uv_box_face(lhp, boxes[i]);\n"
-"            int midx = boxes[i].mat.x;\n"
-"            h.albedo = material_sample(midx, hp, uv);\n"
-"            h.reflectivity = materials[midx].scale.y;\n"
-"            h.unlit = (materials[midx].kind.z != 0);\n"
-"            h.hit = true;\n"
-"            h.distance = t;\n"
-"            h.object_id = (RT_OBJ_KIND_BOX << 24) | (uint(i) & 0x00FFFFFFu);\n"
 "        }\n"
 "    }\n"
 "    for (int i = 0; i < u_sprite_count; i++) {\n"
@@ -1408,6 +1527,13 @@ typedef struct {
     GLint u_heightfield_count, u_light_count, u_mesh_count, u_material_count;
     GLint u_sprite_atlas, u_tex_atlas;
     GLint u_have_gbuf;
+    GLint u_sbvh_count, u_sbvh_node_base, u_sbvh_ref_base;
+
+    /* Per-frame top-level BVH over analytic primitives, built on the CPU
+     * (same builder as the CPU backend) and appended to the mesh BVH node
+     * and heightfield data buffers. RT_GPU_BVH=0 disables it. */
+    rt_scene_bvh sbvh;
+    int use_bvh;
 
     /* Per-frame node/mesh transform scratch (shared with CPU path). */
     rt_scene_accel accel;
@@ -1491,6 +1617,9 @@ static void cache_uniform_locs(opengl_backend_data *d) {
     d->u_sprite_atlas       = glGetUniformLocation(d->program, "u_sprite_atlas");
     d->u_tex_atlas          = glGetUniformLocation(d->program, "u_tex_atlas");
     d->u_have_gbuf          = glGetUniformLocation(d->program, "u_have_gbuf");
+    d->u_sbvh_count         = glGetUniformLocation(d->program, "u_sbvh_count");
+    d->u_sbvh_node_base     = glGetUniformLocation(d->program, "u_sbvh_node_base");
+    d->u_sbvh_ref_base      = glGetUniformLocation(d->program, "u_sbvh_ref_base");
 }
 
 static void ensure_output_tex(opengl_backend_data *d, int w, int h) {
@@ -1746,23 +1875,40 @@ static void upload_triangles(opengl_backend_data *d, const scene *s) {
  *
  * world_inv comes from the shared rt_scene_accel and is used by the
  * shader to push rays into mesh-local space (matches the CPU path). */
+static void copy_bvh_nodes(gpu_bvh_node *dst, const rt_bvh_node *src, int count) {
+    for (int k = 0; k < count; k++) {
+        set_vec4(dst[k].aabb_min, src[k].aabb_min[0], src[k].aabb_min[1], src[k].aabb_min[2], 0.0f);
+        set_vec4(dst[k].aabb_max, src[k].aabb_max[0], src[k].aabb_max[1], src[k].aabb_max[2], 0.0f);
+        dst[k].info[0] = src[k].tri_start;
+        dst[k].info[1] = src[k].tri_count;
+        dst[k].info[2] = src[k].second_child_offset;
+        dst[k].info[3] = 0;
+    }
+}
+
+/* Mesh BVH nodes first, then `sbvh`'s nodes (if any) from *sbvh_base. */
 static void upload_meshes(opengl_backend_data *d, const scene *s,
-                          const mat4 *mesh_world_inv) {
+                          const mat4 *mesh_world_inv,
+                          const rt_scene_bvh *sbvh, int *sbvh_base) {
     int n = s->mesh_count;
 
     int bvh_total = 0;
     for (int i = 0; i < n; i++) {
         bvh_total += s->meshes[i].accel_count;
     }
+    *sbvh_base = bvh_total;
+    int sbvh_nodes = sbvh ? sbvh->node_count : 0;
+    int node_total = bvh_total + sbvh_nodes;
+    gpu_bvh_node *nodes = NULL;
+    if (node_total > 0) {
+        nodes = malloc(sizeof(gpu_bvh_node) * (size_t)node_total);
+        if (!nodes) { node_total = 0; *sbvh_base = -1; }
+    }
 
     gpu_mesh     *meta  = NULL;
-    gpu_bvh_node *nodes = NULL;
     mat4 ident = mat4_identity();
     if (n > 0) {
         meta = malloc(sizeof(gpu_mesh) * (size_t)n);
-        if (bvh_total > 0) {
-            nodes = malloc(sizeof(gpu_bvh_node) * (size_t)bvh_total);
-        }
         int tri_cursor = s->triangle_count;   /* mesh tris follow explicit tris */
         int node_cursor = 0;
         for (int i = 0; i < n; i++) {
@@ -1774,7 +1920,7 @@ static void upload_meshes(opengl_backend_data *d, const scene *s,
             meta[i].bounds[2] = m->bounds_center.z;
             meta[i].bounds[3] = m->bounds_radius;
             meta[i].info[0]   = node_cursor;
-            meta[i].info[1]   = m->accel_count;
+            meta[i].info[1]   = nodes ? m->accel_count : 0;  /* 0 = linear tris */
             meta[i].info[2]   = tri_cursor;
             meta[i].info[3]   = tri_count;
 
@@ -1786,31 +1932,20 @@ static void upload_meshes(opengl_backend_data *d, const scene *s,
                 meta[i].wi3[r] = wi->m[12 + r];
             }
 
-            if (m->accel && m->accel_count > 0) {
-                const rt_bvh_node *src = (const rt_bvh_node *)m->accel;
-                for (int k = 0; k < m->accel_count; k++) {
-                    gpu_bvh_node *dst = &nodes[node_cursor + k];
-                    dst->aabb_min[0] = src[k].aabb_min[0];
-                    dst->aabb_min[1] = src[k].aabb_min[1];
-                    dst->aabb_min[2] = src[k].aabb_min[2];
-                    dst->aabb_min[3] = 0.0f;
-                    dst->aabb_max[0] = src[k].aabb_max[0];
-                    dst->aabb_max[1] = src[k].aabb_max[1];
-                    dst->aabb_max[2] = src[k].aabb_max[2];
-                    dst->aabb_max[3] = 0.0f;
-                    dst->info[0] = src[k].tri_start;
-                    dst->info[1] = src[k].tri_count;
-                    dst->info[2] = src[k].second_child_offset;
-                    dst->info[3] = 0;
-                }
+            if (nodes && m->accel && m->accel_count > 0) {
+                copy_bvh_nodes(&nodes[node_cursor], (const rt_bvh_node *)m->accel,
+                               m->accel_count);
                 node_cursor += m->accel_count;
             }
             tri_cursor += tri_count;
         }
     }
 
+    if (nodes && sbvh_nodes > 0)
+        copy_bvh_nodes(&nodes[bvh_total], sbvh->nodes, sbvh_nodes);
+
     upload_ssbo(d->ssbo[15], 15, meta,  sizeof(gpu_mesh),     n);
-    upload_ssbo(d->ssbo[16], 16, nodes, sizeof(gpu_bvh_node), bvh_total);
+    upload_ssbo(d->ssbo[16], 16, nodes, sizeof(gpu_bvh_node), node_total);
     free(meta); free(nodes);
 }
 
@@ -2016,7 +2151,10 @@ static void upload_sprites(opengl_backend_data *d, const scene *s) {
  * normals are stored as raw float bits; colors are uint channels).
  * Keeping the data in one block lets us stay under
  * GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS (commonly 16). */
-static void upload_heightfields(opengl_backend_data *d, const scene *s) {
+/* hf_data also carries the scene BVH's leaf refs, appended after the
+ * heightfield data from *sbvh_ref_base (-1 if they couldn't be stored). */
+static void upload_heightfields(opengl_backend_data *d, const scene *s,
+                                const rt_scene_bvh *sbvh, int *sbvh_ref_base) {
     int n = s->heightfield_count;
 
     int total_verts = 0;   /* sum of rows*cols */
@@ -2032,16 +2170,22 @@ static void upload_heightfields(opengl_backend_data *d, const scene *s) {
      *   [total_verts + total_verts*3, total_uints)     colors  (0..255) */
     int normals_base = total_verts;
     int colors_base  = total_verts + total_verts * 3;
-    int total_uints  = colors_base + total_cells * 3;
+    int hf_uints     = colors_base + total_cells * 3;
+    int sbvh_refs    = sbvh ? sbvh->prim_count : 0;
+    int total_uints  = hf_uints + sbvh_refs;
 
     gpu_heightfield *meta = NULL;
     uint32_t *data = NULL;
+    if (total_uints > 0) {
+        data = malloc(sizeof(uint32_t) * (size_t)total_uints);
+        if (!data) total_uints = 0;
+    }
+    *sbvh_ref_base = (data && sbvh_refs > 0) ? hf_uints : -1;
+    if (data && sbvh_refs > 0)
+        memcpy(&data[hf_uints], sbvh->prims, sizeof(uint32_t) * (size_t)sbvh_refs);
 
-    if (n > 0) {
+    if (n > 0 && data) {
         meta = malloc(sizeof(gpu_heightfield) * (size_t)n);
-        if (total_uints > 0) {
-            data = malloc(sizeof(uint32_t) * (size_t)total_uints);
-        }
         int h_off = 0, n_off = 0, c_off = 0;
         for (int i = 0; i < n; i++) {
             const scene_heightfield *hf = &s->heightfields[i];
@@ -2075,7 +2219,7 @@ static void upload_heightfields(opengl_backend_data *d, const scene *s) {
         }
     }
 
-    upload_ssbo(d->ssbo[9],  9,  meta, sizeof(gpu_heightfield), n);
+    upload_ssbo(d->ssbo[9],  9,  meta, sizeof(gpu_heightfield), meta ? n : 0);
     upload_ssbo(d->ssbo[10], 10, data, sizeof(uint32_t),        total_uints);
 
     free(meta); free(data);
@@ -2097,6 +2241,7 @@ static void opengl_destroy(rt_renderer *r) {
             if (d->ssbo[i]) glDeleteBuffers(1, &d->ssbo[i]);
         }
         rt_scene_accel_dispose(&d->accel);
+        rt_scene_bvh_free(&d->sbvh);
         free(d);
     }
     free(r);
@@ -2139,11 +2284,26 @@ static void opengl_render(rt_renderer *r,
     upload_cones(d, scn);
     upload_toruses(d, scn);
     upload_triangles(d, scn);
-    upload_meshes(d, scn, mesh_world_inv);
+    /* Scene BVH. The GPU path has no portal support, so it treats portal
+     * spheres as plain spheres — but the builder leaves those out (the
+     * CPU tests them linearly), so a frame with any falls back to the
+     * linear scan rather than lose them. */
+    const rt_scene_bvh *sbvh = NULL;
+    if (d->use_bvh) {
+        int portal = 0;
+        for (int i = 0; i < scn->sphere_count && !portal; i++)
+            portal = rt_sbvh_sphere_is_linear(&scn->spheres[i]);
+        if (!portal && rt_scene_bvh_build(&d->sbvh, scn) && d->sbvh.prim_count > 0)
+            sbvh = &d->sbvh;
+    }
+    int sbvh_node_base = -1, sbvh_ref_base = -1;
+    upload_meshes(d, scn, mesh_world_inv, sbvh, &sbvh_node_base);
     upload_boxes(d, scn);
     upload_sprites(d, scn);         /* must run before sprite atlas bind */
     upload_lights(d, scn);
-    upload_heightfields(d, scn);
+    upload_heightfields(d, scn, sbvh, &sbvh_ref_base);
+    int sbvh_count = (sbvh && sbvh_node_base >= 0 && sbvh_ref_base >= 0)
+                   ? sbvh->prim_count : 0;
     upload_materials(d, scn);
     upload_textures(d, scn);
 
@@ -2177,6 +2337,9 @@ static void opengl_render(rt_renderer *r,
     glUniform1i(d->u_heightfield_count, scn->heightfield_count);
     glUniform1i(d->u_light_count,       scn->light_count);
     glUniform1i(d->u_material_count,    scn->material_count);
+    glUniform1i(d->u_sbvh_count,        sbvh_count);
+    glUniform1i(d->u_sbvh_node_base,    sbvh_count ? sbvh_node_base : 0);
+    glUniform1i(d->u_sbvh_ref_base,     sbvh_count ? sbvh_ref_base : 0);
 
     glDispatchCompute((GLuint)((w + 15) / 16), (GLuint)((h + 15) / 16), 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
@@ -2244,6 +2407,8 @@ rt_renderer *rt_opengl_renderer_create(void) {
 
     cache_uniform_locs(d);
     glGenBuffers(19, d->ssbo);
+    const char *bvh_env = getenv("RT_GPU_BVH");
+    d->use_bvh = !(bvh_env && bvh_env[0] == '0');
 
     r->destroy_fn   = opengl_destroy;
     r->render_fn    = opengl_render;
