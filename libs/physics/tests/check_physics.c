@@ -208,6 +208,220 @@ END_TEST
 
 /* ---------- suite ---------- */
 
+
+/* ---------- falling + collisions (sphere worlds) ---------- */
+
+/* A world with no mutual gravity: things fall, hit the ground, walls,
+ * columns and each other. */
+static physics_config arena_config(void) {
+    physics_config c = physics_default_config();
+    c.max_bodies = 64;
+    c.gravity = 0.0f;
+    c.merge_on_contact = 0;
+    c.fall_gravity = 10.0f;
+    c.collisions = 1;
+    c.ground = 1;
+    c.ground_restitution = 0.5f;
+    c.ground_grip = 1.0f;
+    c.ground_settle_speed = 0.5f;
+    c.roll_friction = 2.0f;
+    c.sleep_speed = 0.1f;
+    c.walls = 1;
+    c.wall_min_x = c.wall_min_z = -10.0f;
+    c.wall_max_x = c.wall_max_z =  10.0f;
+    c.wall_restitution = 0.5f;
+    c.max_substep_dist = 0.05f;
+    c.min_substeps = 1;
+    c.max_substeps = 256;
+    return c;
+}
+
+static int add_ball(physics_world *w, vector p, vector v) {
+    physics_body_desc d = {.type = PHYSICS_DYNAMIC, .position = p, .velocity = v,
+                           .mass = 1.0f, .radius = 0.1f, .restitution = 1.0f};
+    return physics_world_add(w, &d);
+}
+
+typedef struct { int n[4]; float last_speed; int last_other; } contact_log;
+static void log_contact(void *user, physics_world *w, const physics_contact *c) {
+    (void)w;
+    contact_log *l = user;
+    l->n[c->kind]++;
+    l->last_speed = c->speed;
+    l->last_other = c->other;
+}
+
+START_TEST(test_ground_bounce_restitution)
+{
+    physics_config c = arena_config();
+    contact_log log = {0};
+    c.on_contact = log_contact;
+    c.contact_user = &log;
+    physics_world *w = physics_world_create(&c);
+    int b = add_ball(w, (vector){0, 0.1f, 0}, (vector){0, -8.0f, 0});
+    physics_world_advance(w, 1.0f / 60.0f);
+    ck_assert_int_eq(log.n[PHYSICS_CONTACT_GROUND], 1);
+    ck_assert_float_ge(physics_world_body_position(w, b).y, 0.1f);
+    /* Bounces back up with half the impact speed (restitution 0.5). */
+    float vy = physics_world_body_velocity(w, b).y;
+    ck_assert_float_eq_tol(vy, 0.5f * log.last_speed, 0.2f);
+    ck_assert_float_gt(vy, 3.5f);
+    physics_world_destroy(w);
+}
+END_TEST
+
+START_TEST(test_ball_comes_to_rest_and_stays)
+{
+    physics_config c = arena_config();
+    physics_world *w = physics_world_create(&c);
+    int b = add_ball(w, (vector){1, 3, 2}, (vector){2, 0, -1});
+    for (int i = 0; i < 600; i++) physics_world_advance(w, 1.0f / 60.0f);
+    physics_body s = physics_world_body(w, b);
+    ck_assert(s.sleeping);
+    ck_assert_float_eq_tol(s.position.y, 0.1f, 1e-3f);
+    /* Asleep: another minute changes nothing at all. */
+    for (int i = 0; i < 3600; i++) physics_world_advance(w, 1.0f / 60.0f);
+    physics_body t = physics_world_body(w, b);
+    ck_assert(t.sleeping);
+    ck_assert_mem_eq(&s.position, &t.position, sizeof s.position);
+    physics_world_destroy(w);
+}
+END_TEST
+
+/* 110 m/s at a wall, a column and a kinematic sphere: never through. */
+START_TEST(test_fast_body_never_tunnels)
+{
+    physics_column col = {0.0f, 5.0f, 0.3f, 0.5f};
+    physics_config c = arena_config();
+    c.fall_gravity = 0.0f;
+    c.columns = &col;
+    c.column_count = 1;
+    physics_world *w = physics_world_create(&c);
+    int wall = add_ball(w, (vector){0, 1, 0}, (vector){110, 0, 0});
+    int column = add_ball(w, (vector){0, 1, 0}, (vector){0, 0, 110});
+    physics_body_desc k = {.type = PHYSICS_KINEMATIC, .position = {0, 1, -5},
+                           .mass = 10.0f, .radius = 0.3f, .restitution = 0.5f};
+    int kin = physics_world_add(w, &k);
+    int at_kin = add_ball(w, (vector){0, 1, 0}, (vector){0, 0, -110});
+    /* 8 frames: long enough for each to hit its target once (~0.09 s at
+     * most), short enough that none has come back to hit something else. */
+    for (int i = 0; i < 8; i++) {
+        physics_world_advance(w, 1.0f / 60.0f);
+        ck_assert_float_le(physics_world_body_position(w, wall).x, 10.0f - 0.1f + 1e-4f);
+        ck_assert_float_lt(physics_world_body_position(w, column).z, 5.0f);
+        ck_assert_float_gt(physics_world_body_position(w, at_kin).z, -5.0f);
+    }
+    ck_assert_float_lt(physics_world_body_velocity(w, wall).x, 0.0f);
+    ck_assert_float_lt(physics_world_body_velocity(w, column).z, 0.0f);
+    ck_assert_float_gt(physics_world_body_velocity(w, at_kin).z, 0.0f);
+    /* The world never moves a kinematic body. */
+    vector kp = physics_world_body_position(w, kin);
+    ck_assert_float_eq(kp.z, -5.0f);
+    physics_world_destroy(w);
+}
+END_TEST
+
+START_TEST(test_sphere_collision_conserves_momentum)
+{
+    physics_config c = arena_config();
+    c.fall_gravity = 0.0f;
+    c.ground = 0;
+    physics_world *w = physics_world_create(&c);
+    physics_body_desc a = {.type = PHYSICS_DYNAMIC, .position = {-1, 2, 0}, .velocity = {4, 0.5f, 0},
+                           .mass = 1.0f, .radius = 0.2f, .restitution = 0.8f};
+    physics_body_desc b = {.type = PHYSICS_DYNAMIC, .position = {1, 2, 0.05f}, .velocity = {-2, 0, 0},
+                           .mass = 3.0f, .radius = 0.2f, .restitution = 0.8f};
+    int ia = physics_world_add(w, &a), ib = physics_world_add(w, &b);
+    vector p0 = vector_add(vector_scale(a.velocity, a.mass), vector_scale(b.velocity, b.mass));
+    for (int i = 0; i < 30; i++) physics_world_advance(w, 1.0f / 60.0f);
+    vector va = physics_world_body_velocity(w, ia), vb = physics_world_body_velocity(w, ib);
+    vector p1 = vector_add(vector_scale(va, a.mass), vector_scale(vb, b.mass));
+    ck_assert_float_eq_tol(p1.x, p0.x, 1e-4f);
+    ck_assert_float_eq_tol(p1.y, p0.y, 1e-4f);
+    ck_assert_float_eq_tol(p1.z, p0.z, 1e-4f);
+    ck_assert_float_lt(va.x, 0.0f);   /* the light one bounced back */
+    physics_world_destroy(w);
+}
+END_TEST
+
+START_TEST(test_contacts_reported)
+{
+    physics_column col = {3.0f, 0.0f, 0.5f, 0.5f};
+    physics_config c = arena_config();
+    contact_log log = {0};
+    c.columns = &col;
+    c.column_count = 1;
+    c.on_contact = log_contact;
+    c.contact_user = &log;
+    physics_world *w = physics_world_create(&c);
+    add_ball(w, (vector){0, 0.5f, 0}, (vector){20, 0, 0});    /* column */
+    add_ball(w, (vector){0, 0.5f, 3}, (vector){0, 0, 30});    /* +z wall */
+    for (int i = 0; i < 20; i++) physics_world_advance(w, 1.0f / 60.0f);
+    ck_assert_int_ge(log.n[PHYSICS_CONTACT_COLUMN], 1);
+    ck_assert_int_ge(log.n[PHYSICS_CONTACT_WALL], 1);
+    ck_assert_int_ge(log.n[PHYSICS_CONTACT_GROUND], 1);
+    physics_world_destroy(w);
+}
+END_TEST
+
+START_TEST(test_disabled_body_is_ignored)
+{
+    physics_config c = arena_config();
+    physics_world *w = physics_world_create(&c);
+    int b = add_ball(w, (vector){0, 5, 0}, (vector){1, 0, 0});
+    physics_world_set_enabled(w, b, 0);
+    for (int i = 0; i < 60; i++) physics_world_advance(w, 1.0f / 60.0f);
+    physics_body s = physics_world_body(w, b);
+    ck_assert(s.alive && !s.enabled);
+    ck_assert_float_eq(s.position.y, 5.0f);
+    physics_world_set_enabled(w, b, 1);
+    ck_assert_float_eq(physics_world_body(w, b).age, 0.0f);
+    physics_world_advance(w, 1.0f / 60.0f);
+    ck_assert_float_lt(physics_world_body_position(w, b).y, 5.0f);
+    physics_world_destroy(w);
+}
+END_TEST
+
+/* Same calls, same world: bit-identical state. */
+START_TEST(test_deterministic)
+{
+    physics_world *w[2];
+    for (int k = 0; k < 2; k++) {
+        physics_config c = arena_config();
+        w[k] = physics_world_create(&c);
+        for (int i = 0; i < 40; i++)
+            add_ball(w[k], (vector){(float)(i % 7) - 3, 1.0f + (float)i * 0.3f, (float)(i % 5) - 2},
+                     (vector){(float)(i % 3) * 4 - 4, 0, (float)(i % 4) * 3 - 4});
+        for (int s = 0; s < 300; s++) physics_world_advance(w[k], 1.0f / 60.0f);
+    }
+    for (int i = 0; i < 40; i++) {
+        physics_body a = physics_world_body(w[0], i), b = physics_world_body(w[1], i);
+        ck_assert_mem_eq(&a, &b, sizeof a);
+    }
+    physics_world_destroy(w[0]);
+    physics_world_destroy(w[1]);
+}
+END_TEST
+
+START_TEST(test_push_out_columns)
+{
+    physics_column col = {0.0f, 0.0f, 1.0f, 0.5f};
+    physics_config c = arena_config();
+    c.columns = &col;
+    c.column_count = 1;
+    physics_world *w = physics_world_create(&c);
+    vector p = {0.5f, 0, 0};
+    vector n = physics_world_push_out_columns(w, &p, 0.25f);
+    ck_assert_float_eq_tol(p.x, 1.25f, 1e-5f);
+    ck_assert_float_eq_tol(n.x, 1.0f, 1e-5f);
+    vector q = {5, 0, 5};
+    n = physics_world_push_out_columns(w, &q, 0.25f);
+    ck_assert_float_eq(n.x, 0.0f);
+    ck_assert_float_eq(q.x, 5.0f);
+    physics_world_destroy(w);
+}
+END_TEST
+
 Suite *physics_suite(void) {
     Suite *s = suite_create("Physics");
 
@@ -225,6 +439,17 @@ Suite *physics_suite(void) {
     tcase_add_test(tc_sim, test_softening_without_merge);
     tcase_add_test(tc_sim, test_boundary_reflection);
     suite_add_tcase(s, tc_sim);
+
+    TCase *tc_col = tcase_create("Collisions");
+    tcase_add_test(tc_col, test_ground_bounce_restitution);
+    tcase_add_test(tc_col, test_ball_comes_to_rest_and_stays);
+    tcase_add_test(tc_col, test_fast_body_never_tunnels);
+    tcase_add_test(tc_col, test_sphere_collision_conserves_momentum);
+    tcase_add_test(tc_col, test_contacts_reported);
+    tcase_add_test(tc_col, test_disabled_body_is_ignored);
+    tcase_add_test(tc_col, test_deterministic);
+    tcase_add_test(tc_col, test_push_out_columns);
+    suite_add_tcase(s, tc_col);
 
     return s;
 }

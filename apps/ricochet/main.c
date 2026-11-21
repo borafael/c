@@ -35,6 +35,7 @@
 #include "postfx.h"
 #include "hud.h"
 #include "sfx.h"
+#include "physics.h"
 #include <SDL2/SDL.h>
 
 #define GL_GLEXT_PROTOTYPES 1
@@ -122,6 +123,8 @@ static void res_size(int idx, int window_w, int window_h, int *w, int *h) {
 #define PICKUP_R      1.05f    /* horizontal reach to grab a ball */
 #define PICKUP_MIN_AGE 0.35f   /* don't instantly re-grab the one you fired */
 #define HIT_MIN_SPEED 4.0f     /* normal impact speed that counts as damage */
+#define SLEEP_SPEED   0.10f    /* rolling slower than this: ball comes to rest */
+#define BALL_MASS     1.0f
 #define MAX_SUBSTEP_DIST 0.08f /* m a ball may travel per physics substep */
 #define MAX_SUBSTEPS  64
 
@@ -149,12 +152,13 @@ static float frange(float a, float b) { return a + (b - a) * frand(); }
 
 /* ---------------------------------------------------------------- World */
 
-typedef struct { float x, z, r; } pillar;
-static const pillar PILLARS[] = {
-    {-7.0f, -7.0f, 0.9f}, { 7.0f, -7.0f, 0.9f},
-    {-7.0f,  7.0f, 0.9f}, { 7.0f,  7.0f, 0.9f},
-    { 0.0f, -11.0f, 0.6f}, { 0.0f, 11.0f, 0.6f},
-    {-11.0f, 0.0f, 0.6f}, { 11.0f, 0.0f, 0.6f},
+/* Pillars are physics columns: balls bounce off them, everything else is
+ * pushed out of them. */
+static const physics_column PILLARS[] = {
+    {-7.0f, -7.0f, 0.9f, REST_WALL}, { 7.0f, -7.0f, 0.9f, REST_WALL},
+    {-7.0f,  7.0f, 0.9f, REST_WALL}, { 7.0f,  7.0f, 0.9f, REST_WALL},
+    { 0.0f, -11.0f, 0.6f, REST_WALL}, { 0.0f, 11.0f, 0.6f, REST_WALL},
+    {-11.0f, 0.0f, 0.6f, REST_WALL}, { 11.0f, 0.0f, 0.6f, REST_WALL},
 };
 #define N_PILLARS ((int)(sizeof PILLARS / sizeof PILLARS[0]))
 
@@ -169,13 +173,6 @@ static const en_spec SPECS[EN_KINDS] = {
     {0.85f, 2.8f, 14.0f, 20.0f,  7, 250, {230,  45,  80}, { 90,  10,  30}},
     {1.30f, 1.8f, 40.0f, 30.0f, 16, 600, {150,  70, 230}, { 45,  15,  80}},
 };
-
-typedef struct {
-    int    alive;
-    vector p, v;
-    float  age;
-    int    resting;
-} ball;
 
 typedef struct {
     int    alive;
@@ -212,7 +209,10 @@ typedef struct {
 
 typedef struct {
     player   pl;
-    ball     balls[AMMO_CAP];
+    /* Balls (dynamic) and enemies (kinematic) are bodies in one physics
+     * world, with fixed IDs: enemy i is body i, ball k is BALL_ID(k).
+     * A ball in your hand is a disabled body. */
+    physics_world *phys;
     int      mag;                /* balls that exist: in hand + in world */
     int      ammo;               /* balls in hand */
     enemy    en[MAX_ENEMIES];
@@ -226,6 +226,12 @@ typedef struct {
     /* Listener frame for spatial audio (updated each frame). */
     vector   ear, ear_right;
 } game;
+
+#define BALL_ID(k) (MAX_ENEMIES + (k))
+
+static physics_body ball_get(const game *g, int k) {
+    return physics_world_body(g->phys, BALL_ID(k));
+}
 
 static vector cam_forward(float yaw, float pitch) {
     return (vector){cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw)};
@@ -295,19 +301,8 @@ static float enemy_radius(const enemy *e) {
 
 /* Push a circle (xz) out of pillars. Returns the pillar normal hit, or
  * a zero vector if no contact. */
-static vector push_out_pillars(vector *p, float r) {
-    vector hit = {0, 0, 0};
-    for (int i = 0; i < N_PILLARS; i++) {
-        float dx = p->x - PILLARS[i].x, dz = p->z - PILLARS[i].z;
-        float d = sqrtf(dx * dx + dz * dz), min = PILLARS[i].r + r;
-        if (d < min && d > 1e-5f) {
-            float nx = dx / d, nz = dz / d;
-            p->x = PILLARS[i].x + nx * min;
-            p->z = PILLARS[i].z + nz * min;
-            hit = (vector){nx, 0, nz};
-        }
-    }
-    return hit;
+static vector push_out_pillars(const game *g, vector *p, float r) {
+    return physics_world_push_out_columns(g->phys, p, r);
 }
 
 static void clamp_arena(vector *p, float r) {
@@ -351,7 +346,7 @@ static void spawn_wave(game *g) {
             float dx = p.x - g->pl.p.x, dz = p.z - g->pl.p.z;
             if (dx * dx + dz * dz < 11.0f * 11.0f) continue;
             vector q = p;
-            vector hit = push_out_pillars(&q, r + 0.6f);
+            vector hit = push_out_pillars(g, &q, r + 0.6f);
             if (hit.x != 0 || hit.z != 0) continue;
             break;
         }
@@ -371,8 +366,60 @@ static void spawn_wave(game *g) {
 /* --ammo / --start-ammo. start_ammo < 0 means a full magazine. */
 static int cfg_mag = DEFAULT_AMMO, cfg_start_ammo = -1;
 
+static void on_contact(void *user, physics_world *w, const physics_contact *c);
+
+static physics_world *create_physics(game *g) {
+    physics_config c = physics_default_config();
+    c.max_bodies   = MAX_ENEMIES + AMMO_CAP;
+    c.gravity      = 0.0f;              /* no mutual attraction */
+    c.merge_on_contact = 0;
+    c.num_threads  = 1;
+    c.fall_gravity = GRAVITY;
+    c.collisions   = 1;
+    c.ground = 1;
+    c.ground_y            = 0.0f;
+    c.ground_restitution  = REST_FLOOR;
+    c.ground_grip         = FLOOR_GRIP;
+    c.ground_settle_speed = SETTLE_SPEED;
+    c.roll_friction       = ROLL_FRICTION;
+    c.sleep_speed         = SLEEP_SPEED;
+    /* Walls are physically infinitely tall, so nothing escapes. */
+    c.walls = 1;
+    c.wall_min_x = c.wall_min_z = -ARENA_HALF;
+    c.wall_max_x = c.wall_max_z =  ARENA_HALF;
+    c.wall_restitution = REST_WALL;
+    c.columns      = PILLARS;
+    c.column_count = N_PILLARS;
+    /* Substeps follow the fastest ball so nothing moves more than
+     * MAX_SUBSTEP_DIST per step: fast shots can't tunnel through enemies
+     * or each other, and a field of resting balls stays cheap. */
+    c.max_substep_dist = MAX_SUBSTEP_DIST;
+    c.min_substeps     = 4;
+    c.max_substeps     = MAX_SUBSTEPS;
+    c.on_contact   = on_contact;
+    c.contact_user = g;
+    return physics_world_create(&c);
+}
+
 static void game_reset(game *g) {
+    physics_world *w = g->phys;
     memset(g, 0, sizeof *g);
+    if (w) physics_world_clear(w);
+    else if (!(w = create_physics(g))) { fprintf(stderr, "physics: out of memory\n"); exit(1); }
+    g->phys = w;
+    /* Fixed IDs (see game): every enemy and ball body exists from the
+     * start, disabled until it is in play. */
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        physics_world_add(w, &(physics_body_desc){
+            .type = PHYSICS_KINEMATIC, .mass = 1.0f, .restitution = REST_ENEMY});
+        physics_world_set_enabled(w, i, 0);
+    }
+    for (int k = 0; k < cfg_mag; k++) {
+        physics_world_add(w, &(physics_body_desc){
+            .type = PHYSICS_DYNAMIC, .mass = BALL_MASS, .radius = BALL_R,
+            .restitution = REST_BALL});
+        physics_world_set_enabled(w, BALL_ID(k), 0);
+    }
     g->pl.p = (vector){0, 0, -3.0f};
     g->pl.hp = PLAYER_HP;
     g->mag = cfg_mag;
@@ -385,9 +432,11 @@ static void game_reset(game *g) {
         do {
             p = (vector){frange(-ARENA_HALF + 1, ARENA_HALF - 1), BALL_R,
                          frange(-ARENA_HALF + 1, ARENA_HALF - 1)};
-            push_out_pillars(&p, BALL_R);
+            push_out_pillars(g, &p, BALL_R);
         } while (hypotf(p.x - g->pl.p.x, p.z - g->pl.p.z) < 3.0f);
-        g->balls[i] = (ball){.alive = 1, .p = p, .age = PICKUP_MIN_AGE, .resting = 1};
+        /* Lands and falls asleep within its first substep. */
+        physics_world_set_enabled(w, BALL_ID(i), 1);
+        physics_world_set_position(w, BALL_ID(i), p);
     }
 }
 
@@ -403,125 +452,70 @@ static void enemy_damage(game *g, enemy *e, vector at) {
 
 /* ------------------------------------------------------------- Physics */
 
-static void ball_vs_wall(game *g, ball *b, float *pc, float *vc, float lim, int sign) {
-    if (sign * *pc <= lim) return;
-    *pc = sign * lim;
-    if (sign * *vc > 0) {
-        float imp = fabsf(*vc);
-        *vc = -*vc * REST_WALL;
-        if (imp > 1.2f) play_at(g, SFX_WALL, b->p, fminf(1.0f, imp / 18.0f), frange(0.9f, 1.1f));
+/* Everything a collision means for the game: sounds, hits, knockback.
+ * The physics world has already resolved it. Balls are the only dynamic
+ * bodies, so c->body is always a ball. */
+static void on_contact(void *user, physics_world *w, const physics_contact *c) {
+    game *g = user;
+    vector bp = physics_world_body_position(w, c->body);
+    float imp = c->speed;
+    switch (c->kind) {
+    case PHYSICS_CONTACT_GROUND:
+        if (imp > 1.0f)
+            play_at(g, SFX_BOUNCE, bp, fminf(1.0f, 0.15f + imp / 14.0f),
+                    frange(0.92f, 1.08f) + fminf(imp, 12.0f) * 0.01f);
+        break;
+    case PHYSICS_CONTACT_WALL:
+        if (imp > 1.2f) play_at(g, SFX_WALL, bp, fminf(1.0f, imp / 18.0f), frange(0.9f, 1.1f));
+        break;
+    case PHYSICS_CONTACT_COLUMN:
+        if (imp > 1.2f) play_at(g, SFX_WALL, bp, fminf(1.0f, imp / 18.0f), frange(0.75f, 0.85f));
+        break;
+    case PHYSICS_CONTACT_BODY:
+        if (c->other >= MAX_ENEMIES) {          /* ball vs ball */
+            if (imp > 1.0f) play_at(g, SFX_WALL, bp, fminf(0.8f, imp / 14.0f), 1.9f);
+            break;
+        }
+        /* Ball vs enemy: shove the enemy (scaled for feel), maybe hurt it. */
+        enemy *en = &g->en[c->other];
+        float me = SPECS[en->kind].mass;
+        vector kick = vector_scale(c->normal, -c->impulse / me * KNOCKBACK);
+        vector ev = physics_world_body_velocity(w, c->other);
+        ev.x += kick.x;
+        ev.z += kick.z;
+        physics_world_set_velocity(w, c->other, ev);
+        int can_hurt = en->dying == 0.0f && en->spawn_t >= SPAWN_TIME;
+        if (imp > HIT_MIN_SPEED && can_hurt) {
+            g->hits++;
+            play_at(g, SFX_HIT, bp, fminf(1.0f, 0.35f + imp / 25.0f),
+                    1.3f - 0.35f * SPECS[en->kind].r + frange(-0.04f, 0.04f));
+            burst(g, bp, (scene_color){200, 250, 255}, 4, 3.0f);
+            enemy_damage(g, en, bp);
+            physics_world_set_radius(w, c->other, enemy_radius(en));
+        } else if (imp > 1.2f) {
+            play_at(g, SFX_WALL, bp, fminf(0.7f, imp / 12.0f), 1.3f);
+        }
+        break;
     }
 }
 
-static void step_balls(game *g, float h) {
-    for (int i = 0; i < g->mag; i++) {
-        ball *b = &g->balls[i];
-        if (!b->alive) continue;
-        b->age += h;
-        if (b->resting) continue;
-
-        b->v.y -= GRAVITY * h;
-        b->p = vector_add(b->p, vector_scale(b->v, h));
-
-        /* Floor. */
-        if (b->p.y < BALL_R) {
-            b->p.y = BALL_R;
-            if (b->v.y < 0) {
-                float imp = -b->v.y;
-                if (imp > 1.0f)
-                    play_at(g, SFX_BOUNCE, b->p, fminf(1.0f, 0.15f + imp / 14.0f),
-                            frange(0.92f, 1.08f) + fminf(imp, 12.0f) * 0.01f);
-                b->v.y = imp > SETTLE_SPEED ? imp * REST_FLOOR : 0.0f;
-                b->v.x *= FLOOR_GRIP;
-                b->v.z *= FLOOR_GRIP;
-            }
-        }
-        if (b->p.y <= BALL_R + 1e-4f && b->v.y == 0.0f) {
-            float k = expf(-ROLL_FRICTION * h);
-            b->v.x *= k;
-            b->v.z *= k;
-            if (b->v.x * b->v.x + b->v.z * b->v.z < 0.10f * 0.10f) {
-                b->v = (vector){0, 0, 0};
-                b->resting = 1;
-            }
-        }
-
-        /* Arena walls (physically infinitely tall, so nothing escapes). */
-        float lim = ARENA_HALF - BALL_R;
-        ball_vs_wall(g, b, &b->p.x, &b->v.x, lim,  1);
-        ball_vs_wall(g, b, &b->p.x, &b->v.x, lim, -1);
-        ball_vs_wall(g, b, &b->p.z, &b->v.z, lim,  1);
-        ball_vs_wall(g, b, &b->p.z, &b->v.z, lim, -1);
-
-        /* Pillars. */
-        vector n = push_out_pillars(&b->p, BALL_R);
-        if (n.x != 0 || n.z != 0) {
-            float vn = b->v.x * n.x + b->v.z * n.z;
-            if (vn < 0) {
-                b->v.x -= (1.0f + REST_WALL) * vn * n.x;
-                b->v.z -= (1.0f + REST_WALL) * vn * n.z;
-                if (-vn > 1.2f) play_at(g, SFX_WALL, b->p, fminf(1.0f, -vn / 18.0f), frange(0.75f, 0.85f));
-            }
-        }
-
-        /* Enemies: impulse response between a light ball and a heavy,
-         * ground-bound sphere. */
-        for (int e = 0; e < MAX_ENEMIES; e++) {
-            enemy *en = &g->en[e];
-            if (!en->alive || en->spawn_t < 0.0f) continue;
-            float er = enemy_radius(en);
-            vector d = vector_sub(b->p, en->p);
-            float dist = vector_magnitude(d), min = er + BALL_R;
-            if (dist >= min || dist < 1e-5f) continue;
-            vector nn = vector_scale(d, 1.0f / dist);
-            b->p = vector_add(en->p, vector_scale(nn, min));
-            vector vrel = vector_sub(b->v, en->v);
-            float vn = vector_dot(vrel, nn);
-            if (vn >= 0) continue;
-            float me = SPECS[en->kind].mass;
-            float j = -(1.0f + REST_ENEMY) * vn / (1.0f + 1.0f / me);
-            b->v = vector_add(b->v, vector_scale(nn, j));
-            vector kick = vector_scale(nn, -j / me * KNOCKBACK);
-            en->v.x += kick.x;
-            en->v.z += kick.z;
-            b->resting = 0;
-            float imp = -vn;
-            int can_hurt = en->dying == 0.0f && en->spawn_t >= SPAWN_TIME;
-            if (imp > HIT_MIN_SPEED && can_hurt) {
-                g->hits++;
-                play_at(g, SFX_HIT, b->p, fminf(1.0f, 0.35f + imp / 25.0f),
-                        1.3f - 0.35f * SPECS[en->kind].r + frange(-0.04f, 0.04f));
-                burst(g, b->p, (scene_color){200, 250, 255}, 4, 3.0f);
-                enemy_damage(g, en, b->p);
-            } else if (imp > 1.2f) {
-                play_at(g, SFX_WALL, b->p, fminf(0.7f, imp / 12.0f), 1.3f);
-            }
-        }
+/* Balls fly and bounce; enemies take part as kinematic bodies (their own
+ * steering moves them in update_enemies), and get knocked back above. */
+static void step_physics(game *g, float dt) {
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        const enemy *e = &g->en[i];
+        int on = e->alive && e->spawn_t >= 0.0f;
+        physics_world_set_enabled(g->phys, i, on);
+        if (!on) continue;
+        physics_world_set_position(g->phys, i, e->p);
+        physics_world_set_velocity(g->phys, i, e->v);
+        physics_world_set_radius(g->phys, i, enemy_radius(e));
+        physics_world_set_mass(g->phys, i, SPECS[e->kind].mass);
     }
-
-    /* Ball-ball: equal masses. */
-    for (int i = 0; i < g->mag; i++) {
-        ball *a = &g->balls[i];
-        if (!a->alive) continue;
-        for (int k = i + 1; k < g->mag; k++) {
-            ball *b = &g->balls[k];
-            if (!b->alive) continue;
-            vector d = vector_sub(b->p, a->p);
-            float dist = vector_magnitude(d);
-            if (dist >= 2 * BALL_R || dist < 1e-5f) continue;
-            vector n = vector_scale(d, 1.0f / dist);
-            float push = (2 * BALL_R - dist) * 0.5f;
-            a->p = vector_sub(a->p, vector_scale(n, push));
-            b->p = vector_add(b->p, vector_scale(n, push));
-            float vn = vector_dot(vector_sub(b->v, a->v), n);
-            if (vn >= 0) continue;
-            float j = -(1.0f + REST_BALL) * vn * 0.5f;
-            a->v = vector_sub(a->v, vector_scale(n, j));
-            b->v = vector_add(b->v, vector_scale(n, j));
-            a->resting = b->resting = 0;
-            if (-vn > 1.0f) play_at(g, SFX_WALL, b->p, fminf(0.8f, -vn / 14.0f), 1.9f);
-        }
-    }
+    physics_world_advance(g->phys, dt);
+    for (int i = 0; i < MAX_ENEMIES; i++)
+        if (g->en[i].alive && g->en[i].spawn_t >= 0.0f)
+            g->en[i].v = physics_world_body_velocity(g->phys, i);
 }
 
 static void update_enemies(game *g, float dt) {
@@ -575,7 +569,7 @@ static void update_enemies(game *g, float dt) {
         if (e->p.x < -lim) { e->p.x = -lim; e->v.x =  fabsf(e->v.x) * 0.4f; }
         if (e->p.z >  lim) { e->p.z =  lim; e->v.z = -fabsf(e->v.z) * 0.4f; }
         if (e->p.z < -lim) { e->p.z = -lim; e->v.z =  fabsf(e->v.z) * 0.4f; }
-        vector n = push_out_pillars(&e->p, s->r);
+        vector n = push_out_pillars(g, &e->p, s->r);
         if (n.x != 0 || n.z != 0) {
             float vn = e->v.x * n.x + e->v.z * n.z;
             if (vn < 0) { e->v.x -= vn * n.x; e->v.z -= vn * n.z; }   /* slide */
@@ -637,7 +631,7 @@ static void fire(game *g) {
         return;
     }
     int slot = -1;
-    for (int i = 0; i < g->mag; i++) if (!g->balls[i].alive) { slot = i; break; }
+    for (int i = 0; i < g->mag; i++) if (!ball_get(g, i).enabled) { slot = i; break; }
     if (slot < 0) return;
 
     vector eye = eye_pos(g);
@@ -652,7 +646,7 @@ static void fire(game *g) {
     gun_frame gf = gun_frame_make(g, eye, fwd, right, up);
     vector muzzle = gun_local(&gf, 0.0f, GUN_MUZZLE_Y, GUN_MUZZLE_Z + 0.03f);
     vector probe = muzzle;
-    vector hit = push_out_pillars(&probe, BALL_R);
+    vector hit = push_out_pillars(g, &probe, BALL_R);
     if (hit.x != 0 || hit.z != 0) muzzle = vector_add(eye, vector_scale(fwd, 0.3f));
     vector target = vector_add(eye, vector_scale(fwd, 25.0f));
     vector dir = vector_normalize(vector_sub(target, muzzle));
@@ -660,7 +654,9 @@ static void fire(game *g) {
                                                       vector_scale(up, frange(-SPREAD, SPREAD)))));
     vector v = vector_add(vector_scale(dir, SHOOT_SPEED), vector_scale(pl->v, 0.5f));
 
-    g->balls[slot] = (ball){1, muzzle, v, 0.0f, 0};
+    physics_world_set_enabled(g->phys, BALL_ID(slot), 1);
+    physics_world_set_position(g->phys, BALL_ID(slot), muzzle);
+    physics_world_set_velocity(g->phys, BALL_ID(slot), v);
     g->ammo--;
     g->shots++;
     pl->recoil = 1.0f;
@@ -698,7 +694,7 @@ static void update_player(game *g, const input *in, float dt) {
     pl->v.y = 0;
     pl->p = vector_add(pl->p, vector_scale(pl->v, dt));
     clamp_arena(&pl->p, PLAYER_R);
-    push_out_pillars(&pl->p, PLAYER_R);
+    push_out_pillars(g, &pl->p, PLAYER_R);
     float hs = sqrtf(pl->v.x * pl->v.x + pl->v.z * pl->v.z);
     pl->bob += hs * dt * 1.6f;
 
@@ -706,11 +702,11 @@ static void update_player(game *g, const input *in, float dt) {
 
     /* Recollect: walk over (or catch) a ball. */
     for (int i = 0; i < g->mag; i++) {
-        ball *b = &g->balls[i];
-        if (!b->alive || b->age < PICKUP_MIN_AGE || b->p.y > 2.2f) continue;
-        float dx = b->p.x - pl->p.x, dz = b->p.z - pl->p.z;
+        physics_body b = ball_get(g, i);
+        if (!b.enabled || b.age < PICKUP_MIN_AGE || b.position.y > 2.2f) continue;
+        float dx = b.position.x - pl->p.x, dz = b.position.z - pl->p.z;
         if (dx * dx + dz * dz > PICKUP_R * PICKUP_R) continue;
-        b->alive = 0;
+        physics_world_set_enabled(g->phys, BALL_ID(i), 0);
         g->ammo++;
         sfx_play(SFX_PICKUP, 0.45f, 0.0f, 0.9f + 0.6f * (float)g->ammo / g->mag);
     }
@@ -720,18 +716,7 @@ static void game_update(game *g, const input *in, float dt) {
     g->t += dt;
     g->banner_t -= dt;
     update_player(g, in, dt);
-    /* Substep count follows the fastest ball so nothing moves more than
-     * MAX_SUBSTEP_DIST per step: fast shots can't tunnel through enemies
-     * or each other, and a field of resting balls stays cheap. */
-    float vmax = 0.0f;
-    for (int i = 0; i < g->mag; i++)
-        if (g->balls[i].alive && !g->balls[i].resting)
-            vmax = fmaxf(vmax, vector_magnitude(g->balls[i].v));
-    int steps = (int)ceilf(vmax * dt / MAX_SUBSTEP_DIST);
-    if (steps < 4) steps = 4;
-    if (steps > MAX_SUBSTEPS) steps = MAX_SUBSTEPS;
-    float h = dt / (float)steps;
-    for (int s = 0; s < steps; s++) step_balls(g, h);
+    step_physics(g, dt);
     update_enemies(g, dt);
     update_particles(g, dt);
 
@@ -781,13 +766,14 @@ static void bot_input(const game *g, input *in, float dt) {
         int near = -1;
         float nd = 1e9f;
         for (int i = 0; i < g->mag; i++) {
-            const ball *b = &g->balls[i];
-            if (!b->alive || b->age < PICKUP_MIN_AGE) continue;
-            float dx = b->p.x - pl->p.x, dz = b->p.z - pl->p.z, d = dx * dx + dz * dz;
+            physics_body b = ball_get(g, i);
+            if (!b.enabled || b.age < PICKUP_MIN_AGE) continue;
+            float dx = b.position.x - pl->p.x, dz = b.position.z - pl->p.z, d = dx * dx + dz * dz;
             if (d < nd) { nd = d; near = i; }
         }
         if (near >= 0) {
-            float want = atan2f(g->balls[near].p.x - pl->p.x, g->balls[near].p.z - pl->p.z);
+            vector bp = ball_get(g, near).position;
+            float want = atan2f(bp.x - pl->p.x, bp.z - pl->p.z);
             float dy = remainderf(want - pl->yaw, 2.0f * (float)M_PI);
             in->look_dx = fmaxf(-4 * dt, fminf(4 * dt, dy));
             in->look_dy = (-0.25f - pl->pitch) * fminf(1, dt * 5);
@@ -1025,14 +1011,14 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
     /* Balls: hot cyan in flight, pulsing at rest so they're easy to find. */
     int m_ball = unlit_mat(s, (scene_color){120, 245, 255});
     for (int i = 0; i < g->mag; i++) {
-        const ball *b = &g->balls[i];
-        if (!b->alive) continue;
+        physics_body b = ball_get(g, i);
+        if (!b.enabled) continue;
         int m = m_ball;
-        if (b->resting) {
+        if (b.sleeping) {
             float pulse = 0.5f + 0.5f * sinf(g->t * 5.0f + (float)i);
             m = unlit_mat(s, lerp_color((scene_color){60, 160, 200}, (scene_color){200, 255, 255}, pulse));
         }
-        scene_add_sphere(s, (scene_sphere){.center = b->p, .radius = BALL_R, .material = m});
+        scene_add_sphere(s, (scene_sphere){.center = b.position, .radius = BALL_R, .material = m});
     }
 
     for (int i = 0; i < MAX_PARTS && !bench_no_parts; i++) {
@@ -1172,8 +1158,9 @@ static int run_shot(game *g, const char *path, float sim_seconds, int w, int h) 
 
     int in_world = 0, resting = 0;
     for (int i = 0; i < g->mag; i++) {
-        in_world += g->balls[i].alive;
-        resting += g->balls[i].alive && g->balls[i].resting;
+        physics_body b = ball_get(g, i);
+        in_world += b.enabled;
+        resting += b.enabled && b.sleeping;
     }
     fprintf(stderr, "sim %.1fs: wave %d, kills %d, score %d, hp %.0f, shots %d, hits %d, "
                     "ammo %d in hand / %d in world (%d resting)%s\n",
@@ -1181,8 +1168,10 @@ static int run_shot(game *g, const char *path, float sim_seconds, int w, int h) 
             g->ammo, in_world, resting, g->game_over ? ", GAME OVER" : "");
     {
         float sum = 0; int n = 0;
-        for (int i = 0; i < g->mag; i++) if (g->balls[i].alive) {
-            sum += hypotf(g->balls[i].p.x - g->pl.p.x, g->balls[i].p.z - g->pl.p.z); n++; }
+        for (int i = 0; i < g->mag; i++) {
+            physics_body b = ball_get(g, i);
+            if (!b.enabled) continue;
+            sum += hypotf(b.position.x - g->pl.p.x, b.position.z - g->pl.p.z); n++; }
         if (n) fprintf(stderr, "balls in world: mean distance from player %.1f m\n", sum / n);
     }
     fprintf(stderr, "sound events:");
@@ -1237,7 +1226,7 @@ static int run_bench(game *g, float sim_seconds, int w, int h, int frames) {
         if (v == 0) {
             base = ms;
             int balls = 0;
-            for (int i = 0; i < g->mag; i++) balls += g->balls[i].alive;
+            for (int i = 0; i < g->mag; i++) balls += ball_get(g, i).enabled;
             fprintf(stderr, "%dx%d, %d balls out, primitives: %d spheres, %d boxes, "
                             "%d cylinders, %d tori, %d discs\n",
                     w, h, balls, s->sphere_count, s->box_count, s->cylinder_count,

@@ -8,8 +8,13 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 ├── libs/                 # Shared libraries
 │   ├── math/             # Vector + 4x4 matrix math (header-heavy) + CHECK unit tests
 │   ├── thread/           # Thread pool (pthreads/Win32)
-│   ├── physics/          # Thread-pooled N-body physics (pairwise gravity,
-│   │                     #   merging, optional spherical boundary) + CHECK tests
+│   ├── physics/          # Sphere-body physics world, features opt-in via
+│   │                     #   physics_config: thread-pooled mutual gravity
+│   │                     #   (+ merging, spherical boundary; nbody) and
+│   │                     #   falling + collisions (ground with grip / rolling
+│   │                     #   / sleep, box walls, vertical columns, kinematic
+│   │                     #   bodies, sphere-sphere impulses, adaptive
+│   │                     #   substeps, contact callback; ricochet) + CHECK tests
 │   ├── scene/            # Renderer-agnostic scene description (materials,
 │   │                     #   primitives, meshes, nodes, skins, animations,
 │   │                     #   camera) + OBJ/MTL loader + FBX loader (vendored
@@ -192,6 +197,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
     - **Toon + edges** is the cel-shading recipe: run toon to band the lighting, then edges to outline the silhouettes.
 - **ECS-ish entity model**: Used in `barrier/` for entities with position/animation/behavior.
 - **Thread pool**: CPU raytrace backend parallelizes chunk rendering via `libs/thread/thread_pool`.
+- **Physics world**: `libs/physics` is one API for every app — a pool of sphere bodies (DYNAMIC: moved by the world; KINEMATIC: moved by the app, collided against) with features switched on in `physics_config` (all off by default except nbody's mutual gravity). Game rules never live in the library: collisions are resolved there and reported through `on_contact`, and the app turns them into sounds, damage and knockback (see `on_contact` in `apps/ricochet/main.c`). Bodies are processed in ID order and only mutual gravity is threaded, so worlds without it are deterministic; apps can disable bodies to keep fixed IDs (ricochet: enemy i = body i, ball k = body MAX_ENEMIES + k).
 - **Modular Autotools**: Each library has its own `Makefile.am`; root `Makefile.am` enforces build order (libs before apps).
 
 ## Possible Improvements
