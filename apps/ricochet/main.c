@@ -3,7 +3,7 @@
  * Enemies are rolling spheres with one glowing eye that hunt you across a
  * walled arena. Your machine gun sprays little glowing spheres that really
  * collide: they hop off enemies (shoving them), off the floor, walls,
- * pillars and each other, then settle. You only carry MAX_AMMO of them, so once
+ * pillars and each other, then settle. You only own --ammo of them (40), so once
  * they're spent you must walk over them to pick them back up. A ball
  * at rest pulses brighter and dimmer so you can find it.
  *
@@ -40,6 +40,7 @@
 #define GL_GLEXT_PROTOTYPES 1
 #include "gl_compat.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -102,7 +103,8 @@ static void res_size(int idx, int window_w, int window_h, int *w, int *h) {
 #define INVULN_TIME   0.9f
 
 /* Ammo / balls */
-#define MAX_AMMO      40
+#define DEFAULT_AMMO  40       /* magazine size; --ammo N overrides */
+#define AMMO_CAP      512      /* hard limit for --ammo (ball pairs are O(n^2)) */
 #define BALL_R        0.13f
 #define SHOOT_SPEED   110.0f   /* fast enough that gravity drop is ~0.14 m
                                 * at 15 m and ~0.56 m across the arena */
@@ -210,7 +212,8 @@ typedef struct {
 
 typedef struct {
     player   pl;
-    ball     balls[MAX_AMMO];
+    ball     balls[AMMO_CAP];
+    int      mag;                /* balls that exist: in hand + in world */
     int      ammo;               /* balls in hand */
     enemy    en[MAX_ENEMIES];
     particle parts[MAX_PARTS];
@@ -365,12 +368,27 @@ static void spawn_wave(game *g) {
     banner(g, buf);
 }
 
+/* --ammo / --start-ammo. start_ammo < 0 means a full magazine. */
+static int cfg_mag = DEFAULT_AMMO, cfg_start_ammo = -1;
+
 static void game_reset(game *g) {
     memset(g, 0, sizeof *g);
     g->pl.p = (vector){0, 0, -3.0f};
     g->pl.hp = PLAYER_HP;
-    g->ammo = MAX_AMMO;
+    g->mag = cfg_mag;
+    g->ammo = cfg_start_ammo < 0 ? cfg_mag : cfg_start_ammo;
     g->wave_timer = 1.0f;
+    /* Rounds you don't start with lie scattered on the floor, at rest,
+     * waiting to be collected (never on top of the spawn point). */
+    for (int i = 0; i < g->mag - g->ammo; i++) {
+        vector p;
+        do {
+            p = (vector){frange(-ARENA_HALF + 1, ARENA_HALF - 1), BALL_R,
+                         frange(-ARENA_HALF + 1, ARENA_HALF - 1)};
+            push_out_pillars(&p, BALL_R);
+        } while (hypotf(p.x - g->pl.p.x, p.z - g->pl.p.z) < 3.0f);
+        g->balls[i] = (ball){.alive = 1, .p = p, .age = PICKUP_MIN_AGE, .resting = 1};
+    }
 }
 
 static void enemy_damage(game *g, enemy *e, vector at) {
@@ -396,7 +414,7 @@ static void ball_vs_wall(game *g, ball *b, float *pc, float *vc, float lim, int 
 }
 
 static void step_balls(game *g, float h) {
-    for (int i = 0; i < MAX_AMMO; i++) {
+    for (int i = 0; i < g->mag; i++) {
         ball *b = &g->balls[i];
         if (!b->alive) continue;
         b->age += h;
@@ -482,10 +500,10 @@ static void step_balls(game *g, float h) {
     }
 
     /* Ball-ball: equal masses. */
-    for (int i = 0; i < MAX_AMMO; i++) {
+    for (int i = 0; i < g->mag; i++) {
         ball *a = &g->balls[i];
         if (!a->alive) continue;
-        for (int k = i + 1; k < MAX_AMMO; k++) {
+        for (int k = i + 1; k < g->mag; k++) {
             ball *b = &g->balls[k];
             if (!b->alive) continue;
             vector d = vector_sub(b->p, a->p);
@@ -619,7 +637,7 @@ static void fire(game *g) {
         return;
     }
     int slot = -1;
-    for (int i = 0; i < MAX_AMMO; i++) if (!g->balls[i].alive) { slot = i; break; }
+    for (int i = 0; i < g->mag; i++) if (!g->balls[i].alive) { slot = i; break; }
     if (slot < 0) return;
 
     vector eye = eye_pos(g);
@@ -687,14 +705,14 @@ static void update_player(game *g, const input *in, float dt) {
     if (in->fire) fire(g);
 
     /* Recollect: walk over (or catch) a ball. */
-    for (int i = 0; i < MAX_AMMO; i++) {
+    for (int i = 0; i < g->mag; i++) {
         ball *b = &g->balls[i];
         if (!b->alive || b->age < PICKUP_MIN_AGE || b->p.y > 2.2f) continue;
         float dx = b->p.x - pl->p.x, dz = b->p.z - pl->p.z;
         if (dx * dx + dz * dz > PICKUP_R * PICKUP_R) continue;
         b->alive = 0;
         g->ammo++;
-        sfx_play(SFX_PICKUP, 0.45f, 0.0f, 0.9f + 0.6f * (float)g->ammo / MAX_AMMO);
+        sfx_play(SFX_PICKUP, 0.45f, 0.0f, 0.9f + 0.6f * (float)g->ammo / g->mag);
     }
 }
 
@@ -706,7 +724,7 @@ static void game_update(game *g, const input *in, float dt) {
      * MAX_SUBSTEP_DIST per step: fast shots can't tunnel through enemies
      * or each other, and a field of resting balls stays cheap. */
     float vmax = 0.0f;
-    for (int i = 0; i < MAX_AMMO; i++)
+    for (int i = 0; i < g->mag; i++)
         if (g->balls[i].alive && !g->balls[i].resting)
             vmax = fmaxf(vmax, vector_magnitude(g->balls[i].v));
     int steps = (int)ceilf(vmax * dt / MAX_SUBSTEP_DIST);
@@ -741,14 +759,14 @@ static void bot_input(const game *g, input *in, float dt) {
     const player *pl = &g->pl;
     vector eye = eye_pos(g);
 
-    int out_in_world = MAX_AMMO - g->ammo;
+    int out_in_world = g->mag - g->ammo;
     if (g->ammo == 0 || (enemies_left(g) == 0 && out_in_world > 0)) collecting = 1;
-    if (g->ammo >= MAX_AMMO * 3 / 4 || out_in_world == 0) collecting = 0;
+    if (g->ammo >= g->mag * 3 / 4 || out_in_world == 0) collecting = 0;
 
     if (collecting) {
         int best = -1;
         float bd = 1e9f;
-        for (int i = 0; i < MAX_AMMO; i++) {
+        for (int i = 0; i < g->mag; i++) {
             const ball *b = &g->balls[i];
             if (!b->alive || b->age < PICKUP_MIN_AGE) continue;
             float dx = b->p.x - pl->p.x, dz = b->p.z - pl->p.z, d = dx * dx + dz * dz;
@@ -835,7 +853,7 @@ static void gun_ring(scene *s, const gun_frame *gf, float cx, float cy, float cz
  * flash on every shot. */
 static void build_viewmodel(scene *s, const game *g, const scene_camera *cam) {
     gun_frame gf = gun_frame_make(g, cam->origin, cam->forward, cam->right, cam->up);
-    float load = (float)g->ammo / MAX_AMMO;
+    float load = (float)g->ammo / g->mag;
     float heat = g->pl.heat;
 
     scene_material plate = scene_material_default();
@@ -1000,7 +1018,7 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
 
     /* Balls: hot cyan in flight, pulsing at rest so they're easy to find. */
     int m_ball = unlit_mat(s, (scene_color){120, 245, 255});
-    for (int i = 0; i < MAX_AMMO; i++) {
+    for (int i = 0; i < g->mag; i++) {
         const ball *b = &g->balls[i];
         if (!b->alive) continue;
         int m = m_ball;
@@ -1047,13 +1065,13 @@ static void draw_hud(const game *g, uint32_t *px, int w, int h) {
     /* Ammo: count + magazine bar (bright = in hand, dim = out in the world). */
     {
         int aw = 60 * sc, ah = 4 * sc, ax = w - 6 * sc - aw, ay = h - 6 * sc - ah;
-        snprintf(buf, sizeof buf, "%d/%d", g->ammo, MAX_AMMO);
-        float ld = (float)g->ammo / MAX_AMMO;
+        snprintf(buf, sizeof buf, "%d/%d", g->ammo, g->mag);
+        float ld = (float)g->ammo / g->mag;
         uint32_t ac = ld > 0.30f ? 0xFF78F5FFu : (ld > 0.12f ? 0xFFFFBE3Cu : 0xFFFF4A3Cu);
         hud_text(t, w - 6 * sc - hud_text_width(buf, sc * 2), ay - 17 * sc, buf, sc * 2, ac);
         hud_rect(t, ax - 1, ay - 1, aw + 2, ah + 2, 0xFF000000u);
         hud_rect(t, ax, ay, aw, ah, 0xFF203040u);
-        hud_rect(t, ax, ay, aw * g->ammo / MAX_AMMO, ah, ac);
+        hud_rect(t, ax, ay, aw * g->ammo / g->mag, ah, ac);
     }
     if (g->ammo == 0 && !g->game_over) {
         float blink = 0.5f + 0.5f * sinf(g->t * 8.0f);
@@ -1147,7 +1165,7 @@ static int run_shot(game *g, const char *path, float sim_seconds, int w, int h) 
     int rc = write_ppm(path, px, w, h);
 
     int in_world = 0, resting = 0;
-    for (int i = 0; i < MAX_AMMO; i++) {
+    for (int i = 0; i < g->mag; i++) {
         in_world += g->balls[i].alive;
         resting += g->balls[i].alive && g->balls[i].resting;
     }
@@ -1157,7 +1175,7 @@ static int run_shot(game *g, const char *path, float sim_seconds, int w, int h) 
             g->ammo, in_world, resting, g->game_over ? ", GAME OVER" : "");
     {
         float sum = 0; int n = 0;
-        for (int i = 0; i < MAX_AMMO; i++) if (g->balls[i].alive) {
+        for (int i = 0; i < g->mag; i++) if (g->balls[i].alive) {
             sum += hypotf(g->balls[i].p.x - g->pl.p.x, g->balls[i].p.z - g->pl.p.z); n++; }
         if (n) fprintf(stderr, "balls in world: mean distance from player %.1f m\n", sum / n);
     }
@@ -1213,7 +1231,7 @@ static int run_bench(game *g, float sim_seconds, int w, int h, int frames) {
         if (v == 0) {
             base = ms;
             int balls = 0;
-            for (int i = 0; i < MAX_AMMO; i++) balls += g->balls[i].alive;
+            for (int i = 0; i < g->mag; i++) balls += g->balls[i].alive;
             fprintf(stderr, "%dx%d, %d balls out, primitives: %d spheres, %d boxes, "
                             "%d cylinders, %d tori, %d discs\n",
                     w, h, balls, s->sphere_count, s->box_count, s->cylinder_count,
@@ -1247,6 +1265,10 @@ static void usage(const char *argv0) {
     printf("Usage: %s [options]\n", argv0);
     printf("  --cpu              Start on the CPU tracer (default: OpenGL when available)\n");
     printf("  -G, --gpu          Start on the OpenGL backend (the default; kept for scripts)\n");
+    printf("  --ammo N           Magazine size: spheres that exist (default %d, max %d)\n",
+           DEFAULT_AMMO, AMMO_CAP);
+    printf("  --start-ammo N     Spheres in hand at start (default: full); the rest\n"
+           "                     lie scattered on the floor to collect\n");
     printf("  --bot              Let the autopilot play\n");
     printf("  --fullscreen       Start in desktop fullscreen (F11 toggles)\n");
     printf("  --no-reflections   Matte surfaces only: much cheaper on the CPU tracer\n");
@@ -1274,6 +1296,11 @@ int main(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-G") || !strcmp(argv[i], "--gpu")) preferred = RT_BACKEND_OPENGL;
         else if (!strcmp(argv[i], "--cpu")) preferred = RT_BACKEND_CPU;
+        else if (!strcmp(argv[i], "--ammo") && i + 1 < argc) cfg_mag = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--start-ammo") && i + 1 < argc) {
+            cfg_start_ammo = atoi(argv[++i]);
+            if (cfg_start_ammo < 0) cfg_start_ammo = INT_MAX;   /* rejected below */
+        }
         else if (!strcmp(argv[i], "--bot")) bot = 1;
         else if (!strcmp(argv[i], "--fullscreen")) start_fullscreen = 1;
         else if (!strcmp(argv[i], "--no-reflections")) no_reflections = 1;
@@ -1289,6 +1316,14 @@ int main(int argc, char *argv[]) {
             }
         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { usage(argv[0]); return 0; }
         else { fprintf(stderr, "Unknown option: %s\n", argv[i]); usage(argv[0]); return 1; }
+    }
+    if (cfg_mag < 1 || cfg_mag > AMMO_CAP) {
+        fprintf(stderr, "--ammo must be 1..%d\n", AMMO_CAP);
+        return 1;
+    }
+    if (cfg_start_ammo > cfg_mag) {
+        fprintf(stderr, "--start-ammo must be 0..%d (the magazine size)\n", cfg_mag);
+        return 1;
     }
     rng_state ^= seed * 0x2545F4914F6CDD1Dull;
     if (rng_state == 0) rng_state = 1;
@@ -1499,7 +1534,7 @@ int main(int argc, char *argv[]) {
         fps_frames++;
         if (now - fps_last >= 1000) {
             snprintf(title, sizeof title, "Ricochet  wave %d  ammo %d/%d  hp %.0f | %s %d FPS (%.1f ms, %dx%d)%s",
-                     g.wave, g.ammo, MAX_AMMO, g.pl.hp, rt_renderer_name(active), fps_frames,
+                     g.wave, g.ammo, g.mag, g.pl.hp, rt_renderer_name(active), fps_frames,
                      fps_frames ? (float)render_ms / fps_frames : 0.0f, render_w, render_h,
                      bot ? "  [BOT]" : "");
             SDL_SetWindowTitle(window, title);
