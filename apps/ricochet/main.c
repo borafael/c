@@ -750,7 +750,11 @@ static void game_update(game *g, const input *in, float dt) {
 
 /* Autopilot: aims (with gravity drop compensation) at the nearest enemy,
  * fires short bursts, and goes hunting for balls once the magazine runs
- * low (with hysteresis so it refills properly before fighting again). */
+ * low (with hysteresis so it refills properly before fighting again).
+ * While collecting it still turns and fights any enemy inside
+ * BOT_THREAT_DIST as long as it holds a ball — otherwise a low start
+ * (--start-ammo) has it calmly gathering while it is eaten alive. */
+#define BOT_THREAT_DIST 9.0f
 static void bot_input(const game *g, input *in, float dt) {
     static float burst_clock = 0.0f;
     static int collecting = 0;
@@ -763,17 +767,27 @@ static void bot_input(const game *g, input *in, float dt) {
     if (g->ammo == 0 || (enemies_left(g) == 0 && out_in_world > 0)) collecting = 1;
     if (g->ammo >= g->mag * 3 / 4 || out_in_world == 0) collecting = 0;
 
-    if (collecting) {
-        int best = -1;
-        float bd = 1e9f;
+    int best = -1;
+    float bd = 1e9f;
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        const enemy *e = &g->en[i];
+        if (!e->alive || e->dying > 0 || e->spawn_t < SPAWN_TIME) continue;
+        float d = vector_magnitude(vector_sub(e->p, eye));
+        if (d < bd) { bd = d; best = i; }
+    }
+    int threatened = best >= 0 && bd < BOT_THREAT_DIST && g->ammo > 0;
+
+    if (collecting && !threatened) {
+        int near = -1;
+        float nd = 1e9f;
         for (int i = 0; i < g->mag; i++) {
             const ball *b = &g->balls[i];
             if (!b->alive || b->age < PICKUP_MIN_AGE) continue;
             float dx = b->p.x - pl->p.x, dz = b->p.z - pl->p.z, d = dx * dx + dz * dz;
-            if (d < bd) { bd = d; best = i; }
+            if (d < nd) { nd = d; near = i; }
         }
-        if (best >= 0) {
-            float want = atan2f(g->balls[best].p.x - pl->p.x, g->balls[best].p.z - pl->p.z);
+        if (near >= 0) {
+            float want = atan2f(g->balls[near].p.x - pl->p.x, g->balls[near].p.z - pl->p.z);
             float dy = remainderf(want - pl->yaw, 2.0f * (float)M_PI);
             in->look_dx = fmaxf(-4 * dt, fminf(4 * dt, dy));
             in->look_dy = (-0.25f - pl->pitch) * fminf(1, dt * 5);
@@ -783,14 +797,6 @@ static void bot_input(const game *g, input *in, float dt) {
         return;
     }
 
-    int best = -1;
-    float bd = 1e9f;
-    for (int i = 0; i < MAX_ENEMIES; i++) {
-        const enemy *e = &g->en[i];
-        if (!e->alive || e->dying > 0 || e->spawn_t < SPAWN_TIME) continue;
-        float d = vector_magnitude(vector_sub(e->p, eye));
-        if (d < bd) { bd = d; best = i; }
-    }
     if (best < 0) return;
     const enemy *e = &g->en[best];
     float t = bd / SHOOT_SPEED;
