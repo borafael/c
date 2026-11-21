@@ -47,6 +47,8 @@ static const uint8_t *glyph(char c) {
     static const uint8_t BANG[7]  = {0x04,0x04,0x04,0x04,0x04,0x00,0x04};
     static const uint8_t DOT[7]   = {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C};
     static const uint8_t PCT[7]   = {0x18,0x19,0x02,0x04,0x08,0x13,0x03};
+    static const uint8_t LT[7]    = {0x02,0x04,0x08,0x10,0x08,0x04,0x02};
+    static const uint8_t GT[7]    = {0x08,0x04,0x02,0x01,0x02,0x04,0x08};
     if (c >= '0' && c <= '9') return FONT_DIGITS[c - '0'];
     if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
     if (c >= 'A' && c <= 'Z') return FONT_ALPHA[c - 'A'];
@@ -57,6 +59,8 @@ static const uint8_t *glyph(char c) {
     case '!': return BANG;
     case '.': return DOT;
     case '%': return PCT;
+    case '<': return LT;
+    case '>': return GT;
     default:  return NULL;
     }
 }

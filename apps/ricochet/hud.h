@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* Immediate-mode HUD drawing straight into an ARGB framebuffer.
- * Text uses an embedded 5x7 font (A-Z, 0-9, space, and : - / ! . %),
+ * Text uses an embedded 5x7 font (A-Z, 0-9, space, and : - / ! . % < >),
  * scaled by an integer factor, with an optional 1-px drop shadow. */
 
 typedef struct {

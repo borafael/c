@@ -1,5 +1,5 @@
 bin_PROGRAMS = ricochet
-ricochet_SOURCES = main.c sfx.c sfx.h hud.c hud.h
+ricochet_SOURCES = main.c sfx.c sfx.h hud.c hud.h menu.c menu.h
 
 ricochet_CPPFLAGS = -I$(top_srcdir)/libs/math \
                     -I$(top_srcdir)/libs/scene \

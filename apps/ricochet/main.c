@@ -17,7 +17,13 @@
  *   WASD move   mouse look (arrows fallback)   hold LMB / SPACE to fire
  *   SHIFT sprint   M toggle mouse capture   R restart
  *   V cycle render resolution (- / = step down / up)   B bloom
- *   TAB CPU/OpenGL   F11 fullscreen   ESC quit
+ *   TAB CPU/OpenGL   F11 fullscreen   ESC / P pause menu
+ *
+ * Menus (menu.c draws them; the screens are in the Menus / Screens
+ * sections below): a title screen over a quiet bot match (START /
+ * OPTIONS / QUIT), a pause menu, and options for the magazine, starting
+ * ammo, starting wave, mouse speed, reflections, bloom, renderer, resolution and
+ * fullscreen. Losing window focus pauses.
  *
  * Starts on the OpenGL compute backend when the driver has GL 4.3
  * (Linux / Windows), otherwise on the CPU tracer; --cpu forces the CPU.
@@ -34,6 +40,7 @@
 #include "scene.h"
 #include "postfx.h"
 #include "hud.h"
+#include "menu.h"
 #include "sfx.h"
 #include "physics.h"
 #include <SDL2/SDL.h>
@@ -135,6 +142,7 @@ static void res_size(int idx, int window_w, int window_h, int *w, int *h) {
 #define ENEMY_ACCEL   7.0f
 #define KNOCKBACK     0.6f     /* scales momentum transfer for feel */
 #define WAVE_GAP      2.5f
+#define MAX_START_WAVE 50      /* enemy count caps at wave 22; speed keeps rising */
 
 #define MAX_PARTS     160
 
@@ -267,12 +275,20 @@ static vector gun_local(const gun_frame *gf, float x, float y, float z) {
 
 /* --------------------------------------------------------------- Audio */
 
+/* Scales every game sound: the title screen's background match plays
+ * quietly. Menu clicks call sfx_play directly and ignore it. */
+static float game_volume = 1.0f;
+
+static void game_sfx(sfx_id id, float gain, float pan, float rate) {
+    sfx_play(id, gain * game_volume, pan, rate);
+}
+
 static void play_at(game *g, sfx_id id, vector at, float gain, float rate) {
     vector d = vector_sub(at, g->ear);
     float dist = vector_magnitude(d);
     float att = 1.0f / (1.0f + 0.10f * dist);
     float pan = dist > 0.01f ? vector_dot(vector_scale(d, 1.0f / dist), g->ear_right) * 0.8f : 0.0f;
-    sfx_play(id, gain * att, pan, rate);
+    game_sfx(id, gain * att, pan, rate);
 }
 
 /* Feature toggles used by --bench to attribute render cost. */
@@ -363,8 +379,9 @@ static void spawn_wave(game *g) {
     banner(g, buf);
 }
 
-/* --ammo / --start-ammo. start_ammo < 0 means a full magazine. */
+/* --ammo / --start-ammo / --wave. start_ammo < 0 means a full magazine. */
 static int cfg_mag = DEFAULT_AMMO, cfg_start_ammo = -1;
+static int cfg_start_wave = 1;
 
 static void on_contact(void *user, physics_world *w, const physics_contact *c);
 
@@ -424,6 +441,7 @@ static void game_reset(game *g) {
     g->pl.hp = PLAYER_HP;
     g->mag = cfg_mag;
     g->ammo = cfg_start_ammo < 0 ? cfg_mag : cfg_start_ammo;
+    g->wave = cfg_start_wave - 1;   /* the first spawn_wave makes it cfg_start_wave */
     g->wave_timer = 1.0f;
     /* Rounds you don't start with lie scattered on the floor, at rest,
      * waiting to be collected (never on top of the spawn point). */
@@ -598,7 +616,7 @@ static void update_enemies(game *g, float dt) {
             g->pl.hurt_flash = 1.0f;
             g->pl.v = vector_add(g->pl.v, vector_scale(dir, 9.0f));
             e->v = vector_scale(dir, -4.0f);
-            sfx_play(SFX_HURT, 0.9f, 0.0f, 1.0f);
+            game_sfx(SFX_HURT, 0.9f, 0.0f, 1.0f);
             if (g->pl.hp <= 0) {
                 g->pl.hp = 0;
                 g->game_over = 1;
@@ -627,7 +645,7 @@ static void fire(game *g) {
     pl->fire_cd = FIRE_COOLDOWN;
     if (g->ammo <= 0) {
         pl->fire_cd = DRY_COOLDOWN;
-        sfx_play(SFX_DRY, 0.7f, 0.0f, frange(0.95f, 1.05f));
+        game_sfx(SFX_DRY, 0.7f, 0.0f, frange(0.95f, 1.05f));
         return;
     }
     int slot = -1;
@@ -663,7 +681,7 @@ static void fire(game *g) {
     pl->heat = fminf(1.0f, pl->heat + 0.045f);
     /* Rapid fire: quieter, shorter-feeling and pitch-jittered so a burst
      * reads as a rattle rather than one droning tone. */
-    sfx_play(SFX_SHOOT, 0.55f, 0.0f, frange(1.05f, 1.25f));
+    game_sfx(SFX_SHOOT, 0.55f, 0.0f, frange(1.05f, 1.25f));
 }
 
 static void update_player(game *g, const input *in, float dt) {
@@ -708,7 +726,7 @@ static void update_player(game *g, const input *in, float dt) {
         if (dx * dx + dz * dz > PICKUP_R * PICKUP_R) continue;
         physics_world_set_enabled(g->phys, BALL_ID(i), 0);
         g->ammo++;
-        sfx_play(SFX_PICKUP, 0.45f, 0.0f, 0.9f + 0.6f * (float)g->ammo / g->mag);
+        game_sfx(SFX_PICKUP, 0.45f, 0.0f, 0.9f + 0.6f * (float)g->ammo / g->mag);
     }
 }
 
@@ -1091,7 +1109,7 @@ static void draw_hud(const game *g, uint32_t *px, int w, int h) {
     if (g->banner_t > 0.0f) {
         hud_text_center(t, h / 3, g->banner, sc * 3, 0xFFFFFFFFu);
         if (g->game_over) {
-            snprintf(buf, sizeof buf, "SCORE %d - PRESS R TO RESTART", g->score);
+            snprintf(buf, sizeof buf, "SCORE %d - R RESTART - ESC MENU", g->score);
             hud_text_center(t, h / 3 + 20 * sc, buf, sc, 0xFFFFE070u);
         }
     }
@@ -1103,7 +1121,7 @@ typedef struct {
 } fx_state;
 
 static void render_frame(game *g, rt_renderer *rnd, scene *s, scene_camera *cam,
-                         uint32_t *px, int w, int h, fx_state *fx) {
+                         uint32_t *px, int w, int h, fx_state *fx, int hud) {
     vector eye = eye_pos(g);
     scene_camera_place(cam, eye, cam_forward(g->pl.yaw, g->pl.pitch));
     g->ear = eye;
@@ -1117,7 +1135,108 @@ static void render_frame(game *g, rt_renderer *rnd, scene *s, scene_camera *cam,
     }
     postfx_vignette vig = {1, 0.35f, 0.55f};
     postfx_vignette_apply(px, w, h, &vig);
-    draw_hud(g, px, w, h);
+    if (hud) draw_hud(g, px, w, h);
+}
+
+/* --------------------------------------------------------------- Menus */
+
+/* The screens around the game: a title screen (over a quiet bot match),
+ * pause and options. menu.c draws them and handles keys and the mouse;
+ * what each item does is in on_menu_event further down. */
+
+typedef enum { SCREEN_PLAY, SCREEN_TITLE, SCREEN_PAUSE, SCREEN_OPTIONS } screen_id;
+
+#define COUNT(a) ((int)(sizeof (a) / sizeof (a)[0]))
+
+enum { T_START, T_OPTIONS, T_QUIT };
+static menu_item title_items[] = {
+    [T_START]   = {.kind = MENU_ACTION, .label = "START"},
+    [T_OPTIONS] = {.kind = MENU_ACTION, .label = "OPTIONS"},
+    [T_QUIT]    = {.kind = MENU_ACTION, .label = "QUIT"},
+};
+static menu title_menu = {.title = "RICOCHET", .items = title_items,
+                          .count = COUNT(title_items),
+                          .footer = "ARROWS OR MOUSE - ENTER SELECTS"};
+
+enum { P_RESUME, P_RESTART, P_OPTIONS, P_TITLE, P_QUIT };
+static menu_item pause_items[] = {
+    [P_RESUME]  = {.kind = MENU_ACTION, .label = "RESUME"},
+    [P_RESTART] = {.kind = MENU_ACTION, .label = "RESTART"},
+    [P_OPTIONS] = {.kind = MENU_ACTION, .label = "OPTIONS"},
+    [P_TITLE]   = {.kind = MENU_ACTION, .label = "MAIN MENU"},
+    [P_QUIT]    = {.kind = MENU_ACTION, .label = "QUIT"},
+};
+static menu pause_menu = {.title = "PAUSED", .items = pause_items,
+                          .count = COUNT(pause_items)};
+
+/* Options edit these (and cfg_mag, the app's bloom / fullscreen flags)
+ * in place; on_menu_event applies whatever needs more than a new value. */
+enum { O_MAG, O_START, O_WAVE, O_MOUSE, O_REFLECT, O_BLOOM, O_RENDERER, O_RES,
+       O_FULLSCREEN, O_BACK };
+static const char *const OFF_ON[] = {"OFF", "ON"};
+static int opt_start_ammo;   /* 0..cfg_mag; cfg_mag = full (cfg_start_ammo -1) */
+static int opt_mouse = 10;   /* mouse speed, 10 = MOUSE_SENS */
+static int opt_reflect = 1;
+static menu_item option_items[] = {
+    [O_MAG]        = {.kind = MENU_VALUE, .label = "MAGAZINE", .value = &cfg_mag,
+                      .min = 1, .max = AMMO_CAP, .step = 5},
+    [O_START]      = {.kind = MENU_VALUE, .label = "START AMMO", .value = &opt_start_ammo,
+                      .min = 0, .max = DEFAULT_AMMO, .step = 5, .max_name = "FULL"},
+    [O_WAVE]       = {.kind = MENU_VALUE, .label = "START WAVE", .value = &cfg_start_wave,
+                      .min = 1, .max = MAX_START_WAVE, .step = 1},
+    [O_MOUSE]      = {.kind = MENU_VALUE, .label = "MOUSE SPEED", .value = &opt_mouse,
+                      .min = 1, .max = 20, .step = 1},
+    [O_REFLECT]    = {.kind = MENU_VALUE, .label = "REFLECTIONS", .value = &opt_reflect,
+                      .min = 0, .max = 1, .step = 1, .names = OFF_ON},
+    [O_BLOOM]      = {.kind = MENU_VALUE, .label = "BLOOM",
+                      .min = 0, .max = 1, .step = 1, .names = OFF_ON},
+    [O_RENDERER]   = {.kind = MENU_VALUE, .label = "RENDERER"},
+    [O_RES]        = {.kind = MENU_VALUE, .label = "RESOLUTION"},
+    [O_FULLSCREEN] = {.kind = MENU_VALUE, .label = "FULLSCREEN",
+                      .min = 0, .max = 1, .step = 1, .names = OFF_ON},
+    [O_BACK]       = {.kind = MENU_ACTION, .label = "BACK"},
+};
+static menu options_menu = {.title = "OPTIONS", .items = option_items,
+                            .count = COUNT(option_items)};
+
+static float mouse_sens(void) { return MOUSE_SENS * (float)opt_mouse / 10.0f; }
+
+/* Seed the option values from the command line. */
+static void options_init(void) {
+    opt_start_ammo = cfg_start_ammo < 0 ? cfg_mag : cfg_start_ammo;
+    opt_reflect = !no_reflections;
+}
+
+/* Text and ranges that follow live state. render_h == 0 shows NATIVE. */
+static void options_refresh(int gpu_active, int can_switch, int render_h, int in_game) {
+    option_items[O_START].max = cfg_mag;
+    snprintf(option_items[O_RENDERER].text, sizeof option_items[O_RENDERER].text,
+             "%s", gpu_active ? "GPU" : "CPU");
+    option_items[O_RENDERER].disabled = !can_switch;
+    if (render_h > 0)
+        snprintf(option_items[O_RES].text, sizeof option_items[O_RES].text, "%dP", render_h);
+    else
+        snprintf(option_items[O_RES].text, sizeof option_items[O_RES].text, "NATIVE");
+    options_menu.footer = in_game ? "AMMO AND WAVE APPLY ON RESTART" : "ESC BACK";
+}
+
+/* MAGAZINE or START AMMO was stepped: keep --start-ammo consistent. A
+ * full start stays full when the magazine grows. */
+static void options_ammo_changed(int item) {
+    if (item == O_MAG && (cfg_start_ammo < 0 || opt_start_ammo > cfg_mag))
+        opt_start_ammo = cfg_mag;
+    option_items[O_START].max = cfg_mag;
+    cfg_start_ammo = opt_start_ammo >= cfg_mag ? -1 : opt_start_ammo;
+}
+
+static void menu_feedback(menu_event ev) {
+    switch (ev.kind) {
+    case MENU_MOVED:    sfx_play(SFX_DRY, 0.35f, 0.0f, 1.7f); break;
+    case MENU_CHANGED:  sfx_play(SFX_DRY, 0.50f, 0.0f, ev.dir > 0 ? 1.3f : 1.1f); break;
+    case MENU_ACTIVATE: sfx_play(SFX_PICKUP, 0.40f, 0.0f, 1.1f); break;
+    case MENU_BACK:     sfx_play(SFX_PICKUP, 0.30f, 0.0f, 0.8f); break;
+    default: break;
+    }
 }
 
 /* ------------------------------------------------------------- Headless */
@@ -1134,7 +1253,9 @@ static int write_ppm(const char *path, const uint32_t *px, int w, int h) {
     return 0;
 }
 
-static int run_shot(game *g, const char *path, float sim_seconds, int w, int h) {
+/* menu_name: NULL, or "title" / "pause" / "options" drawn over the frame. */
+static int run_shot(game *g, const char *path, float sim_seconds, int w, int h,
+                    const char *menu_name) {
     rt_renderer *rnd = rt_renderer_create(RT_BACKEND_CPU);
     if (!rnd) { fprintf(stderr, "CPU renderer unavailable\n"); return 1; }
     scene *s = scene_create();
@@ -1153,7 +1274,18 @@ static int run_shot(game *g, const char *path, float sim_seconds, int w, int h) 
     }
 
     uint32_t *px = calloc((size_t)w * (size_t)h, sizeof *px);
-    render_frame(g, rnd, s, cam, px, w, h, &fx);
+    int title = menu_name && !strcmp(menu_name, "title");
+    render_frame(g, rnd, s, cam, px, w, h, &fx, !menu_name);
+    if (menu_name) {
+        int bloom = fx.bloom_on, fullscreen = 0;
+        option_items[O_BLOOM].value = &bloom;
+        option_items[O_FULLSCREEN].value = &fullscreen;
+        options_init();
+        options_refresh(0, 0, h, !title);
+        menu *m = title ? &title_menu : !strcmp(menu_name, "pause") ? &pause_menu : &options_menu;
+        menu_draw(m, (hud_target){px, w, h}, 0.0f);
+        option_items[O_BLOOM].value = option_items[O_FULLSCREEN].value = NULL;
+    }
     int rc = write_ppm(path, px, w, h);
 
     int in_world = 0, resting = 0;
@@ -1219,9 +1351,9 @@ static int run_bench(game *g, float sim_seconds, int w, int h, int frames) {
         bench_no_gun   = v == 2 || v == 5;
         bench_no_parts = v == 3 || v == 5;
         fx.bloom_on    = !(v == 4 || v == 5);
-        render_frame(g, rnd, s, cam, px, w, h, &fx);   /* warm-up */
+        render_frame(g, rnd, s, cam, px, w, h, &fx, 1);   /* warm-up */
         double t0 = now_ms();
-        for (int f = 0; f < frames; f++) render_frame(g, rnd, s, cam, px, w, h, &fx);
+        for (int f = 0; f < frames; f++) render_frame(g, rnd, s, cam, px, w, h, &fx, 1);
         double ms = (now_ms() - t0) / frames;
         if (v == 0) {
             base = ms;
@@ -1256,6 +1388,240 @@ static void display_pixels(GLuint tex, GLuint fbo, const uint32_t *pixels,
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 }
 
+/* ------------------------------------------------------------------ App */
+
+/* Everything the interactive loop owns besides the game itself. */
+typedef struct {
+    SDL_Window *window;
+    int window_w, window_h, fullscreen;
+    rt_renderer *cpu, *gpu, *active;
+    int res_idx, render_w, render_h;
+    float res_toast;            /* seconds left to show the resolution note */
+    uint32_t *pixels;
+    GLuint tex, fbo;
+    fx_state fx;
+    int mouse_captured;
+    int fire_block;             /* ignore the trigger until it is released */
+    screen_id screen;
+    screen_id options_from;     /* where BACK returns from OPTIONS */
+    int bot;                    /* --bot: the autopilot plays the real game */
+    int attract;                /* the bot plays behind the title screen */
+    float attract_over;         /* seconds since that match ended */
+    float ui_t;
+    int quit;
+} app;
+
+static void app_capture_mouse(app *a, int on) {
+    a->mouse_captured = on;
+    SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE);
+}
+
+/* Reallocate the render buffer after the window or the rung changed. */
+static void app_resize(app *a) {
+    /* After a window change the current rung may be too tall. */
+    if (!res_usable(a->res_idx, a->window_h)) a->res_idx = res_step(a->res_idx, -1, 0, a->window_h);
+    res_size(a->res_idx, a->window_w, a->window_h, &a->render_w, &a->render_h);
+    a->res_toast = 1.5f;
+    free(a->pixels);
+    a->pixels = calloc((size_t)a->render_w * (size_t)a->render_h, sizeof(uint32_t));
+    glBindTexture(GL_TEXTURE_2D, a->tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, a->render_w, a->render_h, 0,
+                 GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+    fprintf(stderr, "Render resolution: %dx%d%s\n", a->render_w, a->render_h,
+            RES_HEIGHTS[a->res_idx] == 0 ? " (native)" : "");
+}
+
+static void app_step_res(app *a, int dir, int wrap) {
+    a->res_idx = res_step(a->res_idx, dir, wrap, a->window_h);
+    app_resize(a);
+}
+
+static void app_set_fullscreen(app *a, int on) {
+    a->fullscreen = on;
+    SDL_SetWindowFullscreen(a->window, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    SDL_GetWindowSize(a->window, &a->window_w, &a->window_h);
+    app_resize(a);
+}
+
+static void app_toggle_backend(app *a) {
+    if (a->active == a->cpu && a->gpu) a->active = a->gpu;
+    else if (a->active == a->gpu && a->cpu) a->active = a->cpu;
+    fprintf(stderr, "Active: %s\n", rt_renderer_name(a->active));
+}
+
+/* ------------------------------------------------------------ Screens */
+
+static void start_game(app *a, game *g) {
+    game_reset(g);
+    a->attract = 0;
+    game_volume = 1.0f;
+    a->screen = SCREEN_PLAY;
+    app_capture_mouse(a, 1);
+    a->fire_block = 1;
+}
+
+static void enter_title(app *a, game *g) {
+    game_reset(g);
+    a->attract = 1;
+    a->attract_over = 0.0f;
+    game_volume = 0.25f;
+    a->screen = SCREEN_TITLE;
+    title_menu.sel = T_START;
+    app_capture_mouse(a, 0);
+}
+
+static void pause_game(app *a) {
+    a->screen = SCREEN_PAUSE;
+    pause_menu.sel = P_RESUME;
+    app_capture_mouse(a, 0);
+}
+
+static void resume_game(app *a) {
+    a->screen = SCREEN_PLAY;
+    app_capture_mouse(a, 1);
+    a->fire_block = 1;
+}
+
+static void open_options(app *a) {
+    a->options_from = a->screen;
+    a->screen = SCREEN_OPTIONS;
+    options_menu.sel = O_MAG;
+}
+
+static menu *current_menu(const app *a) {
+    switch (a->screen) {
+    case SCREEN_TITLE:   return &title_menu;
+    case SCREEN_PAUSE:   return &pause_menu;
+    case SCREEN_OPTIONS: return &options_menu;
+    default:             return NULL;
+    }
+}
+
+static void on_menu_event(app *a, game *g, menu_event ev) {
+    menu_feedback(ev);
+    switch (a->screen) {
+    case SCREEN_TITLE:
+        if (ev.kind == MENU_BACK) title_menu.sel = T_QUIT;   /* ESC again + Enter quits */
+        if (ev.kind != MENU_ACTIVATE) break;
+        if (ev.item == T_START) start_game(a, g);
+        else if (ev.item == T_OPTIONS) open_options(a);
+        else a->quit = 1;
+        break;
+    case SCREEN_PAUSE:
+        if (ev.kind == MENU_BACK) { resume_game(a); break; }
+        if (ev.kind != MENU_ACTIVATE) break;
+        switch (ev.item) {
+        case P_RESUME:  resume_game(a); break;
+        case P_RESTART: start_game(a, g); break;
+        case P_OPTIONS: open_options(a); break;
+        case P_TITLE:   enter_title(a, g); break;
+        case P_QUIT:    a->quit = 1; break;
+        }
+        break;
+    case SCREEN_OPTIONS:
+        if (ev.kind == MENU_BACK || (ev.kind == MENU_ACTIVATE && ev.item == O_BACK)) {
+            a->screen = a->options_from;
+            break;
+        }
+        if (ev.kind != MENU_CHANGED) break;
+        switch (ev.item) {
+        case O_MAG: case O_START: options_ammo_changed(ev.item); break;
+        case O_REFLECT:    no_reflections = !opt_reflect; break;
+        case O_RENDERER:   app_toggle_backend(a); break;
+        case O_RES:        app_step_res(a, ev.dir, 0); break;
+        case O_FULLSCREEN: app_set_fullscreen(a, a->fullscreen); break;
+        default: break;   /* wave, mouse speed, bloom: the new value is enough */
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* ---------------------------------------------------------------- Input */
+
+static void menu_input(app *a, game *g, menu *m, const SDL_Event *e) {
+    menu_event ev = {MENU_NONE, -1, 0};
+    /* Window pixels -> render-buffer pixels (the blit stretches). */
+    int mx = 0, my = 0;
+    if (e->type == SDL_MOUSEMOTION) { mx = e->motion.x; my = e->motion.y; }
+    else if (e->type == SDL_MOUSEBUTTONDOWN) { mx = e->button.x; my = e->button.y; }
+    else if (e->type == SDL_MOUSEWHEEL) SDL_GetMouseState(&mx, &my);
+    mx = a->window_w > 0 ? mx * a->render_w / a->window_w : 0;
+    my = a->window_h > 0 ? my * a->render_h / a->window_h : 0;
+
+    if (e->type == SDL_KEYDOWN) {
+        switch (e->key.keysym.sym) {
+        case SDLK_UP:    case SDLK_w: ev = menu_on_key(m, MENU_KEY_UP); break;
+        case SDLK_DOWN:  case SDLK_s: ev = menu_on_key(m, MENU_KEY_DOWN); break;
+        case SDLK_LEFT:  case SDLK_a: ev = menu_on_key(m, MENU_KEY_LEFT); break;
+        case SDLK_RIGHT: case SDLK_d: ev = menu_on_key(m, MENU_KEY_RIGHT); break;
+        case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE:
+            if (!e->key.repeat) ev = menu_on_key(m, MENU_KEY_OK);
+            break;
+        case SDLK_ESCAPE: case SDLK_BACKSPACE:
+            if (!e->key.repeat) ev = menu_on_key(m, MENU_KEY_BACK);
+            break;
+        default: break;
+        }
+    } else if (e->type == SDL_MOUSEMOTION) {
+        ev = menu_on_motion(m, mx, my);
+    } else if (e->type == SDL_MOUSEBUTTONDOWN) {
+        int b = e->button.button == SDL_BUTTON_LEFT ? 1 : e->button.button == SDL_BUTTON_RIGHT ? 3 : 0;
+        ev = menu_on_click(m, mx, my, b);
+    } else if (e->type == SDL_MOUSEWHEEL) {
+        ev = menu_on_wheel(m, mx, my, e->wheel.y);
+    }
+    if (ev.kind != MENU_NONE) on_menu_event(a, g, ev);
+}
+
+static void play_input(app *a, game *g, const SDL_Event *e, input *in) {
+    if (e->type == SDL_MOUSEMOTION && a->mouse_captured) {
+        in->look_dx += e->motion.xrel * mouse_sens();
+        in->look_dy -= e->motion.yrel * mouse_sens();
+    } else if (e->type == SDL_MOUSEBUTTONDOWN && e->button.button == SDL_BUTTON_LEFT) {
+        if (!a->mouse_captured) {
+            /* This click only grabs the mouse; don't start firing until
+             * the button is released and pressed again. */
+            app_capture_mouse(a, 1);
+            a->fire_block = 1;
+        }
+    } else if (e->type == SDL_KEYDOWN && !e->key.repeat) {
+        switch (e->key.keysym.sym) {
+        case SDLK_ESCAPE: case SDLK_p: pause_game(a); break;
+        case SDLK_r: game_reset(g); break;
+        case SDLK_b: a->fx.bloom_on = !a->fx.bloom_on; break;
+        case SDLK_m: app_capture_mouse(a, !a->mouse_captured); break;
+        case SDLK_TAB: app_toggle_backend(a); break;
+        case SDLK_v: app_step_res(a, +1, 1); break;
+        case SDLK_MINUS: case SDLK_KP_MINUS: app_step_res(a, -1, 0); break;
+        case SDLK_EQUALS: case SDLK_KP_PLUS: app_step_res(a, +1, 0); break;
+        default: break;
+        }
+    }
+}
+
+/* Held keys / buttons for this frame. */
+static void play_controls(app *a, const game *g, input *in, float dt) {
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    int lmb = (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_LMASK) != 0;
+    int space = keys[SDL_SCANCODE_SPACE];
+    /* A click or Enter/Space that closed a menu must not also fire. */
+    if (a->fire_block && !lmb && !space) a->fire_block = 0;
+    int trigger = !a->fire_block && (space || (a->mouse_captured && lmb));
+    if (a->bot) {
+        bot_input(g, in, dt);
+        in->fire |= trigger;
+        return;
+    }
+    in->fire = trigger;
+    in->move_f = (float)(keys[SDL_SCANCODE_W] - keys[SDL_SCANCODE_S]);
+    in->move_s = (float)(keys[SDL_SCANCODE_D] - keys[SDL_SCANCODE_A]);
+    in->sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+    in->look_dx += (float)(keys[SDL_SCANCODE_RIGHT] - keys[SDL_SCANCODE_LEFT]) * LOOK_SPEED * dt;
+    in->look_dy += (float)(keys[SDL_SCANCODE_UP] - keys[SDL_SCANCODE_DOWN]) * LOOK_SPEED * dt;
+}
+
 static void usage(const char *argv0) {
     printf("Usage: %s [options]\n", argv0);
     printf("  --cpu              Start on the CPU tracer (default: OpenGL when available)\n");
@@ -1264,25 +1630,28 @@ static void usage(const char *argv0) {
            DEFAULT_AMMO, AMMO_CAP);
     printf("  --start-ammo N     Spheres in hand at start (default: full); the rest\n"
            "                     lie scattered on the floor to collect\n");
-    printf("  --bot              Let the autopilot play\n");
+    printf("  --wave N           Start at wave N (default 1, max %d): more, bigger,\n"
+           "                     faster enemies from the first fight\n", MAX_START_WAVE);
+    printf("  --bot              Let the autopilot play (skips the title screen)\n");
     printf("  --fullscreen       Start in desktop fullscreen (F11 toggles)\n");
     printf("  --no-reflections   Matte surfaces only: much cheaper on the CPU tracer\n");
     printf("  --seed N           RNG seed\n");
     printf("  --shot out.ppm     Headless: bot plays --sim seconds, render one frame\n");
     printf("  --sim N            With --shot: seconds to simulate (default 6)\n");
+    printf("  --shot-menu NAME   With --shot: draw the title, pause or options menu\n");
     printf("  --res WxH          With --shot: output resolution (default 960x600)\n");
     printf("  --bench N          Headless: bot plays --sim seconds, then time N CPU\n"
            "                     renders per variant (features toggled off one by one)\n");
     printf("  --dump-sfx DIR     Write every synthesized sound as DIR/<name>.wav\n");
     printf("\nWASD move, mouse look, hold LMB/SPACE to fire, SHIFT sprint, walk over spheres to\n");
-    printf("recollect them. M mouse capture, R restart, V cycle resolution (-/= step),\n");
-    printf("TAB backend, B bloom,\n");
-    printf("F11 fullscreen, ESC quit.\n");
+    printf("recollect them. ESC / P pause menu, M mouse capture, R restart,\n");
+    printf("V cycle resolution (-/= step), TAB backend, B bloom, F11 fullscreen.\n");
+    printf("Menus: arrows / WASD or the mouse, Enter select, left / right change, ESC back.\n");
 }
 
 int main(int argc, char *argv[]) {
     rt_backend preferred = RT_BACKEND_OPENGL;   /* falls back to CPU */
-    const char *shot_path = NULL, *dump_dir = NULL;
+    const char *shot_path = NULL, *dump_dir = NULL, *shot_menu = NULL;
     int shot_w = INIT_WINDOW_W, shot_h = INIT_WINDOW_H, bot = 0, start_fullscreen = 0;
     float sim_seconds = 6.0f;
     int bench_frames = 0;
@@ -1296,11 +1665,19 @@ int main(int argc, char *argv[]) {
             cfg_start_ammo = atoi(argv[++i]);
             if (cfg_start_ammo < 0) cfg_start_ammo = INT_MAX;   /* rejected below */
         }
+        else if (!strcmp(argv[i], "--wave") && i + 1 < argc) cfg_start_wave = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--bot")) bot = 1;
         else if (!strcmp(argv[i], "--fullscreen")) start_fullscreen = 1;
         else if (!strcmp(argv[i], "--no-reflections")) no_reflections = 1;
         else if (!strcmp(argv[i], "--seed") && i + 1 < argc) seed = strtoull(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--shot") && i + 1 < argc) shot_path = argv[++i];
+        else if (!strcmp(argv[i], "--shot-menu") && i + 1 < argc) {
+            shot_menu = argv[++i];
+            if (strcmp(shot_menu, "title") && strcmp(shot_menu, "pause") && strcmp(shot_menu, "options")) {
+                fprintf(stderr, "--shot-menu must be title, pause or options\n");
+                return 1;
+            }
+        }
         else if (!strcmp(argv[i], "--sim") && i + 1 < argc) sim_seconds = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--dump-sfx") && i + 1 < argc) dump_dir = argv[++i];
         else if (!strcmp(argv[i], "--bench") && i + 1 < argc) bench_frames = atoi(argv[++i]);
@@ -1318,6 +1695,10 @@ int main(int argc, char *argv[]) {
     }
     if (cfg_start_ammo > cfg_mag) {
         fprintf(stderr, "--start-ammo must be 0..%d (the magazine size)\n", cfg_mag);
+        return 1;
+    }
+    if (cfg_start_wave < 1 || cfg_start_wave > MAX_START_WAVE) {
+        fprintf(stderr, "--wave must be 1..%d\n", MAX_START_WAVE);
         return 1;
     }
     rng_state ^= seed * 0x2545F4914F6CDD1Dull;
@@ -1340,7 +1721,7 @@ int main(int argc, char *argv[]) {
     }
     if (shot_path) {
         sfx_init(0);
-        int rc = run_shot(&g, shot_path, sim_seconds, shot_w, shot_h);
+        int rc = run_shot(&g, shot_path, sim_seconds, shot_w, shot_h, shot_menu);
         sfx_shutdown();
         return rc;
     }
@@ -1351,8 +1732,11 @@ int main(int argc, char *argv[]) {
     }
     sfx_init(1);
 
-    int window_w = INIT_WINDOW_W, window_h = INIT_WINDOW_H, fullscreen = start_fullscreen;
-    SDL_Window *window = NULL;
+    static app a;
+    a.window_w = INIT_WINDOW_W;
+    a.window_h = INIT_WINDOW_H;
+    a.fullscreen = start_fullscreen;
+    a.bot = bot;
     SDL_GLContext gl_ctx = NULL;
     static const int GL_VERSIONS[][2] = {{4, 3}, {4, 1}, {3, 3}};
     for (int v = 0; v < 3 && !gl_ctx; v++) {
@@ -1361,16 +1745,16 @@ int main(int argc, char *argv[]) {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
         SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-        if (window) SDL_DestroyWindow(window);
-        window = SDL_CreateWindow("Ricochet", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                  window_w, window_h,
-                                  SDL_WINDOW_OPENGL | (fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
-        if (!window) break;
-        gl_ctx = SDL_GL_CreateContext(window);
+        if (a.window) SDL_DestroyWindow(a.window);
+        a.window = SDL_CreateWindow("Ricochet", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                    a.window_w, a.window_h,
+                                    SDL_WINDOW_OPENGL | (a.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
+        if (!a.window) break;
+        gl_ctx = SDL_GL_CreateContext(a.window);
     }
-    if (!window || !gl_ctx) {
+    if (!a.window || !gl_ctx) {
         fprintf(stderr, "Window/GL context: %s\n", SDL_GetError());
-        if (window) SDL_DestroyWindow(window);
+        if (a.window) SDL_DestroyWindow(a.window);
         sfx_shutdown();
         SDL_Quit();
         return 1;
@@ -1378,178 +1762,132 @@ int main(int argc, char *argv[]) {
     SDL_GL_SetSwapInterval(1);
     gl_compat_init((gl_compat_loader_fn)SDL_GL_GetProcAddress);
     /* Fullscreen-at-start: size the render buffer to the real screen. */
-    SDL_GetWindowSize(window, &window_w, &window_h);
+    SDL_GetWindowSize(a.window, &a.window_w, &a.window_h);
 
-    rt_renderer *cpu_rnd = rt_renderer_available(RT_BACKEND_CPU) ? rt_renderer_create(RT_BACKEND_CPU) : NULL;
-    rt_renderer *gpu_rnd = rt_renderer_available(RT_BACKEND_OPENGL) ? rt_renderer_create(RT_BACKEND_OPENGL) : NULL;
-    if (!cpu_rnd && !gpu_rnd) {
+    a.cpu = rt_renderer_available(RT_BACKEND_CPU) ? rt_renderer_create(RT_BACKEND_CPU) : NULL;
+    a.gpu = rt_renderer_available(RT_BACKEND_OPENGL) ? rt_renderer_create(RT_BACKEND_OPENGL) : NULL;
+    if (!a.cpu && !a.gpu) {
         fprintf(stderr, "No renderers available\n");
         SDL_GL_DeleteContext(gl_ctx);
-        SDL_DestroyWindow(window);
+        SDL_DestroyWindow(a.window);
         sfx_shutdown();
         SDL_Quit();
         return 1;
     }
-    rt_renderer *active = (preferred == RT_BACKEND_OPENGL && gpu_rnd) ? gpu_rnd : (cpu_rnd ? cpu_rnd : gpu_rnd);
-    fprintf(stderr, "Active: %s\n", rt_renderer_name(active));
+    a.active = (preferred == RT_BACKEND_OPENGL && a.gpu) ? a.gpu : (a.cpu ? a.cpu : a.gpu);
+    fprintf(stderr, "Active: %s\n", rt_renderer_name(a.active));
 
     scene *s = scene_create();
     scene_camera *cam = scene_camera_create((vector){0, EYE_H, 0}, (vector){0, 0, 1});
 
-    int res_idx = RES_DEFAULT_IDX;
-    if (!res_usable(res_idx, window_h)) res_idx = res_step(res_idx, -1, 0, window_h);
-    int render_w, render_h;
-    res_size(res_idx, window_w, window_h, &render_w, &render_h);
-    float res_toast = 0.0f;   /* seconds left to show the resolution note */
-    uint32_t *pixels = calloc((size_t)render_w * (size_t)render_h, sizeof(uint32_t));
-    fx_state fx = {postfx_bloom_create(render_w, render_h), 1};
-
-    GLuint display_tex, display_fbo;
-    glGenTextures(1, &display_tex);
-    glBindTexture(GL_TEXTURE_2D, display_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, render_w, render_h, 0, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+    a.res_idx = RES_DEFAULT_IDX;
+    glGenTextures(1, &a.tex);
+    glBindTexture(GL_TEXTURE_2D, a.tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glGenFramebuffers(1, &display_fbo);
+    glGenFramebuffers(1, &a.fbo);
+    app_resize(&a);
+    a.res_toast = 0.0f;
+    a.fx = (fx_state){postfx_bloom_create(a.render_w, a.render_h), 1};
+    option_items[O_BLOOM].value = &a.fx.bloom_on;
+    option_items[O_FULLSCREEN].value = &a.fullscreen;
+    options_init();
 
-    int mouse_captured = 1, running = 1, fire_block = 0;
-    SDL_SetRelativeMouseMode(SDL_TRUE);
+    if (bot) start_game(&a, &g);   /* scripted runs skip the title */
+    else enter_title(&a, &g);
 
     Uint32 frame_last = SDL_GetTicks(), fps_last = frame_last;
     int fps_frames = 0;
     Uint32 render_ms = 0;
     char title[200];
 
-    while (running) {
+    while (!a.quit) {
         Uint32 now = SDL_GetTicks();
         float dt = (now - frame_last) / 1000.0f;
         if (dt > 0.05f) dt = 0.05f;
         frame_last = now;
-        int need_resize = 0;
+        a.ui_t += dt;
         input in = {0};
+        options_refresh(a.active == a.gpu, a.cpu && a.gpu,
+                        RES_HEIGHTS[a.res_idx] ? a.render_h : 0, a.options_from == SCREEN_PAUSE);
 
         SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) running = 0;
-            else if (e.type == SDL_MOUSEMOTION && mouse_captured) {
-                in.look_dx += e.motion.xrel * MOUSE_SENS;
-                in.look_dy -= e.motion.yrel * MOUSE_SENS;
-            } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
-                if (!mouse_captured) {
-                    /* This click only grabs the mouse; don't start firing
-                     * until the button is released and pressed again. */
-                    mouse_captured = 1;
-                    fire_block = 1;
-                    SDL_SetRelativeMouseMode(SDL_TRUE);
-                }
-            } else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
-                fire_block = 0;
-            } else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-                switch (e.key.keysym.sym) {
-                case SDLK_ESCAPE: running = 0; break;
-                case SDLK_r: game_reset(&g); break;
-                case SDLK_b: fx.bloom_on = !fx.bloom_on; break;
-                case SDLK_m:
-                    mouse_captured = !mouse_captured;
-                    SDL_SetRelativeMouseMode(mouse_captured ? SDL_TRUE : SDL_FALSE);
-                    break;
-                case SDLK_TAB:
-                    if (active == cpu_rnd && gpu_rnd) active = gpu_rnd;
-                    else if (active == gpu_rnd && cpu_rnd) active = cpu_rnd;
-                    fprintf(stderr, "Active: %s\n", rt_renderer_name(active));
-                    break;
-                case SDLK_F11:
-                    fullscreen = !fullscreen;
-                    SDL_SetWindowFullscreen(window, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-                    SDL_GetWindowSize(window, &window_w, &window_h);
-                    need_resize = 1;
-                    break;
-                case SDLK_v:
-                    res_idx = res_step(res_idx, +1, 1, window_h);
-                    need_resize = 1;
-                    break;
-                case SDLK_MINUS: case SDLK_KP_MINUS:
-                    res_idx = res_step(res_idx, -1, 0, window_h);
-                    need_resize = 1;
-                    break;
-                case SDLK_EQUALS: case SDLK_KP_PLUS:
-                    res_idx = res_step(res_idx, +1, 0, window_h);
-                    need_resize = 1;
-                    break;
-                default: break;
-                }
+        while (SDL_PollEvent(&e) && !a.quit) {
+            if (e.type == SDL_QUIT) { a.quit = 1; break; }
+            if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_FOCUS_LOST &&
+                a.screen == SCREEN_PLAY && !a.bot) {
+                pause_game(&a);
+                continue;
+            }
+            if (e.type == SDL_KEYDOWN && !e.key.repeat && e.key.keysym.sym == SDLK_F11) {
+                app_set_fullscreen(&a, !a.fullscreen);
+                continue;
+            }
+            menu *m = current_menu(&a);   /* may change between events */
+            if (m) menu_input(&a, &g, m, &e);
+            else play_input(&a, &g, &e, &in);
+        }
+        if (a.quit) break;
+
+        /* The game runs while playing and behind the title; pause and
+         * options-from-pause freeze it. */
+        if (a.screen == SCREEN_PLAY) {
+            play_controls(&a, &g, &in, dt);
+            game_update(&g, &in, dt);
+        } else if (a.attract) {
+            bot_input(&g, &in, dt);
+            game_update(&g, &in, dt);
+            a.attract_over = g.game_over ? a.attract_over + dt : 0.0f;
+            if (a.attract_over > 4.0f) {   /* next match; stay on this screen */
+                game_reset(&g);
+                a.attract_over = 0.0f;
             }
         }
 
-        if (need_resize) {
-            /* After a window change the current rung may be too tall. */
-            if (!res_usable(res_idx, window_h)) res_idx = res_step(res_idx, -1, 0, window_h);
-            res_size(res_idx, window_w, window_h, &render_w, &render_h);
-            res_toast = 1.5f;
-            free(pixels);
-            pixels = calloc((size_t)render_w * (size_t)render_h, sizeof(uint32_t));
-            glBindTexture(GL_TEXTURE_2D, display_tex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, render_w, render_h, 0, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
-            fprintf(stderr, "Render resolution: %dx%d%s\n", render_w, render_h,
-                    RES_HEIGHTS[res_idx] == 0 ? " (native)" : "");
-        }
-
-        const Uint8 *keys = SDL_GetKeyboardState(NULL);
-        int trigger = keys[SDL_SCANCODE_SPACE] ||
-                      (mouse_captured && !fire_block &&
-                       (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_LMASK));
-        if (bot) {
-            bot_input(&g, &in, dt);
-            in.fire |= trigger;
-        } else {
-            in.fire = trigger;
-            in.move_f = (float)(keys[SDL_SCANCODE_W] - keys[SDL_SCANCODE_S]);
-            in.move_s = (float)(keys[SDL_SCANCODE_D] - keys[SDL_SCANCODE_A]);
-            in.sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
-            in.look_dx += (float)(keys[SDL_SCANCODE_RIGHT] - keys[SDL_SCANCODE_LEFT]) * LOOK_SPEED * dt;
-            in.look_dy += (float)(keys[SDL_SCANCODE_UP] - keys[SDL_SCANCODE_DOWN]) * LOOK_SPEED * dt;
-        }
-        game_update(&g, &in, dt);
-
+        hud_target t = {a.pixels, a.render_w, a.render_h};
         Uint32 r0 = SDL_GetTicks();
-        render_frame(&g, active, s, cam, pixels, render_w, render_h, &fx);
+        render_frame(&g, a.active, s, cam, a.pixels, a.render_w, a.render_h, &a.fx,
+                     a.screen == SCREEN_PLAY);
         render_ms += SDL_GetTicks() - r0;
-        if (res_toast > 0.0f) {
-            res_toast -= dt;
-            char note[48];
-            snprintf(note, sizeof note, "RENDER %dX%d%s", render_w, render_h,
-                     RES_HEIGHTS[res_idx] == 0 ? " NATIVE" : "");
-            int sc = render_h / 150;
-            hud_text_center((hud_target){pixels, render_w, render_h},
-                            render_h * 2 / 3, note, sc < 1 ? 1 : sc, 0xFFB0F0FFu);
+        menu *m = current_menu(&a);
+        if (m) menu_draw(m, t, a.ui_t);
+        if (a.res_toast > 0.0f) {
+            a.res_toast -= dt;
+            if (!m) {
+                char note[48];
+                snprintf(note, sizeof note, "RENDER %dX%d%s", a.render_w, a.render_h,
+                         RES_HEIGHTS[a.res_idx] == 0 ? " NATIVE" : "");
+                int sc = a.render_h / 150;
+                hud_text_center(t, a.render_h * 2 / 3, note, sc < 1 ? 1 : sc, 0xFFB0F0FFu);
+            }
         }
-        display_pixels(display_tex, display_fbo, pixels, render_w, render_h, window_w, window_h);
-        SDL_GL_SwapWindow(window);
+        display_pixels(a.tex, a.fbo, a.pixels, a.render_w, a.render_h, a.window_w, a.window_h);
+        SDL_GL_SwapWindow(a.window);
 
         fps_frames++;
         if (now - fps_last >= 1000) {
             snprintf(title, sizeof title, "Ricochet  wave %d  ammo %d/%d  hp %.0f | %s %d FPS (%.1f ms, %dx%d)%s",
-                     g.wave, g.ammo, g.mag, g.pl.hp, rt_renderer_name(active), fps_frames,
-                     fps_frames ? (float)render_ms / fps_frames : 0.0f, render_w, render_h,
+                     g.wave, g.ammo, g.mag, g.pl.hp, rt_renderer_name(a.active), fps_frames,
+                     fps_frames ? (float)render_ms / fps_frames : 0.0f, a.render_w, a.render_h,
                      bot ? "  [BOT]" : "");
-            SDL_SetWindowTitle(window, title);
+            SDL_SetWindowTitle(a.window, title);
             fps_frames = 0;
             render_ms = 0;
             fps_last = now;
         }
     }
 
-    glDeleteFramebuffers(1, &display_fbo);
-    glDeleteTextures(1, &display_tex);
-    if (cpu_rnd) rt_renderer_destroy(cpu_rnd);
-    if (gpu_rnd) rt_renderer_destroy(gpu_rnd);
-    postfx_bloom_destroy(fx.bloom);
-    free(pixels);
+    glDeleteFramebuffers(1, &a.fbo);
+    glDeleteTextures(1, &a.tex);
+    if (a.cpu) rt_renderer_destroy(a.cpu);
+    if (a.gpu) rt_renderer_destroy(a.gpu);
+    postfx_bloom_destroy(a.fx.bloom);
+    free(a.pixels);
     scene_camera_destroy(cam);
     scene_destroy(s);
     sfx_shutdown();
     SDL_GL_DeleteContext(gl_ctx);
-    SDL_DestroyWindow(window);
+    SDL_DestroyWindow(a.window);
     SDL_Quit();
     return 0;
 }
