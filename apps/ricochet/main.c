@@ -763,16 +763,16 @@ static void bot_input(const game *g, input *in, float dt) {
     int threatened = best >= 0 && bd < BOT_THREAT_DIST && g->ammo > 0;
 
     if (collecting && !threatened) {
-        int near = -1;
+        int nearest = -1;
         float nd = 1e9f;
         for (int i = 0; i < g->mag; i++) {
             physics_body b = ball_get(g, i);
             if (!b.enabled || b.age < PICKUP_MIN_AGE) continue;
             float dx = b.position.x - pl->p.x, dz = b.position.z - pl->p.z, d = dx * dx + dz * dz;
-            if (d < nd) { nd = d; near = i; }
+            if (d < nd) { nd = d; nearest = i; }
         }
-        if (near >= 0) {
-            vector bp = ball_get(g, near).position;
+        if (nearest >= 0) {
+            vector bp = ball_get(g, nearest).position;
             float want = atan2f(bp.x - pl->p.x, bp.z - pl->p.z);
             float dy = remainderf(want - pl->yaw, 2.0f * (float)M_PI);
             in->look_dx = fmaxf(-4 * dt, fminf(4 * dt, dy));
