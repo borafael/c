@@ -2,6 +2,9 @@ bin_PROGRAMS = ricochet
 ricochet_SOURCES = main.c \
                    app.c app.h \
                    game.c game.h \
+                   level.c level.h \
+                   levels.c levels.h \
+                   nav.c nav.h \
                    bot.c bot.h \
                    render.c render.h \
                    ui.c ui.h \
@@ -26,9 +29,14 @@ ricochet_LDADD = $(top_builddir)/libs/raytrace/libraytrace.la \
                  -lm -lpthread $(SDL2_LIBS) $(GL_LIBS)
 
 if BUILD_TESTS
-check_PROGRAMS = tests/check_highscore
+check_PROGRAMS = tests/check_highscore tests/check_level
 tests_check_highscore_SOURCES = tests/check_highscore.c highscore.c highscore.h
 tests_check_highscore_CFLAGS = $(CHECK_CFLAGS) -I$(srcdir)
 tests_check_highscore_LDADD = $(CHECK_LIBS)
-TESTS = tests/check_highscore
+tests_check_level_SOURCES = tests/check_level.c level.c level.h
+tests_check_level_CFLAGS = $(CHECK_CFLAGS) -I$(srcdir) -I$(top_srcdir)/libs/math
+tests_check_level_LDADD = $(CHECK_LIBS) -lm
+TESTS = tests/check_highscore tests/check_level
 endif
+
+dist_noinst_DATA = levels/arena.lvl levels/warehouse.lvl

@@ -28,7 +28,7 @@ APPS=(
     "nbody:"
     "orb:"
     "pixelart:"
-    "ricochet:"
+    "ricochet:levels"
     "rlyeh:assets"
     "room:"
     "rtdemo:"

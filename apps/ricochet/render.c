@@ -160,13 +160,14 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
     wall.tex_scale = 0.7f;
     int m_wall = scene_add_material(s, wall);
     int m_trim = unlit_mat(s, (scene_color){70, 200, 255});
-    float H = ARENA_HALF, T = WALL_T;
-    vector wmin[4] = {{-H - T, 0, -H - T}, {-H - T, 0, H}, {-H - T, 0, -H}, {H, 0, -H}};
-    vector wmax[4] = {{H + T, WALL_H, -H}, {H + T, WALL_H, H + T}, {-H, WALL_H, H}, {H + T, WALL_H, H}};
+    const level *lv = g->lv;
+    float HX = lv->half_x, HZ = lv->half_z, T = lv->wall_thickness, WH = lv->wall_height;
+    vector wmin[4] = {{-HX - T, 0, -HZ - T}, {-HX - T, 0, HZ}, {-HX - T, 0, -HZ}, {HX, 0, -HZ}};
+    vector wmax[4] = {{HX + T, WH, -HZ}, {HX + T, WH, HZ + T}, {-HX, WH, HZ}, {HX + T, WH, HZ}};
     for (int i = 0; i < 4; i++) {
         scene_add_box(s, scene_box_aabb(wmin[i], wmax[i], m_wall));
         vector tmin = wmin[i], tmax = wmax[i];
-        tmin.y = WALL_H; tmax.y = WALL_H + 0.08f;
+        tmin.y = WH; tmax.y = WH + 0.08f;
         scene_add_box(s, scene_box_aabb(tmin, tmax, m_trim));
     }
 
@@ -177,14 +178,36 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
     pil.tex_scale = 0.6f;
     pil.reflectivity = 0.30f;
     int m_pil = scene_add_material(s, pil);
-    for (int i = 0; i < N_PILLARS; i++) {
+    float PH = lv->pillar_height;
+    for (int i = 0; i < lv->n_pillars; i++) {
+        const level_pillar *pl = &lv->pillars[i];
         scene_add_cylinder(s, (scene_cylinder){
-            .center = {PILLARS[i].x, PILLAR_H * 0.5f, PILLARS[i].z},
-            .axis = {0, 1, 0}, .radius = PILLARS[i].r,
-            .half_height = PILLAR_H * 0.5f, .material = m_pil});
+            .center = {pl->x, PH * 0.5f, pl->z},
+            .axis = {0, 1, 0}, .radius = pl->r,
+            .half_height = PH * 0.5f, .material = m_pil});
         scene_add_torus(s, (scene_torus){
-            .center = {PILLARS[i].x, 0.12f, PILLARS[i].z}, .axis = {0, 1, 0},
-            .major_radius = PILLARS[i].r + 0.02f, .minor_radius = 0.12f, .material = m_trim});
+            .center = {pl->x, 0.12f, pl->z}, .axis = {0, 1, 0},
+            .major_radius = pl->r + 0.02f, .minor_radius = 0.12f, .material = m_trim});
+    }
+
+    /* Wall segments look like the outer wall (with the glowing trim on
+     * top); anything lower is a crate. */
+    if (lv->n_boxes > 0) {
+        scene_material crate = scene_material_default();
+        crate.albedo = (scene_color){150, 104, 62};
+        crate.albedo2 = (scene_color){96, 62, 34};
+        crate.tex_kind = SCENE_TEX_WOOD;
+        crate.tex_scale = 0.5f;
+        int m_crate = scene_add_material(s, crate);
+        int m_crate_trim = unlit_mat(s, (scene_color){255, 170, 60});
+        for (int i = 0; i < lv->n_boxes; i++) {
+            const level_box *b = &lv->boxes[i];
+            int wall_like = b->max.y >= WH - 1e-3f;
+            scene_add_box(s, scene_box_aabb(b->min, b->max, wall_like ? m_wall : m_crate));
+            vector tmin = b->min, tmax = b->max;
+            tmin.y = b->max.y; tmax.y = b->max.y + (wall_like ? 0.08f : 0.04f);
+            scene_add_box(s, scene_box_aabb(tmin, tmax, wall_like ? m_trim : m_crate_trim));
+        }
     }
 
     /* Enemies. */

@@ -12,6 +12,7 @@ typedef struct {
     int bot;                   /* autopilot plays; skips the title */
     int fullscreen;
     const char *scores_path;   /* NULL: scores.txt in SDL's per-user folder */
+    const char *level_path;    /* --level FILE: start on it (NULL: the arena) */
 } app_config;
 
 /* Open the window and run until the player quits. Returns the exit code. */

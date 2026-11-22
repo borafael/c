@@ -1,0 +1,33 @@
+# Warehouse: rooms joined by wide doorways, crates to hide behind and to
+# bounce shots off. Enemies come from the four corner rooms.
+#
+#   #  wall (wall_height)   =  crate (crate_height)   O  pillar
+#   P  player start         E  enemy spawn            .  floor
+# One character is `tile` metres; the '#' border is the outer wall.
+
+name          Warehouse
+tile          2
+wall_height   2.6
+crate_height  1.0
+pillar_height 6
+
+map
+########################
+#E........##..........E#
+#..==.....##....==.....#
+#..==...........==.....#
+#......................#
+#....O....##.....O.....#
+####..######....####..##
+#.........==...........#
+#.........==...........#
+#....P.................#
+#......................#
+##..######....######..##
+#.........##...........#
+#..==...........O..==..#
+#..==..............==..#
+#.........##...........#
+#E........##..........E#
+########################
+end

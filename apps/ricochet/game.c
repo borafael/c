@@ -28,14 +28,6 @@ void rng_seed(uint64_t seed) {
 
 /* ---------------------------------------------------------------- World */
 
-/* Pillars are physics columns: balls bounce off them, everything else is
- * pushed out of them. */
-const physics_column PILLARS[N_PILLARS] = {
-    {-7.0f, -7.0f, 0.9f, REST_WALL}, { 7.0f, -7.0f, 0.9f, REST_WALL},
-    {-7.0f,  7.0f, 0.9f, REST_WALL}, { 7.0f,  7.0f, 0.9f, REST_WALL},
-    { 0.0f, -11.0f, 0.6f, REST_WALL}, { 0.0f, 11.0f, 0.6f, REST_WALL},
-    {-11.0f, 0.0f, 0.6f, REST_WALL}, { 11.0f, 0.0f, 0.6f, REST_WALL},
-};
 
 const en_spec SPECS[EN_KINDS] = {
     {0.55f, 4.2f,  5.0f, 10.0f,  3, 1000, {255, 160,  40}, {120,  50,  10}},
@@ -108,18 +100,23 @@ float enemy_radius(const enemy *e) {
     return r;
 }
 
-/* Push a circle (xz) out of pillars. Returns the pillar normal hit, or
- * a zero vector if no contact. */
-static vector push_out_pillars(const game *g, vector *p, float r) {
-    return physics_world_push_out_columns(g->phys, p, r);
+/* Push a circle (xz) out of pillars, then boxes. Returns the normal of
+ * the last push, or a zero vector if there was no contact. */
+static vector push_out_static(const game *g, vector *p, float r) {
+    vector n = physics_world_push_out_columns(g->phys, p, r);
+    if (g->lv->n_boxes > 0) {
+        vector nb = physics_world_push_out_boxes(g->phys, p, r);
+        if (nb.x != 0 || nb.z != 0) n = nb;
+    }
+    return n;
 }
 
-static void clamp_arena(vector *p, float r) {
-    float lim = ARENA_HALF - r;
-    if (p->x >  lim) p->x =  lim;
-    if (p->x < -lim) p->x = -lim;
-    if (p->z >  lim) p->z =  lim;
-    if (p->z < -lim) p->z = -lim;
+static void clamp_arena(const game *g, vector *p, float r) {
+    float lx = g->lv->half_x - r, lz = g->lv->half_z - r;
+    if (p->x >  lx) p->x =  lx;
+    if (p->x < -lx) p->x = -lx;
+    if (p->z >  lz) p->z =  lz;
+    if (p->z < -lz) p->z = -lz;
 }
 
 static void burst(game *g, vector at, scene_color c, int n, float speed) {
@@ -137,6 +134,8 @@ static void burst(game *g, vector at, scene_color c, int n, float speed) {
 
 /* ----------------------------------------------------------- Game flow */
 
+static vector spawn_point(game *g, float r);
+
 static void spawn_wave(game *g) {
     g->wave++;
     int count = 2 + g->wave;
@@ -148,22 +147,13 @@ static void spawn_wave(game *g) {
         float roll = frand();
         int kind = roll < big_p ? EN_BIG : (roll < big_p + 0.45f ? EN_SMALL : EN_MED);
         float r = SPECS[kind].r;
-        vector p = {0, r, 0};
-        for (int tries = 0; tries < 100; tries++) {
-            p.x = frange(-ARENA_HALF + r + 1, ARENA_HALF - r - 1);
-            p.z = frange(-ARENA_HALF + r + 1, ARENA_HALF - r - 1);
-            float dx = p.x - g->pl.p.x, dz = p.z - g->pl.p.z;
-            if (dx * dx + dz * dz < 11.0f * 11.0f) continue;
-            vector q = p;
-            vector hit = push_out_pillars(g, &q, r + 0.6f);
-            if (hit.x != 0 || hit.z != 0) continue;
-            break;
-        }
+        vector p = spawn_point(g, r);
         g->en[i] = (enemy){
             .alive = 1, .kind = kind, .p = p, .v = {0, 0, 0},
             .face = vector_normalize((vector){g->pl.p.x - p.x, 0, g->pl.p.z - p.z}),
             .hp = SPECS[kind].hp,
             .spawn_t = -0.4f * (float)placed,
+            .stuck_at = p,
         };
         placed++;
     }
@@ -172,7 +162,43 @@ static void spawn_wave(game *g) {
     banner(g, buf);
 }
 
-game_settings game_cfg = {DEFAULT_AMMO, -1, 1};
+/* Somewhere for an enemy of radius r to rise from: near a spawn point if
+ * the level has them, else anywhere at least 11 m from the player; never
+ * in a pillar or wall. */
+static vector spawn_point(game *g, float r) {
+    const level *lv = g->lv;
+    vector p = {0, r, 0};
+    for (int tries = 0; tries < 100; tries++) {
+        if (lv->n_spawns > 0) {
+            /* Near one of the level's spawn points. */
+            vector sp = lv->spawns[(int)(frand() * (float)lv->n_spawns) % lv->n_spawns];
+            p.x = sp.x + frange(-1.0f, 1.0f);
+            p.z = sp.z + frange(-1.0f, 1.0f);
+            clamp_arena(g, &p, r + 0.5f);
+            float dx = p.x - g->pl.p.x, dz = p.z - g->pl.p.z;
+            if (tries < 50 && dx * dx + dz * dz < 8.0f * 8.0f) continue;
+        } else {
+            p.x = frange(-lv->half_x + r + 1, lv->half_x - r - 1);
+            p.z = frange(-lv->half_z + r + 1, lv->half_z - r - 1);
+            float dx = p.x - g->pl.p.x, dz = p.z - g->pl.p.z;
+            if (dx * dx + dz * dz < 11.0f * 11.0f) continue;
+        }
+        vector q = p;
+        vector hit = push_out_static(g, &q, r + 0.6f);
+        if (hit.x != 0 || hit.z != 0) continue;
+        break;
+    }
+    return p;
+}
+
+static level builtin_arena;
+static const level *arena(void) {
+    static int ready;
+    if (!ready) { level_builtin_arena(&builtin_arena); ready = 1; }
+    return &builtin_arena;
+}
+
+game_settings game_cfg = {DEFAULT_AMMO, -1, 1, NULL, 0};
 
 static void on_contact(void *user, physics_world *w, const physics_contact *c);
 
@@ -191,13 +217,25 @@ static physics_world *create_physics(game *g) {
     c.ground_settle_speed = SETTLE_SPEED;
     c.roll_friction       = ROLL_FRICTION;
     c.sleep_speed         = SLEEP_SPEED;
-    /* Walls are physically infinitely tall, so nothing escapes. */
+    /* Outer walls are physically infinitely tall, so nothing escapes. */
+    const level *lv = g->lv;
     c.walls = 1;
-    c.wall_min_x = c.wall_min_z = -ARENA_HALF;
-    c.wall_max_x = c.wall_max_z =  ARENA_HALF;
+    c.wall_min_x = -lv->half_x;
+    c.wall_max_x =  lv->half_x;
+    c.wall_min_z = -lv->half_z;
+    c.wall_max_z =  lv->half_z;
     c.wall_restitution = REST_WALL;
-    c.columns      = PILLARS;
-    c.column_count = N_PILLARS;
+    /* The physics world copies these at create. */
+    static physics_column cols[LEVEL_MAX_PILLARS];
+    static physics_box boxes[LEVEL_MAX_BOXES];
+    for (int i = 0; i < lv->n_pillars; i++)
+        cols[i] = (physics_column){lv->pillars[i].x, lv->pillars[i].z, lv->pillars[i].r, REST_WALL};
+    for (int i = 0; i < lv->n_boxes; i++)
+        boxes[i] = (physics_box){lv->boxes[i].min, lv->boxes[i].max, REST_WALL};
+    c.columns      = cols;
+    c.column_count = lv->n_pillars;
+    c.boxes        = boxes;
+    c.box_count    = lv->n_boxes;
     /* Substeps follow the fastest ball so nothing moves more than
      * MAX_SUBSTEP_DIST per step: fast shots can't tunnel through enemies
      * or each other, and a field of resting balls stays cheap. */
@@ -214,20 +252,60 @@ static physics_world *create_physics(game *g) {
 static void scatter_ball(game *g, int k) {
     vector p;
     do {
-        p = (vector){frange(-ARENA_HALF + 1, ARENA_HALF - 1), BALL_R,
-                     frange(-ARENA_HALF + 1, ARENA_HALF - 1)};
-        push_out_pillars(g, &p, BALL_R);
+        p = (vector){frange(-g->lv->half_x + 1, g->lv->half_x - 1), BALL_R,
+                     frange(-g->lv->half_z + 1, g->lv->half_z - 1)};
+        push_out_static(g, &p, BALL_R);
     } while (hypotf(p.x - g->pl.p.x, p.z - g->pl.p.z) < 3.0f);
     physics_world_set_enabled(g->phys, BALL_ID(k), 1);
     physics_world_set_position(g->phys, BALL_ID(k), p);
 }
 
+/* Build (or rebuild, after a level switch / reload) everything that
+ * comes from the level: the physics world and the nav grid. */
+static void build_level(game *g) {
+    if (g->phys) physics_world_destroy(g->phys);
+    for (int k = 0; k <= EN_KINDS; k++) {
+        if (k < EN_KINDS) nav_field_free(&g->to_player[k]);
+        nav_free(&g->nav[k]);
+    }
+    g->phys = create_physics(g);
+    int ok = g->phys != NULL;
+    for (int k = 0; k <= EN_KINDS && ok; k++) {
+        float clearance = (k < EN_KINDS ? SPECS[k].r : PLAYER_R) + 0.05f;
+        ok = nav_build(&g->nav[k], g->lv, clearance) == 0 &&
+             (k == NAV_PLAYER || nav_field_init(&g->to_player[k], &g->nav[k]) == 0);
+    }
+    if (!ok) {
+        fprintf(stderr, "out of memory building the level\n");
+        exit(1);
+    }
+    g->built_rev = game_cfg.level_rev;
+}
+
 void game_reset(game *g) {
+    if (!game_cfg.level) game_cfg.level = arena();
+    /* Keep what was built from the level across the wipe. */
     physics_world *w = g->phys;
+    const level *built = g->lv;
+    int rev = g->built_rev;
+    nav_grid nav[EN_KINDS + 1];
+    nav_field to_player[EN_KINDS];
+    memcpy(nav, g->nav, sizeof nav);
+    memcpy(to_player, g->to_player, sizeof to_player);
     memset(g, 0, sizeof *g);
-    if (w) physics_world_clear(w);
-    else if (!(w = create_physics(g))) { fprintf(stderr, "physics: out of memory\n"); exit(1); }
     g->phys = w;
+    g->lv = built;
+    g->built_rev = rev;
+    memcpy(g->nav, nav, sizeof nav);
+    memcpy(g->to_player, to_player, sizeof to_player);
+    if (!w || built != game_cfg.level || rev != game_cfg.level_rev) {
+        g->lv = game_cfg.level;
+        build_level(g);
+    } else {
+        physics_world_clear(w);
+        for (int k = 0; k < EN_KINDS; k++) g->to_player[k].target = -1;
+    }
+    w = g->phys;
     /* Fixed IDs (see game): every enemy and ball body exists from the
      * start, disabled until it is in play. */
     for (int i = 0; i < MAX_ENEMIES; i++) {
@@ -241,7 +319,8 @@ void game_reset(game *g) {
             .restitution = REST_BALL});
         physics_world_set_enabled(w, BALL_ID(k), 0);
     }
-    g->pl.p = (vector){0, 0, -3.0f};
+    g->pl.p = g->lv->player;
+    g->pl.yaw = g->lv->player_yaw;
     g->pl.hp = PLAYER_HP;
     g->mag = game_cfg.mag;
     g->ammo = game_cfg.start_ammo < 0 ? game_cfg.mag : game_cfg.start_ammo;
@@ -368,6 +447,37 @@ static void on_contact(void *user, physics_world *w, const physics_contact *c) {
 
 /* Balls fly and bounce; enemies take part as kinematic bodies (their own
  * steering moves them in update_enemies), and get knocked back above. */
+/* Box tops are slick in this game: a ball resting on one slides to the
+ * nearest edge and drops off, so no ammo is ever stranded out of reach
+ * on top of a big crate. */
+#define BOX_SLIDE_SPEED 2.0f
+static void slide_off_box_tops(game *g, float dt) {
+    const level *lv = g->lv;
+    for (int k = 0; k < g->mag; k++) {
+        physics_body b = ball_get(g, k);
+        vector p = b.position;
+        if (!b.enabled || p.y < BALL_R + 0.05f || vector_magnitude(b.velocity) > 0.5f) continue;
+        for (int i = 0; i < lv->n_boxes; i++) {
+            const level_box *bx = &lv->boxes[i];
+            if (p.x < bx->min.x || p.x > bx->max.x || p.z < bx->min.z || p.z > bx->max.z ||
+                fabsf(p.y - (bx->max.y + BALL_R)) > 0.05f)
+                continue;
+            /* Nearest edge. */
+            float d[4] = {p.x - bx->min.x, bx->max.x - p.x, p.z - bx->min.z, bx->max.z - p.z};
+            int e = 0;
+            for (int j = 1; j < 4; j++) if (d[j] < d[e]) e = j;
+            float step = BOX_SLIDE_SPEED * dt;
+            if (step > d[e]) step = d[e] + BALL_R + 0.01f;   /* over the edge: falls */
+            if (e == 0) p.x -= step;
+            if (e == 1) p.x += step;
+            if (e == 2) p.z -= step;
+            if (e == 3) p.z += step;
+            physics_world_set_position(g->phys, BALL_ID(k), p);
+            break;
+        }
+    }
+}
+
 static void step_physics(game *g, float dt) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         const enemy *e = &g->en[i];
@@ -380,6 +490,7 @@ static void step_physics(game *g, float dt) {
         physics_world_set_mass(g->phys, i, SPECS[e->kind].mass);
     }
     physics_world_advance(g->phys, dt);
+    if (g->lv->n_boxes > 0) slide_off_box_tops(g, dt);
     for (int i = 0; i < MAX_ENEMIES; i++)
         if (g->en[i].alive && g->en[i].spawn_t >= 0.0f)
             g->en[i].v = physics_world_body_velocity(g->phys, i);
@@ -414,10 +525,20 @@ static void update_enemies(game *g, float dt) {
         float dist = sqrtf(to.x * to.x + to.z * to.z);
         vector dir = dist > 1e-4f ? vector_scale(to, 1.0f / dist) : (vector){0, 0, 1};
 
+        /* Straight at the player when nothing is in the way; around walls
+         * along the nav grid otherwise. */
+        vector head = dir;
+        if (g->lv->n_boxes > 0 && !level_clear_line(g->lv, e->p, g->pl.p, 0.0f)) {
+            nav_grid *ng = &g->nav[e->kind];
+            nav_flow(ng, &g->to_player[e->kind], g->pl.p);
+            vector nd = nav_dir(ng, &g->to_player[e->kind], e->p);
+            if (nd.x != 0 || nd.z != 0) head = nd;
+        }
+
         /* Slight weave so a crowd doesn't move in lockstep. */
         float weave = 0.35f * sinf(g->t * 1.3f + (float)i * 2.1f);
-        vector side = {-dir.z, 0, dir.x};
-        vector want = vector_normalize(vector_add(dir, vector_scale(side, weave)));
+        vector side = {-head.z, 0, head.x};
+        vector want = vector_normalize(vector_add(head, vector_scale(side, weave)));
         float speed = s->speed * (1.0f + 0.04f * (float)(g->wave - 1));
         if (g->game_over) speed *= 0.3f;
         want = vector_scale(want, speed);
@@ -431,15 +552,34 @@ static void update_enemies(game *g, float dt) {
         e->p = vector_add(e->p, vector_scale(e->v, dt));
 
         /* Walls / pillars: bounce off a little so knockback reads. */
-        float lim = ARENA_HALF - s->r;
-        if (e->p.x >  lim) { e->p.x =  lim; e->v.x = -fabsf(e->v.x) * 0.4f; }
-        if (e->p.x < -lim) { e->p.x = -lim; e->v.x =  fabsf(e->v.x) * 0.4f; }
-        if (e->p.z >  lim) { e->p.z =  lim; e->v.z = -fabsf(e->v.z) * 0.4f; }
-        if (e->p.z < -lim) { e->p.z = -lim; e->v.z =  fabsf(e->v.z) * 0.4f; }
-        vector n = push_out_pillars(g, &e->p, s->r);
+        float lx = g->lv->half_x - s->r, lz = g->lv->half_z - s->r;
+        if (e->p.x >  lx) { e->p.x =  lx; e->v.x = -fabsf(e->v.x) * 0.4f; }
+        if (e->p.x < -lx) { e->p.x = -lx; e->v.x =  fabsf(e->v.x) * 0.4f; }
+        if (e->p.z >  lz) { e->p.z =  lz; e->v.z = -fabsf(e->v.z) * 0.4f; }
+        if (e->p.z < -lz) { e->p.z = -lz; e->v.z =  fabsf(e->v.z) * 0.4f; }
+        vector n = push_out_static(g, &e->p, s->r);
         if (n.x != 0 || n.z != 0) {
             float vn = e->v.x * n.x + e->v.z * n.z;
             if (vn < 0) { e->v.x -= vn * n.x; e->v.z -= vn * n.z; }   /* slide */
+        }
+
+        /* Watchdog for levels with walls: an enemy that hasn't got 1 m
+         * anywhere in 6 s and can't see the player (wedged in a gap too
+         * narrow for it, say) sinks and rises again somewhere else. */
+        if (g->lv->n_boxes > 0) {
+            float mx = e->p.x - e->stuck_at.x, mz = e->p.z - e->stuck_at.z;
+            if (mx * mx + mz * mz > 1.0f) {
+                e->stuck_at = e->p;
+                e->stuck_t = 0.0f;
+            } else if ((e->stuck_t += dt) > 6.0f && !level_clear_line(g->lv, e->p, g->pl.p, 0.0f)) {
+                e->p = spawn_point(g, s->r);
+                e->p.y = -s->r;
+                e->v = (vector){0, 0, 0};
+                e->spawn_t = 0.0f;
+                e->stuck_at = e->p;
+                e->stuck_t = 0.0f;
+                continue;
+            }
         }
 
         /* Separate from other enemies. */
@@ -508,12 +648,12 @@ static void fire(game *g) {
     vector up = vector_cross(right, fwd);
     if (up.y < 0) up = vector_scale(up, -1.0f);
     /* Fire from the rifle's muzzle, converging on the crosshair 25 m out.
-     * If the muzzle is poking into a pillar, spawn just in front of the
+     * If the muzzle is poking into a pillar or wall, spawn just in front of the
      * eye instead so the ball can't tunnel out the far side. */
     gun_frame gf = gun_frame_make(g, eye, fwd, right, up);
     vector muzzle = gun_local(&gf, 0.0f, GUN_MUZZLE_Y, GUN_MUZZLE_Z + 0.03f);
     vector probe = muzzle;
-    vector hit = push_out_pillars(g, &probe, BALL_R);
+    vector hit = push_out_static(g, &probe, BALL_R);
     if (hit.x != 0 || hit.z != 0) muzzle = vector_add(eye, vector_scale(fwd, 0.3f));
     vector target = vector_add(eye, vector_scale(fwd, 25.0f));
     vector dir = vector_normalize(vector_sub(target, muzzle));
@@ -560,8 +700,8 @@ static void update_player(game *g, const input *in, float dt) {
     pl->v.z += (target.z - pl->v.z) * k;
     pl->v.y = 0;
     pl->p = vector_add(pl->p, vector_scale(pl->v, dt));
-    clamp_arena(&pl->p, PLAYER_R);
-    push_out_pillars(g, &pl->p, PLAYER_R);
+    clamp_arena(g, &pl->p, PLAYER_R);
+    push_out_static(g, &pl->p, PLAYER_R);
     float hs = sqrtf(pl->v.x * pl->v.x + pl->v.z * pl->v.z);
     pl->bob += hs * dt * 1.6f;
 

@@ -130,6 +130,7 @@ libs/ini/tests/check_ini
 libs/physics/tests/check_physics
 libs/scene/tests/check_fbx
 apps/ricochet/tests/check_highscore
+apps/ricochet/tests/check_level
 *.trs
 
 # --- Build stamps ---

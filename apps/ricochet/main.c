@@ -31,6 +31,8 @@
  *   bot.c       the autopilot
  *   render.c    scene building, gun viewmodel, post effects, HUD
  *   ui.c        menu contents, options, high-score screen
+ *   level.c     level file format (see level.h)   levels.c  the level list
+ *   nav.c       grid paths around walls for enemies and the bot
  *   menu.c      generic list-menu widget     hud.c  HUD font + shapes
  *   highscore.c local top-10 table           sfx.c  synthesized sounds
  *   headless.c  --shot / --bench
@@ -48,6 +50,7 @@
 #include "app.h"
 #include "game.h"
 #include "headless.h"
+#include "level.h"
 #include "render.h"
 #include "sfx.h"
 
@@ -68,6 +71,8 @@ static void usage(const char *argv0) {
            "                     lie scattered on the floor to collect\n");
     printf("  --wave N           Start at wave N (default 1, max %d): more, bigger,\n"
            "                     faster enemies from the first fight\n", MAX_START_WAVE);
+    printf("  --level FILE       Play this level file (default: the arena; the title\n"
+           "                     menu lists every levels/NAME.lvl)\n");
     printf("  --bot              Let the autopilot play (skips the title screen)\n");
     printf("  --fullscreen       Start in desktop fullscreen (F11 toggles)\n");
     printf("  --no-reflections   Matte surfaces only: much cheaper on the CPU tracer\n");
@@ -83,13 +88,15 @@ static void usage(const char *argv0) {
     printf("  --dump-sfx DIR     Write every synthesized sound as DIR/<name>.wav\n");
     printf("\nWASD move, mouse look, hold LMB/SPACE to fire, SHIFT sprint, walk over spheres to\n");
     printf("recollect them. ESC / P pause menu, M mouse capture, R restart,\n");
-    printf("V cycle resolution (-/= step), TAB backend, B bloom, F11 fullscreen.\n");
+    printf("V cycle resolution (-/= step), TAB backend, B bloom, F11 fullscreen,\n");
+    printf("F5 reload the level file (for editing levels).\n");
     printf("Menus: arrows / WASD or the mouse, Enter select, left / right change, ESC back.\n");
 }
 
 int main(int argc, char *argv[]) {
     rt_backend preferred = RT_BACKEND_OPENGL;   /* falls back to CPU */
     const char *shot_path = NULL, *dump_dir = NULL, *shot_menu = NULL, *scores_path = NULL;
+    const char *level_path = NULL;
     int shot_w = INIT_WINDOW_W, shot_h = INIT_WINDOW_H, bot = 0, start_fullscreen = 0;
     float sim_seconds = 6.0f;
     int bench_frames = 0;
@@ -118,6 +125,7 @@ int main(int argc, char *argv[]) {
             }
         }
         else if (!strcmp(argv[i], "--scores") && i + 1 < argc) scores_path = argv[++i];
+        else if (!strcmp(argv[i], "--level") && i + 1 < argc) level_path = argv[++i];
         else if (!strcmp(argv[i], "--sim") && i + 1 < argc) sim_seconds = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--dump-sfx") && i + 1 < argc) dump_dir = argv[++i];
         else if (!strcmp(argv[i], "--bench") && i + 1 < argc) bench_frames = atoi(argv[++i]);
@@ -143,6 +151,16 @@ int main(int argc, char *argv[]) {
     }
     rng_seed(seed);
 
+    if (level_path) {   /* checked up front, so a typo fails fast */
+        static level lv;
+        char err[256];
+        if (level_load(&lv, level_path, err, sizeof err) != 0) {
+            fprintf(stderr, "%s\n", err);
+            return 1;
+        }
+        game_cfg.level = &lv;
+    }
+
     static game g;
     game_reset(&g);
 
@@ -165,6 +183,6 @@ int main(int argc, char *argv[]) {
         return rc;
     }
 
-    app_config cfg = {preferred, bot, start_fullscreen, scores_path};
+    app_config cfg = {preferred, bot, start_fullscreen, scores_path, level_path};
     return app_run(&g, &cfg);
 }

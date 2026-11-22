@@ -5,6 +5,7 @@
 #include "bot.h"
 #include "highscore.h"
 #include "hud.h"
+#include "levels.h"
 #include "menu.h"
 #include "render.h"
 #include "sfx.h"
@@ -89,8 +90,12 @@ typedef struct {
     float attract_over;         /* seconds since that match ended */
     float ui_t;
     int quit;
-    hs_table scores;
-    char scores_path[1024];     /* "" = don't save */
+    hs_table scores;            /* the current level's table */
+    char scores_base[1024];     /* the arena's file; other levels add -ID */
+    char scores_path[1024];     /* current level's file, "" = don't save */
+    int level_idx;              /* into the levels list */
+    char toast[128];            /* one-line message (level reload) */
+    float toast_t;
     int last_rank;              /* highlighted on the HIGH SCORES screen */
 } app;
 
@@ -133,6 +138,58 @@ static void app_toggle_backend(app *a) {
 }
 
 /* ------------------------------------------------------------ Screens */
+
+/* Each level keeps its own table: scores.txt for the arena (where the
+ * scores from before levels existed already live), scores-ID.txt for the
+ * rest. */
+static void load_level_scores(app *a) {
+    const level_entry *e = levels_get(a->level_idx);
+    a->scores_path[0] = 0;
+    hs_clear(&a->scores);
+    a->last_rank = -1;
+    if (!a->scores_base[0] || !e) return;
+    if (!strcmp(e->id, "arena")) {
+        snprintf(a->scores_path, sizeof a->scores_path, "%s", a->scores_base);
+    } else {
+        char stem[1024];
+        snprintf(stem, sizeof stem, "%s", a->scores_base);
+        char *dot = strrchr(stem, '.');
+        if (dot && !strchr(dot, '/') && !strchr(dot, '\\')) *dot = 0;
+        snprintf(a->scores_path, sizeof a->scores_path, "%s-%s.txt", stem, e->id);
+    }
+    if (hs_load(&a->scores, a->scores_path) != 0)
+        fprintf(stderr, "Ignoring unreadable high scores in %s\n", a->scores_path);
+}
+
+static void select_level(app *a, int idx) {
+    const level_entry *e = levels_get(idx);
+    if (!e) return;
+    a->level_idx = idx;
+    game_cfg.level = &e->lv;
+    game_cfg.level_rev++;
+    title_set_level(e->lv.name, levels_count() > 1);
+    load_level_scores(a);
+}
+
+static void show_toast(app *a, const char *msg) {
+    snprintf(a->toast, sizeof a->toast, "%s", msg);
+    a->toast_t = 4.0f;
+}
+
+/* F5: re-read the level file and start over on it (an editing aid: the
+ * abandoned game is not recorded). */
+static void reload_level(app *a, game *g) {
+    char err[256];
+    if (levels_reload(a->level_idx, err, sizeof err) != 0) {
+        fprintf(stderr, "Level reload failed: %s\n", err);
+        show_toast(a, err);
+        return;
+    }
+    game_cfg.level_rev++;
+    title_set_level(levels_get(a->level_idx)->lv.name, levels_count() > 1);
+    game_reset(g);
+    show_toast(a, levels_get(a->level_idx)->path[0] ? "LEVEL RELOADED" : "BUILT-IN LEVEL");
+}
 
 /* A game you played is over (died, restarted, left or quit): put it on
  * the table if it made it. Bot games never count. Runs once per game. */
@@ -200,6 +257,13 @@ static void on_menu_event(app *a, game *g, menu_event ev) {
     switch (a->screen) {
     case SCREEN_TITLE:
         if (ev.kind == MENU_BACK) title_menu.sel = T_QUIT;   /* ESC again + Enter quits */
+        if (ev.kind == MENU_CHANGED && ev.item == T_LEVEL) {
+            int n = levels_count();
+            select_level(a, ((a->level_idx + ev.dir) % n + n) % n);
+            game_reset(g);                       /* the background match moves too */
+            a->attract_over = 0.0f;
+            break;
+        }
         if (ev.kind != MENU_ACTIVATE) break;
         if (ev.item == T_START) start_game(a, g);
         else if (ev.item == T_SCORES) a->screen = SCREEN_SCORES;
@@ -294,6 +358,7 @@ static void play_input(app *a, game *g, const SDL_Event *e, input *in) {
         switch (e->key.keysym.sym) {
         case SDLK_ESCAPE: case SDLK_p: pause_game(a); break;
         case SDLK_r: start_game(a, g); break;
+        case SDLK_F5: reload_level(a, g); break;
         case SDLK_b: a->fx.bloom_on = !a->fx.bloom_on; break;
         case SDLK_m: app_capture_mouse(a, !a->mouse_captured); break;
         case SDLK_TAB: app_toggle_backend(a); break;
@@ -342,14 +407,39 @@ int app_run(game *g, const app_config *cfg) {
     a.bot = cfg->bot;
     a.last_rank = -1;
     if (cfg->scores_path) {
-        snprintf(a.scores_path, sizeof a.scores_path, "%s", cfg->scores_path);
+        snprintf(a.scores_base, sizeof a.scores_base, "%s", cfg->scores_path);
     } else {
         char *dir = SDL_GetPrefPath("ricochet", "ricochet");   /* per-user data folder */
-        if (dir) snprintf(a.scores_path, sizeof a.scores_path, "%sscores.txt", dir);
+        if (dir) snprintf(a.scores_base, sizeof a.scores_base, "%sscores.txt", dir);
         SDL_free(dir);
     }
-    if (a.scores_path[0] && hs_load(&a.scores, a.scores_path) != 0)
-        fprintf(stderr, "Ignoring unreadable high scores in %s\n", a.scores_path);
+
+    /* Levels: next to the executable (an install or the Windows zip),
+     * else relative to where we were started (the repo root works). */
+    {
+        char dirs[3][1024] = {"", "levels", "apps/ricochet/levels"};
+        char *base = SDL_GetBasePath();
+        if (base) snprintf(dirs[0], sizeof dirs[0], "%slevels", base);
+        SDL_free(base);
+        for (int i = 0; i < 3; i++) {
+            if (!dirs[i][0]) continue;
+            levels_scan(dirs[i]);
+            if (levels_count() > 1 || levels_get(0)->path[0]) {
+                fprintf(stderr, "Levels: %s (%d)\n", dirs[i], levels_count());
+                break;
+            }
+        }
+        int start = 0;
+        if (cfg->level_path) {
+            char err[256];
+            start = levels_add_file(cfg->level_path, err, sizeof err);
+            if (start < 0) {
+                fprintf(stderr, "%s\n", err);
+                start = 0;
+            }
+        }
+        select_level(&a, start);
+    }
     SDL_GLContext gl_ctx = NULL;
     static const int GL_VERSIONS[][2] = {{4, 3}, {4, 1}, {3, 3}};
     for (int v = 0; v < 3 && !gl_ctx; v++) {
@@ -472,7 +562,13 @@ int app_run(game *g, const app_config *cfg) {
         render_ms += SDL_GetTicks() - r0;
         menu *m = current_menu(&a);
         if (m) menu_draw(m, t, a.ui_t);
-        if (a.screen == SCREEN_SCORES) draw_scores(t, &a.scores, a.last_rank, a.ui_t);
+        if (a.screen == SCREEN_SCORES)
+            draw_scores(t, &a.scores, game_cfg.level->name, a.last_rank, a.ui_t);
+        if (a.toast_t > 0.0f) {
+            a.toast_t -= dt;
+            int sc = a.render_h / 150;
+            hud_text_center(t, a.render_h * 3 / 4, a.toast, sc < 1 ? 1 : sc, 0xFFFFD080u);
+        }
         if (a.res_toast > 0.0f) {
             a.res_toast -= dt;
             if (!m) {

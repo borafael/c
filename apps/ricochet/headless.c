@@ -50,8 +50,9 @@ int run_shot(game *g, const char *path, float sim_seconds, int w, int h,
     if (menu_name && !strcmp(menu_name, "scores")) {
         hs_table tab;
         if (!scores_path || hs_load(&tab, scores_path) != 0) hs_clear(&tab);
-        draw_scores((hud_target){px, w, h}, &tab, 0, 0.0f);
+        draw_scores((hud_target){px, w, h}, &tab, game_cfg.level->name, 0, 0.0f);
     } else if (menu_name) {
+        title_set_level(game_cfg.level->name, 1);
         int bloom = fx.bloom_on, fullscreen = 0;
         option_items[O_BLOOM].value = &bloom;
         option_items[O_FULLSCREEN].value = &fullscreen;

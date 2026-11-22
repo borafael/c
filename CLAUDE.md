@@ -102,16 +102,25 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   --bench N times CPU renders with features off.
 │   │                     #   Starts on the OpenGL backend when GL 4.3 is
 │   │                     #   available (Linux/Windows), else CPU; --cpu forces CPU.
+│   │                     #   Levels: text files in levels/ (arena.lvl = the
+│   │                     #   original arena, also built in; warehouse.lvl). One
+│   │                     #   command per line (size, player, pillar, box, spawn)
+│   │                     #   and/or an ASCII map; format in level.h, CHECK tests.
+│   │                     #   Chosen on the title menu (LEVEL) or --level FILE;
+│   │                     #   F5 reloads the file while playing.
 │   │                     #   Files: main.c (flags) -> app.c (window, screens,
 │   │                     #   input, loop) or headless.c (--shot / --bench);
 │   │                     #   game.c (rules, waves, ammo in a physics_world,
 │   │                     #   scoring), bot.c, render.c (scene + HUD), ui.c (menu
 │   │                     #   contents, options, score screen), menu.c (generic
-│   │                     #   list widget), highscore.c.
+│   │                     #   list widget), level.c / levels.c (format, list),
+│   │                     #   nav.c (grid flow fields: enemies and the bot path
+│   │                     #   around walls, one grid per body size), highscore.c.
 │   │                     #   Scoring: kill = enemy value x magazine factor
 │   │                     #   (bot-calibrated, mag_factor in game.c; no wave
-│   │                     #   multiplier). Top-10 local table (highscore.c, CHECK
-│   │                     #   tests) in SDL_GetPrefPath/scores.txt (--scores FILE);
+│   │                     #   multiplier). Top-10 table per level (highscore.c,
+│   │                     #   CHECK tests) in SDL_GetPrefPath: scores.txt for the
+│   │                     #   arena, scores-ID.txt for the rest (--scores FILE);
 │   │                     #   bot / title-screen games never record.
 │   └── outpost/          # Top-down jeep roaming an island military base.
 │                         #   ASCII tile map (soil / shallow / deep water,
@@ -177,7 +186,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 ./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
 ./apps/barrier/barrier                   # Game prototype
 ./apps/racer/racer                       # Anti-grav racer prototype (A/D strafe, W/S boost/brake)
-./apps/ricochet/ricochet                 # Sphere FPS: title menu (START / HIGH SCORES / OPTIONS / QUIT), ESC or P pauses (WASD + mouse, hold LMB/SPACE to fire, walk over spheres to recollect, R restart, V cycle render resolution, TAB CPU/GPU; GPU by default when available; --cpu, --bot (skips the title), --fullscreen, --no-reflections, --ammo N magazine size (default 40), --start-ammo N rounds in hand at start, rest scattered on the floor, --wave N starting wave)
+./apps/ricochet/ricochet                 # Sphere FPS: title menu (START / HIGH SCORES / OPTIONS / QUIT), ESC or P pauses (WASD + mouse, hold LMB/SPACE to fire, walk over spheres to recollect, R restart, V cycle render resolution, TAB CPU/GPU; GPU by default when available; --cpu, --bot (skips the title), --fullscreen, --no-reflections, --ammo N magazine size (default 40), --start-ammo N rounds in hand at start, rest scattered on the floor, --wave N starting wave, --level FILE, F5 reloads the level file)
 ./apps/outpost/outpost                   # Top-down jeep on an island base (WASD/arrows, SPACE handbrake, -/= zoom, M minimap)
 ./apps/kmeans/kmeans                     # K-means in 3D (SPACE pause, N step, R new data, D data mode, J/K clusters, I init, L links; --shot out.ppm headless)
 ./apps/lowspec/lowspec --threads 1       # Headless CPU-raytrace bench (no SDL); --res, --interlace, --out

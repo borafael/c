@@ -5,17 +5,13 @@
  * headless: the window, menus and rendering live elsewhere and only read
  * the game or feed it input. */
 
+#include "level.h"
+#include "nav.h"
 #include "physics.h"
 #include "scene.h"
 #include "vector.h"
 
 #include <stdint.h>
-
-/* Arena */
-#define ARENA_HALF   16.0f
-#define WALL_H        2.6f
-#define WALL_T        0.5f
-#define PILLAR_H      9.0f
 
 /* Player */
 #define EYE_H         1.6f
@@ -62,11 +58,6 @@
 
 #define MAX_PARTS     160
 
-/* Pillars are physics columns: balls bounce off them, everything else is
- * pushed out of them. */
-#define N_PILLARS 8
-extern const physics_column PILLARS[N_PILLARS];
-
 typedef enum { EN_SMALL, EN_MED, EN_BIG, EN_KINDS } en_kind;
 typedef struct {
     float r, speed, mass, damage;
@@ -83,6 +74,8 @@ typedef struct {
     float  flash;       /* 1 on hit, decays */
     float  spawn_t;     /* <0 waiting, 0..SPAWN_TIME rising, then active */
     float  dying;       /* 0 = alive, >0 seconds into death */
+    vector stuck_at;    /* where it was when stuck_t last reset */
+    float  stuck_t;     /* seconds without getting anywhere */
 } enemy;
 
 typedef struct {
@@ -109,6 +102,14 @@ typedef struct {
 
 typedef struct {
     player   pl;
+    /* The level being played, and what was built from it: pillars and
+     * boxes are physics colliders (balls bounce, everything else is
+     * pushed out); enemies walk around walls on the nav grid. */
+    const level *lv;
+    int      built_rev;          /* game_cfg.level_rev the world was built for */
+    nav_grid nav[EN_KINDS + 1];  /* per enemy size (+ the player's, NAV_PLAYER):
+                                  * each only goes through gaps it fits */
+    nav_field to_player[EN_KINDS]; /* rebuilt each frame enemies need it */
     /* Balls (dynamic) and enemies (kinematic) are bodies in one physics
      * world, with fixed IDs: enemy i is body i, ball k is BALL_ID(k).
      * A ball in your hand is a disabled body. */
@@ -130,6 +131,7 @@ typedef struct {
 } game;
 
 #define BALL_ID(k) (MAX_ENEMIES + (k))
+#define NAV_PLAYER EN_KINDS
 #define HS_UNRECORDED (-2)
 
 /* Gun-local frame: origin at the receiver, x = right, y = up, z = forward
@@ -144,9 +146,12 @@ typedef struct { vector o, x, y, z; } gun_frame;
 extern const en_spec SPECS[EN_KINDS];
 
 /* What the next game_reset starts with (command line / options menu).
- * start_ammo < 0 means a full magazine. */
+ * start_ammo < 0 means a full magazine. The level starts as the built-in
+ * arena. */
 typedef struct {
     int mag, start_ammo, start_wave;
+    const level *level;          /* what to play (never NULL) */
+    int level_rev;               /* bump when *level changes (switch / reload) */
 } game_settings;
 extern game_settings game_cfg;
 

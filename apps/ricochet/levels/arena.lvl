@@ -1,0 +1,21 @@
+# The original arena. It is also built into the game, so it still plays
+# if this file is missing. Copy it to start a new level; see level.h for
+# every command.
+
+name   Arena
+size   32 32                 # outer walls at +-16 m
+player 0 -3                  # start, facing +z
+
+wall_height    2.6
+wall_thickness 0.5
+pillar_height  9
+
+# x  z  radius
+pillar  -7  -7  0.9
+pillar   7  -7  0.9
+pillar  -7   7  0.9
+pillar   7   7  0.9
+pillar   0 -11  0.6
+pillar   0  11  0.6
+pillar -11   0  0.6
+pillar  11   0  0.6

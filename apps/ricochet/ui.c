@@ -18,6 +18,7 @@
 
 static menu_item title_items[] = {
     [T_START]   = {.kind = MENU_ACTION, .label = "START"},
+    [T_LEVEL]   = {.kind = MENU_VALUE,  .label = "LEVEL"},
     [T_SCORES]  = {.kind = MENU_ACTION, .label = "HIGH SCORES"},
     [T_OPTIONS] = {.kind = MENU_ACTION, .label = "OPTIONS"},
     [T_QUIT]    = {.kind = MENU_ACTION, .label = "QUIT"},
@@ -118,7 +119,13 @@ static void score_row(char *buf, size_t n, int rank, const hs_entry *e) {
              acc, e->mag, date);
 }
 
-void draw_scores(hud_target t, const hs_table *tab, int highlight, float time) {
+void title_set_level(const char *name, int can_switch) {
+    snprintf(title_items[T_LEVEL].text, sizeof title_items[T_LEVEL].text, "%s", name);
+    title_items[T_LEVEL].disabled = !can_switch;
+}
+
+void draw_scores(hud_target t, const hs_table *tab, const char *level_name,
+                 int highlight, float time) {
     int sc = t.h / 150;
     if (sc < 1) sc = 1;
     hud_tint(t, 0x060812u, 0.70f);
@@ -145,5 +152,8 @@ void draw_scores(hud_target t, const hs_table *tab, int highlight, float time) {
         }
         hud_text(t, x, y + (i + 1) * row_h, row, sc, c);
     }
-    hud_text_center(t, y + (HS_MAX + 1) * row_h + 8 * sc, "PRESS ANY KEY", sc, 0xFF8890A8u);
+    char foot[64];
+    snprintf(foot, sizeof foot, "%s - PRESS ANY KEY", level_name ? level_name : "");
+    hud_text_center(t, y + (HS_MAX + 1) * row_h + 8 * sc, level_name ? foot : "PRESS ANY KEY",
+                    sc, 0xFF8890A8u);
 }
