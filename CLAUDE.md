@@ -13,7 +13,8 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   (+ merging, spherical boundary; nbody) and
 │   │                     #   falling + collisions (ground with grip / rolling
 │   │                     #   / sleep, box walls, vertical columns, kinematic
-│   │                     #   bodies, sphere-sphere impulses, adaptive
+│   │                     #   bodies, static axis-aligned boxes whose tops act
+│   │                     #   like the ground, sphere-sphere impulses, adaptive
 │   │                     #   substeps, contact callback; ricochet) + CHECK tests
 │   ├── scene/            # Renderer-agnostic scene description (materials,
 │   │                     #   primitives, meshes, nodes, skins, animations,

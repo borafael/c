@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <check.h>
+#include <string.h>
 #include "physics.h"
 
 #define TOL 1e-3f
@@ -242,13 +243,14 @@ static int add_ball(physics_world *w, vector p, vector v) {
     return physics_world_add(w, &d);
 }
 
-typedef struct { int n[4]; float last_speed; int last_other; } contact_log;
+typedef struct { int n[5]; float last_speed; int last_other; vector last_normal; } contact_log;
 static void log_contact(void *user, physics_world *w, const physics_contact *c) {
     (void)w;
     contact_log *l = user;
     l->n[c->kind]++;
     l->last_speed = c->speed;
     l->last_other = c->other;
+    l->last_normal = c->normal;
 }
 
 START_TEST(test_ground_bounce_restitution)
@@ -422,6 +424,141 @@ START_TEST(test_push_out_columns)
 }
 END_TEST
 
+/* --- Static boxes --- */
+
+START_TEST(test_box_side_bounce)
+{
+    physics_box box = {{3, 0, -2}, {4, 2, 2}, 0.5f};
+    physics_config c = arena_config();
+    c.fall_gravity = 0.0f;
+    c.boxes = &box;
+    c.box_count = 1;
+    contact_log log = {0};
+    c.on_contact = log_contact;
+    c.contact_user = &log;
+    physics_world *w = physics_world_create(&c);
+    int b = add_ball(w, (vector){0, 1, 0}, (vector){5, 0, 0});
+    for (int i = 0; i < 60; i++) physics_world_advance(w, 1.0f / 60.0f);
+    ck_assert_float_lt(physics_world_body_position(w, b).x, 3.0f - 0.1f);
+    ck_assert_float_eq_tol(physics_world_body_velocity(w, b).x, -2.5f, 1e-4f);  /* min(1, 0.5) */
+    ck_assert_int_eq(log.n[PHYSICS_CONTACT_BOX], 1);
+    ck_assert_int_eq(log.last_other, 0);
+    ck_assert_float_eq_tol(log.last_normal.x, -1.0f, 1e-6f);
+    physics_world_destroy(w);
+}
+END_TEST
+
+START_TEST(test_ball_rests_on_box_top)
+{
+    physics_box box = {{-1, 0, -1}, {1, 1, 1}, 0.5f};
+    physics_config c = arena_config();
+    c.boxes = &box;
+    c.box_count = 1;
+    contact_log log = {0};
+    c.on_contact = log_contact;
+    c.contact_user = &log;
+    physics_world *w = physics_world_create(&c);
+    int b = add_ball(w, (vector){-0.3f, 3, -0.2f}, (vector){0.2f, 0, 0});
+    for (int i = 0; i < 5 * 60; i++) physics_world_advance(w, 1.0f / 60.0f);
+    physics_body body = physics_world_body(w, b);
+    ck_assert_int_eq(body.sleeping, 1);
+    ck_assert_float_eq_tol(body.position.y, 1.0f + 0.1f, 1e-4f);
+    ck_assert_int_gt(log.n[PHYSICS_CONTACT_BOX], 0);
+    ck_assert_int_eq(log.n[PHYSICS_CONTACT_GROUND], 0);   /* never fell off */
+    for (int i = 0; i < 60 * 60; i++) physics_world_advance(w, 1.0f / 60.0f);
+    physics_body later = physics_world_body(w, b);
+    ck_assert(later.position.x == body.position.x && later.position.y == body.position.y &&
+              later.position.z == body.position.z);
+    physics_world_destroy(w);
+}
+END_TEST
+
+START_TEST(test_fast_body_never_tunnels_through_box)
+{
+    physics_box box = {{-5, 0, 5}, {5, 3, 5.25f}, 0.5f};   /* 25 cm thick */
+    physics_config c = arena_config();
+    c.fall_gravity = 0.0f;
+    c.boxes = &box;
+    c.box_count = 1;
+    physics_world *w = physics_world_create(&c);
+    int b = add_ball(w, (vector){0, 1, 0}, (vector){0, 0, 110});
+    for (int i = 0; i < 8; i++) {
+        physics_world_advance(w, 1.0f / 60.0f);
+        ck_assert_float_le(physics_world_body_position(w, b).z, 5.0f - 0.1f + 1e-4f);
+    }
+    ck_assert_float_lt(physics_world_body_velocity(w, b).z, 0.0f);
+    physics_world_destroy(w);
+}
+END_TEST
+
+START_TEST(test_box_edge_normal)
+{
+    /* Aimed diagonally at a vertical edge: the normal points out of the
+     * edge, not out of a face. */
+    physics_box box = {{-1, 0, -1}, {1, 2, 1}, 1.0f};
+    physics_config c = arena_config();
+    c.fall_gravity = 0.0f;
+    c.boxes = &box;
+    c.box_count = 1;
+    contact_log log = {0};
+    c.on_contact = log_contact;
+    c.contact_user = &log;
+    physics_world *w = physics_world_create(&c);
+    add_ball(w, (vector){4, 1, 4}, (vector){-3, 0, -3});
+    for (int i = 0; i < 120 && log.n[PHYSICS_CONTACT_BOX] == 0; i++)
+        physics_world_advance(w, 1.0f / 60.0f);
+    ck_assert_int_eq(log.n[PHYSICS_CONTACT_BOX], 1);
+    ck_assert_float_eq_tol(log.last_normal.x, 0.70710678f, 1e-3f);
+    ck_assert_float_eq_tol(log.last_normal.z, 0.70710678f, 1e-3f);
+    ck_assert_float_eq_tol(log.last_normal.y, 0.0f, 1e-6f);
+    physics_world_destroy(w);
+}
+END_TEST
+
+START_TEST(test_push_out_boxes)
+{
+    physics_box box = {{0, 0, 0}, {2, 1, 2}, 0.5f};
+    physics_config c = arena_config();
+    c.boxes = &box;
+    c.box_count = 1;
+    physics_world *w = physics_world_create(&c);
+    vector p = {2.2f, 0, 1};                       /* overlapping the +x side */
+    vector n = physics_world_push_out_boxes(w, &p, 0.5f);
+    ck_assert_float_eq_tol(p.x, 2.5f, 1e-6f);
+    ck_assert_float_eq_tol(n.x, 1.0f, 1e-6f);
+    p = (vector){1.9f, 0, 1.2f};                   /* centre inside: nearest side */
+    n = physics_world_push_out_boxes(w, &p, 0.5f);
+    ck_assert_float_eq_tol(p.x, 2.5f, 1e-6f);
+    ck_assert_float_eq_tol(p.z, 1.2f, 1e-6f);
+    p = (vector){5, 0, 5};                         /* clear */
+    n = physics_world_push_out_boxes(w, &p, 0.5f);
+    ck_assert(p.x == 5 && p.z == 5 && n.x == 0 && n.z == 0);
+    physics_world_destroy(w);
+}
+END_TEST
+
+START_TEST(test_boxes_deterministic)
+{
+    physics_box boxes[3] = {{{-3, 0, -3}, {-1, 1, 3}, 0.4f},
+                            {{1, 0, -1}, {4, 2, 0}, 0.6f},
+                            {{-1, 0, 4}, {1, 0.5f, 6}, 0.2f}};
+    vector out[2][40];
+    for (int run = 0; run < 2; run++) {
+        physics_config c = arena_config();
+        c.boxes = boxes;
+        c.box_count = 3;
+        physics_world *w = physics_world_create(&c);
+        for (int i = 0; i < 40; i++)
+            add_ball(w, (vector){-8.0f + 0.4f * i, 2.0f + 0.1f * (i % 7), -6.0f + 0.3f * i},
+                     (vector){(float)(i % 5) - 2.0f, 3.0f, (float)(i % 3) * 4.0f - 4.0f});
+        for (int f = 0; f < 600; f++) physics_world_advance(w, 1.0f / 60.0f);
+        for (int i = 0; i < 40; i++) out[run][i] = physics_world_body_position(w, i);
+        physics_world_destroy(w);
+    }
+    ck_assert(memcmp(out[0], out[1], sizeof out[0]) == 0);
+}
+END_TEST
+
 Suite *physics_suite(void) {
     Suite *s = suite_create("Physics");
 
@@ -450,6 +587,15 @@ Suite *physics_suite(void) {
     tcase_add_test(tc_col, test_deterministic);
     tcase_add_test(tc_col, test_push_out_columns);
     suite_add_tcase(s, tc_col);
+
+    TCase *tc_box = tcase_create("Boxes");
+    tcase_add_test(tc_box, test_box_side_bounce);
+    tcase_add_test(tc_box, test_ball_rests_on_box_top);
+    tcase_add_test(tc_box, test_fast_body_never_tunnels_through_box);
+    tcase_add_test(tc_box, test_box_edge_normal);
+    tcase_add_test(tc_box, test_push_out_boxes);
+    tcase_add_test(tc_box, test_boxes_deterministic);
+    suite_add_tcase(s, tc_box);
 
     return s;
 }

@@ -43,6 +43,7 @@ struct physics_world {
     unsigned char *sleeping;
 
     physics_column *columns;  /* copy of config->columns */
+    physics_box    *boxes;    /* copy of config->boxes */
 
     /* Free-slot stack. */
     int *free_stack;
@@ -96,6 +97,8 @@ physics_config physics_default_config(void) {
     c.wall_restitution    = 0.5f;
     c.columns             = NULL;
     c.column_count        = 0;
+    c.boxes               = NULL;
+    c.box_count           = 0;
     c.max_substep_dist    = 0.0f;
     c.min_substeps        = 1;
     c.max_substeps        = 1;
@@ -159,6 +162,17 @@ physics_world *physics_world_create(const physics_config *config) {
         w->config.column_count = 0;
     }
     w->config.columns = w->columns;
+    if (config->box_count > 0 && config->boxes) {
+        w->boxes = malloc((size_t)config->box_count * sizeof(*w->boxes));
+        if (!w->boxes) {
+            physics_world_destroy(w);
+            return NULL;
+        }
+        memcpy(w->boxes, config->boxes, (size_t)config->box_count * sizeof(*w->boxes));
+    } else {
+        w->config.box_count = 0;
+    }
+    w->config.boxes = w->boxes;
 
     /* Seed free stack with ids in reverse so IDs are handed out 0..n. */
     for (int i = cap - 1; i >= 0; i--) {
@@ -215,6 +229,7 @@ void physics_world_destroy(physics_world *w) {
     free(w->disabled);
     free(w->sleeping);
     free(w->columns);
+    free(w->boxes);
     free(w->free_stack);
     free(w->merge_list);
     free(w);
@@ -366,6 +381,48 @@ vector physics_world_push_out_columns(const physics_world *w, vector *p,
     return n;
 }
 
+/* Circle (x, z) against every box footprint. Returns the index of the
+ * last box `p` was pushed out of, or -1. */
+static int push_out_boxes(const physics_world *w, vector *p, float r,
+                          vector *normal) {
+    int last = -1;
+    *normal = (vector){0, 0, 0};
+    for (int i = 0; i < w->config.box_count; i++) {
+        const physics_box *b = &w->boxes[i];
+        float qx = fminf(fmaxf(p->x, b->min.x), b->max.x);
+        float qz = fminf(fmaxf(p->z, b->min.z), b->max.z);
+        float dx = p->x - qx, dz = p->z - qz, d2 = dx * dx + dz * dz;
+        if (d2 >= r * r) continue;
+        float nx, nz;
+        if (d2 > 1e-10f) {
+            float d = sqrtf(d2);
+            nx = dx / d; nz = dz / d;
+            p->x = qx + nx * r;
+            p->z = qz + nz * r;
+        } else {
+            /* Centre inside the footprint: out through the nearest side. */
+            float pen[4] = {p->x - b->min.x, b->max.x - p->x, p->z - b->min.z, b->max.z - p->z};
+            int k = 0;
+            for (int j = 1; j < 4; j++) if (pen[j] < pen[k]) k = j;
+            nx = k == 0 ? -1.0f : k == 1 ? 1.0f : 0.0f;
+            nz = k == 2 ? -1.0f : k == 3 ? 1.0f : 0.0f;
+            if (k == 0) p->x = b->min.x - r;
+            if (k == 1) p->x = b->max.x + r;
+            if (k == 2) p->z = b->min.z - r;
+            if (k == 3) p->z = b->max.z + r;
+        }
+        *normal = (vector){nx, 0, nz};
+        last = i;
+    }
+    return last;
+}
+
+vector physics_world_push_out_boxes(const physics_world *w, vector *p, float r) {
+    vector n = {0, 0, 0};
+    if (w && p) push_out_boxes(w, p, r, &n);
+    return n;
+}
+
 /* ------------------------------------------------------------------ */
 /* Simulation step                                                     */
 /* ------------------------------------------------------------------ */
@@ -503,23 +560,30 @@ static float inv_mass(const physics_world *w, int id) {
     return w->mass[id] > 0.0f ? 1.0f / w->mass[id] : 0.0f;
 }
 
-static void ground_contact(physics_world *w, int i, float h) {
+/* Sphere i on a horizontal surface at height y (the ground, or a box top
+ * when box >= 0): bounce, grip, rolling friction and sleep. */
+static void floor_contact(physics_world *w, int i, float h, float y,
+                          float restitution, int box) {
     const physics_config *c = &w->config;
     vector *p = &w->position[i], *v = &w->velocity[i];
     float r = w->radius[i];
-    if (p->y < c->ground_y + r) {
-        p->y = c->ground_y + r;
+    if (p->y < y + r) {
+        p->y = y + r;
         if (v->y < 0) {
-            float e = fminf(w->restitution[i], c->ground_restitution);
+            float e = fminf(w->restitution[i], restitution);
             float imp = -v->y;
             v->y = imp > c->ground_settle_speed ? imp * e : 0.0f;
             v->x *= c->ground_grip;
             v->z *= c->ground_grip;
-            report(w, PHYSICS_CONTACT_GROUND, i, -1, (vector){0, 1, 0}, imp, 0.0f);
+            if (box < 0)
+                report(w, PHYSICS_CONTACT_GROUND, i, -1, (vector){0, 1, 0}, imp, 0.0f);
+            else
+                report(w, PHYSICS_CONTACT_BOX, i, box, (vector){0, 1, 0}, imp,
+                       (imp - v->y) * w->mass[i]);
         }
     }
-    /* Rolling: on the ground with no vertical motion. */
-    if (p->y <= c->ground_y + r + 1e-4f && v->y == 0.0f) {
+    /* Rolling: on the surface with no vertical motion. */
+    if (p->y <= y + r + 1e-4f && v->y == 0.0f) {
         float k = expf(-c->roll_friction * h);
         v->x *= k;
         v->z *= k;
@@ -527,6 +591,61 @@ static void ground_contact(physics_world *w, int i, float h) {
             *v = (vector){0, 0, 0};
             w->sleeping[i] = 1;
         }
+    }
+}
+
+static void ground_contact(physics_world *w, int i, float h) {
+    floor_contact(w, i, h, w->config.ground_y, w->config.ground_restitution, -1);
+}
+
+/* Sphere i against every box: tops behave like the ground; sides, edges
+ * and corners bounce along the contact normal. */
+static void box_contacts(physics_world *w, int i, float h) {
+    float r = w->radius[i];
+    for (int b = 0; b < w->config.box_count; b++) {
+        const physics_box *bx = &w->boxes[b];
+        vector *p = &w->position[i], *v = &w->velocity[i];
+        vector q = {fminf(fmaxf(p->x, bx->min.x), bx->max.x),
+                    fminf(fmaxf(p->y, bx->min.y), bx->max.y),
+                    fminf(fmaxf(p->z, bx->min.z), bx->max.z)};
+        vector d = vector_sub(*p, q);
+        float d2 = vector_dot(d, d);
+        if (d2 >= r * r) continue;
+        vector n;
+        int top;   /* centre right above the top face */
+        if (d2 > 1e-10f) {
+            n = vector_scale(d, 1.0f / sqrtf(d2));
+            top = d.x == 0.0f && d.z == 0.0f && d.y > 0.0f;
+        } else {
+            /* Centre inside: out through the face it is least deep behind. */
+            float pen[6] = {p->x - bx->min.x, bx->max.x - p->x, p->y - bx->min.y,
+                            bx->max.y - p->y, p->z - bx->min.z, bx->max.z - p->z};
+            int k = 0;
+            for (int j = 1; j < 6; j++) if (pen[j] < pen[k]) k = j;
+            n = (vector){0, 0, 0};
+            float sgn = (k & 1) ? 1.0f : -1.0f;
+            if (k < 2) n.x = sgn; else if (k < 4) n.y = sgn; else n.z = sgn;
+            q = *p;
+            switch (k) {
+            case 0: q.x = bx->min.x; break;
+            case 1: q.x = bx->max.x; break;
+            case 2: q.y = bx->min.y; break;
+            case 3: q.y = bx->max.y; break;
+            case 4: q.z = bx->min.z; break;
+            default: q.z = bx->max.z; break;
+            }
+            top = k == 3;
+        }
+        if (top) {                    /* on top: just like the ground */
+            floor_contact(w, i, h, bx->max.y, bx->restitution, b);
+            continue;
+        }
+        *p = vector_add(q, vector_scale(n, r));
+        float vn = vector_dot(*v, n);
+        if (vn >= 0) continue;
+        float e = fminf(w->restitution[i], bx->restitution);
+        *v = vector_sub(*v, vector_scale(n, (1.0f + e) * vn));
+        report(w, PHYSICS_CONTACT_BOX, i, b, n, -vn, -(1.0f + e) * vn * w->mass[i]);
     }
 }
 
@@ -645,6 +764,7 @@ static void substep(physics_world *w, float h) {
             wall_contact(w, i, &p->z, &v->z, -(c->wall_min_z) - r, -1, 3);
         }
         column_contact(w, i);
+        if (c->box_count > 0) box_contacts(w, i, h);
         kinematic_contacts(w, i);
     }
 

@@ -329,6 +329,15 @@ static void on_contact(void *user, physics_world *w, const physics_contact *c) {
     case PHYSICS_CONTACT_COLUMN:
         if (imp > 1.2f) play_at(g, SFX_WALL, bp, fminf(1.0f, imp / 18.0f), frange(0.75f, 0.85f));
         break;
+    case PHYSICS_CONTACT_BOX:
+        if (c->normal.y > 0.99f) {              /* landed on top: like the floor */
+            if (imp > 1.0f)
+                play_at(g, SFX_BOUNCE, bp, fminf(1.0f, 0.15f + imp / 14.0f),
+                        frange(0.92f, 1.08f) + fminf(imp, 12.0f) * 0.01f);
+        } else if (imp > 1.2f) {
+            play_at(g, SFX_WALL, bp, fminf(1.0f, imp / 18.0f), frange(0.85f, 0.95f));
+        }
+        break;
     case PHYSICS_CONTACT_BODY:
         if (c->other >= MAX_ENEMIES) {          /* ball vs ball */
             if (imp > 1.0f) play_at(g, SFX_WALL, bp, fminf(0.8f, imp / 14.0f), 1.9f);

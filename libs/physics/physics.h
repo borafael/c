@@ -19,7 +19,8 @@
  *   Falling         uniform downward gravity (`fall_gravity`, along -y).
  *   Collisions      spheres bounce off a ground plane (with grip, rolling
  *                   friction and sleep), the vertical walls of a box,
- *                   vertical columns, kinematic bodies and each other,
+ *                   vertical columns, static axis-aligned boxes (whose
+ *                   tops act like the ground), kinematic bodies and each other,
  *                   with impulse responses and restitution. Adaptive
  *                   substeps keep fast bodies from tunnelling.
  *                   (apps/ricochet)
@@ -58,19 +59,31 @@ typedef struct {
     float restitution;
 } physics_column;
 
+/**
+ * Static axis-aligned box (a wall segment, a crate, a platform). Spheres
+ * bounce off its sides, edges and corners; resting on its top they get
+ * the ground's grip, rolling friction and sleep. Boxes thinner than
+ * 2 * (max_substep_dist - radius) could let a fast sphere through.
+ */
+typedef struct {
+    vector min, max;
+    float  restitution;
+} physics_box;
+
 typedef enum {
     PHYSICS_CONTACT_GROUND, /* other = -1 */
     PHYSICS_CONTACT_WALL,   /* other = 0 +x, 1 -x, 2 +z, 3 -z */
     PHYSICS_CONTACT_COLUMN, /* other = column index */
     PHYSICS_CONTACT_BODY,   /* other = the other body's ID */
+    PHYSICS_CONTACT_BOX,    /* other = box index */
 } physics_contact_kind;
 
 /**
  * One collision, reported after the world has resolved it. `body` is
  * always dynamic. `normal` points from the other surface towards `body`;
  * `speed` is how fast they were approaching along it (> 0); `impulse` is
- * the impulse `body` received along `normal` (body and column contacts;
- * 0 for ground / wall).
+ * the impulse `body` received along `normal` (body, column and box
+ * contacts; 0 for ground / wall).
  */
 typedef struct {
     physics_contact_kind kind;
@@ -119,6 +132,8 @@ typedef struct {
     float wall_restitution;
     const physics_column *columns; /* Copied at create; may be NULL */
     int   column_count;
+    const physics_box *boxes;      /* Copied at create; may be NULL */
+    int   box_count;
 
     /* Adaptive substeps: no body moves more than this per substep. 0 = one
      * substep per advance. */
@@ -241,5 +256,13 @@ void physics_world_set_enabled(physics_world *world, int id, int enabled);
  */
 vector physics_world_push_out_columns(const physics_world *world,
                                       vector *p, float r);
+
+/**
+ * Same for boxes, seen from above: push a circle of radius `r` at p
+ * (x, z) out of every box footprint it overlaps, whatever the heights.
+ * Returns the normal of the last push, or a zero vector.
+ */
+vector physics_world_push_out_boxes(const physics_world *world,
+                                    vector *p, float r);
 
 #endif /* PHYSICS_H */
