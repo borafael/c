@@ -129,6 +129,7 @@ libs/math/tests/check_vector
 libs/ini/tests/check_ini
 libs/physics/tests/check_physics
 libs/scene/tests/check_fbx
+apps/ricochet/tests/check_highscore
 *.trs
 
 # --- Build stamps ---
@@ -141,6 +142,7 @@ libs/raytrace/opengl/.dirstamp
 libs/raytrace/vulkan/.dirstamp
 libs/ini/tests/.dirstamp
 libs/raytrace/tests/.dirstamp
+apps/ricochet/tests/.dirstamp
 
 # --- Generated SPIR-V ---
 libs/raytrace/vulkan/raytrace.spv

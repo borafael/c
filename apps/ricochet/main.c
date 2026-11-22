@@ -41,6 +41,7 @@
 #include "postfx.h"
 #include "hud.h"
 #include "menu.h"
+#include "highscore.h"
 #include "sfx.h"
 #include "physics.h"
 #include <SDL2/SDL.h>
@@ -177,9 +178,9 @@ typedef struct {
     scene_color c1, c2;
 } en_spec;
 static const en_spec SPECS[EN_KINDS] = {
-    {0.55f, 4.2f,  5.0f, 10.0f,  3, 100, {255, 160,  40}, {120,  50,  10}},
-    {0.85f, 2.8f, 14.0f, 20.0f,  7, 250, {230,  45,  80}, { 90,  10,  30}},
-    {1.30f, 1.8f, 40.0f, 30.0f, 16, 600, {150,  70, 230}, { 45,  15,  80}},
+    {0.55f, 4.2f,  5.0f, 10.0f,  3, 1000, {255, 160,  40}, {120,  50,  10}},
+    {0.85f, 2.8f, 14.0f, 20.0f,  7, 2500, {230,  45,  80}, { 90,  10,  30}},
+    {1.30f, 1.8f, 40.0f, 30.0f, 16, 6000, {150,  70, 230}, { 45,  15,  80}},
 };
 
 typedef struct {
@@ -230,12 +231,15 @@ typedef struct {
     float    banner_t;
     char     banner[48];
     int      game_over;
+    int      start_wave, start_ammo; /* settings this game began with */
+    int      hs_rank;            /* HS_UNRECORDED, -1 (not ranked) or 0.. */
     float    t;
     /* Listener frame for spatial audio (updated each frame). */
     vector   ear, ear_right;
 } game;
 
 #define BALL_ID(k) (MAX_ENEMIES + (k))
+#define HS_UNRECORDED (-2)
 
 static physics_body ball_get(const game *g, int k) {
     return physics_world_body(g->phys, BALL_ID(k));
@@ -418,6 +422,19 @@ static physics_world *create_physics(game *g) {
     return physics_world_create(&c);
 }
 
+/* Put ball k on the floor at a random spot (never on top of the player),
+ * where it lands and falls asleep within its first substep. */
+static void scatter_ball(game *g, int k) {
+    vector p;
+    do {
+        p = (vector){frange(-ARENA_HALF + 1, ARENA_HALF - 1), BALL_R,
+                     frange(-ARENA_HALF + 1, ARENA_HALF - 1)};
+        push_out_pillars(g, &p, BALL_R);
+    } while (hypotf(p.x - g->pl.p.x, p.z - g->pl.p.z) < 3.0f);
+    physics_world_set_enabled(g->phys, BALL_ID(k), 1);
+    physics_world_set_position(g->phys, BALL_ID(k), p);
+}
+
 static void game_reset(game *g) {
     physics_world *w = g->phys;
     memset(g, 0, sizeof *g);
@@ -431,7 +448,7 @@ static void game_reset(game *g) {
             .type = PHYSICS_KINEMATIC, .mass = 1.0f, .restitution = REST_ENEMY});
         physics_world_set_enabled(w, i, 0);
     }
-    for (int k = 0; k < cfg_mag; k++) {
+    for (int k = 0; k < AMMO_CAP; k++) {   /* magazine can grow mid-game */
         physics_world_add(w, &(physics_body_desc){
             .type = PHYSICS_DYNAMIC, .mass = BALL_MASS, .radius = BALL_R,
             .restitution = REST_BALL});
@@ -442,20 +459,56 @@ static void game_reset(game *g) {
     g->mag = cfg_mag;
     g->ammo = cfg_start_ammo < 0 ? cfg_mag : cfg_start_ammo;
     g->wave = cfg_start_wave - 1;   /* the first spawn_wave makes it cfg_start_wave */
+    g->start_wave = cfg_start_wave;
+    g->start_ammo = cfg_start_ammo;
+    g->hs_rank = HS_UNRECORDED;
     g->wave_timer = 1.0f;
-    /* Rounds you don't start with lie scattered on the floor, at rest,
-     * waiting to be collected (never on top of the spawn point). */
-    for (int i = 0; i < g->mag - g->ammo; i++) {
-        vector p;
-        do {
-            p = (vector){frange(-ARENA_HALF + 1, ARENA_HALF - 1), BALL_R,
-                         frange(-ARENA_HALF + 1, ARENA_HALF - 1)};
-            push_out_pillars(g, &p, BALL_R);
-        } while (hypotf(p.x - g->pl.p.x, p.z - g->pl.p.z) < 3.0f);
-        /* Lands and falls asleep within its first substep. */
-        physics_world_set_enabled(w, BALL_ID(i), 1);
-        physics_world_set_position(w, BALL_ID(i), p);
+    /* Rounds you don't start with lie scattered on the floor. */
+    for (int i = 0; i < g->mag - g->ammo; i++) scatter_ball(g, i);
+}
+
+/* Change the magazine mid-game without it becoming a free refill: new
+ * balls are scattered on the floor (go collect them), and a smaller
+ * magazine takes balls out of your hand first, then out of the world. */
+static void game_set_magazine(game *g, int mag) {
+    physics_world *w = g->phys;
+    for (int k = g->mag; k < mag; k++) scatter_ball(g, k);
+    for (int k = g->mag - 1; k >= mag; k--) {
+        physics_body b = ball_get(g, k);
+        if (!b.enabled) { g->ammo--; continue; }   /* was in hand */
+        /* Ball k is out in the world. Take one from the hand instead by
+         * moving k's state into a held ball's slot below the new size. */
+        int held = -1;
+        for (int j = 0; j < mag && g->ammo > 0; j++)
+            if (!ball_get(g, j).enabled) { held = j; break; }
+        if (held >= 0) {
+            physics_world_set_enabled(w, BALL_ID(held), 1);
+            physics_world_set_position(w, BALL_ID(held), b.position);
+            physics_world_set_velocity(w, BALL_ID(held), b.velocity);
+            g->ammo--;
+        }
+        physics_world_set_enabled(w, BALL_ID(k), 0);
     }
+    g->mag = mag;
+}
+
+/* Points for a kill: the enemy's value times the magazine factor at
+ * that moment (a smaller magazine is harder and pays more). No wave
+ * multiplier: later waves already pay more by having more enemies, and
+ * a high starting wave skips the kills of the waves before it. */
+/* Calibrated with the bot (60 games per size): the score multiplier that
+ * evens out the expected score of each magazine size against the
+ * default. A bigger magazine helps much more than a smaller one hurts,
+ * hence the two exponents: 10 -> x1.62, 20 -> x1.27, 80 -> x0.52,
+ * 200 -> x0.22. */
+static float mag_factor(int mag) {
+    float r = (float)DEFAULT_AMMO / (float)mag;
+    return powf(r, mag <= DEFAULT_AMMO ? 0.35f : 0.95f);
+}
+
+static int kill_points(const game *g, int kind) {
+    /* Rounded to tens so scores stay readable. */
+    return 10 * (int)lroundf((float)SPECS[kind].score * mag_factor(g->mag) / 10.0f);
 }
 
 static void enemy_damage(game *g, enemy *e, vector at) {
@@ -463,7 +516,7 @@ static void enemy_damage(game *g, enemy *e, vector at) {
     if (--e->hp > 0) return;
     e->dying = 1e-4f;
     g->kills++;
-    g->score += SPECS[e->kind].score * (g->wave > 0 ? g->wave : 1);
+    g->score += kill_points(g, e->kind);
     play_at(g, SFX_POP, at, 1.0f, 1.25f - 0.25f * SPECS[e->kind].r);
     burst(g, e->p, SPECS[e->kind].c1, 14 + 6 * e->kind, 7.0f);
 }
@@ -1105,12 +1158,23 @@ static void draw_hud(const game *g, uint32_t *px, int w, int h) {
     hud_text(t, w - 6 * sc - hud_text_width(buf, sc), 6 * sc, buf, sc, 0xFFFFE070u);
     snprintf(buf, sizeof buf, "KILLS %d", g->kills);
     hud_text(t, w - 6 * sc - hud_text_width(buf, sc), 16 * sc, buf, sc, 0xFFB0B8D0u);
+    float mf = mag_factor(g->mag);
+    if (fabsf(mf - 1.0f) > 0.005f) {   /* points per kill, from the magazine size */
+        snprintf(buf, sizeof buf, "X%.2f", mf);
+        hud_text(t, w - 6 * sc - hud_text_width(buf, sc), 26 * sc, buf, sc,
+                 mf > 1.0f ? 0xFF80F080u : 0xFFF09060u);
+    }
 
     if (g->banner_t > 0.0f) {
         hud_text_center(t, h / 3, g->banner, sc * 3, 0xFFFFFFFFu);
         if (g->game_over) {
-            snprintf(buf, sizeof buf, "SCORE %d - R RESTART - ESC MENU", g->score);
-            hud_text_center(t, h / 3 + 20 * sc, buf, sc, 0xFFFFE070u);
+            snprintf(buf, sizeof buf, "SCORE %d", g->score);
+            hud_text_center(t, h / 3 + 20 * sc, buf, sc * 2, 0xFFFFE070u);
+            if (g->hs_rank >= 0 && sinf(g->t * 6.0f) > -0.3f) {
+                snprintf(buf, sizeof buf, "NEW HIGH SCORE - #%d", g->hs_rank + 1);
+                hud_text_center(t, h / 3 + 34 * sc, buf, sc, 0xFF80F0FFu);
+            }
+            hud_text_center(t, h / 3 + 46 * sc, "R RESTART - ESC MENU", sc, 0xFFB0B8D0u);
         }
     }
 }
@@ -1144,13 +1208,14 @@ static void render_frame(game *g, rt_renderer *rnd, scene *s, scene_camera *cam,
  * pause and options. menu.c draws them and handles keys and the mouse;
  * what each item does is in on_menu_event further down. */
 
-typedef enum { SCREEN_PLAY, SCREEN_TITLE, SCREEN_PAUSE, SCREEN_OPTIONS } screen_id;
+typedef enum { SCREEN_PLAY, SCREEN_TITLE, SCREEN_PAUSE, SCREEN_OPTIONS, SCREEN_SCORES } screen_id;
 
 #define COUNT(a) ((int)(sizeof (a) / sizeof (a)[0]))
 
-enum { T_START, T_OPTIONS, T_QUIT };
+enum { T_START, T_SCORES, T_OPTIONS, T_QUIT };
 static menu_item title_items[] = {
     [T_START]   = {.kind = MENU_ACTION, .label = "START"},
+    [T_SCORES]  = {.kind = MENU_ACTION, .label = "HIGH SCORES"},
     [T_OPTIONS] = {.kind = MENU_ACTION, .label = "OPTIONS"},
     [T_QUIT]    = {.kind = MENU_ACTION, .label = "QUIT"},
 };
@@ -1217,7 +1282,7 @@ static void options_refresh(int gpu_active, int can_switch, int render_h, int in
         snprintf(option_items[O_RES].text, sizeof option_items[O_RES].text, "%dP", render_h);
     else
         snprintf(option_items[O_RES].text, sizeof option_items[O_RES].text, "NATIVE");
-    options_menu.footer = in_game ? "AMMO AND WAVE APPLY ON RESTART" : "ESC BACK";
+    options_menu.footer = in_game ? "START AMMO AND WAVE APPLY ON RESTART" : "ESC BACK";
 }
 
 /* MAGAZINE or START AMMO was stepped: keep --start-ammo consistent. A
@@ -1239,6 +1304,50 @@ static void menu_feedback(menu_event ev) {
     }
 }
 
+/* One table row: "#  SCORE  WAVE KILLS  ACC MAG  DATE". The wave column
+ * reads "5-14" for a game that started at wave 5. */
+static void score_row(char *buf, size_t n, int rank, const hs_entry *e) {
+    char wave[16], acc[8], date[8] = "-";
+    if (e->start_wave > 1) snprintf(wave, sizeof wave, "%d-%d", e->start_wave, e->wave);
+    else snprintf(wave, sizeof wave, "%d", e->wave);
+    snprintf(acc, sizeof acc, "%d%%", e->shots > 0 ? 100 * e->hits / e->shots : 0);
+    time_t when = (time_t)e->date;
+    struct tm *tm = e->date > 0 ? localtime(&when) : NULL;
+    if (tm) strftime(date, sizeof date, "%m/%d", tm);
+    snprintf(buf, n, "%2d %8d %5s %5d %4s %3d %5s", rank + 1, e->score, wave, e->kills,
+             acc, e->mag, date);
+}
+
+static void draw_scores(hud_target t, const hs_table *tab, int highlight, float time) {
+    int sc = t.h / 150;
+    if (sc < 1) sc = 1;
+    hud_tint(t, 0x060812u, 0.70f);
+    int row_h = 9 * sc;
+    int top = (t.h - 27 * sc - (HS_MAX + 1) * row_h - 12 * sc) / 2;
+    hud_text_center(t, top + 11 * sc, "HIGH SCORES", sc * 3, 0xFF78F5FFu);
+    char head[64], row[64];
+    snprintf(head, sizeof head, "%2s %8s %5s %5s %4s %3s %5s", "", "SCORE", "WAVE", "KILLS",
+             "ACC", "MAG", "DATE");
+    int x = (t.w - hud_text_width(head, sc)) / 2, y = top + 27 * sc;
+    hud_blend_rect(t, x - 4 * sc, y - 3 * sc, hud_text_width(head, sc) + 8 * sc,
+                   (HS_MAX + 1) * row_h + 4 * sc, 0x000000u, 0.55f);
+    hud_text(t, x, y, head, sc, 0xFF8890A8u);
+    if (tab->n == 0)
+        hud_text_center(t, y + 4 * row_h, "NO SCORES YET - GO PLAY", sc, 0xFFB0B8D0u);
+    for (int i = 0; i < tab->n; i++) {
+        score_row(row, sizeof row, i, &tab->e[i]);
+        uint32_t c = i == 0 ? 0xFFFFE070u : 0xFFB0B8D0u;
+        if (i == highlight) {
+            float pulse = 0.5f + 0.5f * sinf(time * 6.0f);
+            hud_blend_rect(t, x - 4 * sc, y + (i + 1) * row_h - sc, hud_text_width(head, sc) + 8 * sc,
+                           row_h, 0x78F5FFu, 0.12f + 0.10f * pulse);
+            c = 0xFFFFFFFFu;
+        }
+        hud_text(t, x, y + (i + 1) * row_h, row, sc, c);
+    }
+    hud_text_center(t, y + (HS_MAX + 1) * row_h + 8 * sc, "PRESS ANY KEY", sc, 0xFF8890A8u);
+}
+
 /* ------------------------------------------------------------- Headless */
 
 static int write_ppm(const char *path, const uint32_t *px, int w, int h) {
@@ -1253,9 +1362,10 @@ static int write_ppm(const char *path, const uint32_t *px, int w, int h) {
     return 0;
 }
 
-/* menu_name: NULL, or "title" / "pause" / "options" drawn over the frame. */
+/* menu_name: NULL, or "title" / "pause" / "options" / "scores" drawn over
+ * the frame ("scores" shows the --scores file, read-only). */
 static int run_shot(game *g, const char *path, float sim_seconds, int w, int h,
-                    const char *menu_name) {
+                    const char *menu_name, const char *scores_path) {
     rt_renderer *rnd = rt_renderer_create(RT_BACKEND_CPU);
     if (!rnd) { fprintf(stderr, "CPU renderer unavailable\n"); return 1; }
     scene *s = scene_create();
@@ -1276,7 +1386,11 @@ static int run_shot(game *g, const char *path, float sim_seconds, int w, int h,
     uint32_t *px = calloc((size_t)w * (size_t)h, sizeof *px);
     int title = menu_name && !strcmp(menu_name, "title");
     render_frame(g, rnd, s, cam, px, w, h, &fx, !menu_name);
-    if (menu_name) {
+    if (menu_name && !strcmp(menu_name, "scores")) {
+        hs_table tab;
+        if (!scores_path || hs_load(&tab, scores_path) != 0) hs_clear(&tab);
+        draw_scores((hud_target){px, w, h}, &tab, 0, 0.0f);
+    } else if (menu_name) {
         int bloom = fx.bloom_on, fullscreen = 0;
         option_items[O_BLOOM].value = &bloom;
         option_items[O_FULLSCREEN].value = &fullscreen;
@@ -1409,6 +1523,9 @@ typedef struct {
     float attract_over;         /* seconds since that match ended */
     float ui_t;
     int quit;
+    hs_table scores;
+    char scores_path[1024];     /* "" = don't save */
+    int last_rank;              /* highlighted on the HIGH SCORES screen */
 } app;
 
 static void app_capture_mouse(app *a, int on) {
@@ -1451,7 +1568,21 @@ static void app_toggle_backend(app *a) {
 
 /* ------------------------------------------------------------ Screens */
 
+/* A game you played is over (died, restarted, left or quit): put it on
+ * the table if it made it. Bot games never count. Runs once per game. */
+static void finish_game(app *a, game *g) {
+    if (a->attract || a->bot || g->hs_rank != HS_UNRECORDED) return;
+    hs_entry e = {g->score, g->wave, g->kills, g->shots, g->hits, g->mag,
+                  g->start_wave, g->start_ammo, (long long)time(NULL)};
+    g->hs_rank = hs_insert(&a->scores, &e);
+    if (g->hs_rank < 0) return;
+    a->last_rank = g->hs_rank;
+    if (a->scores_path[0] && hs_save(&a->scores, a->scores_path) != 0)
+        fprintf(stderr, "Could not save high scores to %s\n", a->scores_path);
+}
+
 static void start_game(app *a, game *g) {
+    finish_game(a, g);
     game_reset(g);
     a->attract = 0;
     game_volume = 1.0f;
@@ -1461,6 +1592,7 @@ static void start_game(app *a, game *g) {
 }
 
 static void enter_title(app *a, game *g) {
+    finish_game(a, g);
     game_reset(g);
     a->attract = 1;
     a->attract_over = 0.0f;
@@ -1504,6 +1636,7 @@ static void on_menu_event(app *a, game *g, menu_event ev) {
         if (ev.kind == MENU_BACK) title_menu.sel = T_QUIT;   /* ESC again + Enter quits */
         if (ev.kind != MENU_ACTIVATE) break;
         if (ev.item == T_START) start_game(a, g);
+        else if (ev.item == T_SCORES) a->screen = SCREEN_SCORES;
         else if (ev.item == T_OPTIONS) open_options(a);
         else a->quit = 1;
         break;
@@ -1525,7 +1658,12 @@ static void on_menu_event(app *a, game *g, menu_event ev) {
         }
         if (ev.kind != MENU_CHANGED) break;
         switch (ev.item) {
-        case O_MAG: case O_START: options_ammo_changed(ev.item); break;
+        case O_MAG:
+            options_ammo_changed(ev.item);
+            /* In a game it applies now; the kill multiplier follows. */
+            if (a->options_from == SCREEN_PAUSE) game_set_magazine(g, cfg_mag);
+            break;
+        case O_START: options_ammo_changed(ev.item); break;
         case O_REFLECT:    no_reflections = !opt_reflect; break;
         case O_RENDERER:   app_toggle_backend(a); break;
         case O_RES:        app_step_res(a, ev.dir, 0); break;
@@ -1589,7 +1727,7 @@ static void play_input(app *a, game *g, const SDL_Event *e, input *in) {
     } else if (e->type == SDL_KEYDOWN && !e->key.repeat) {
         switch (e->key.keysym.sym) {
         case SDLK_ESCAPE: case SDLK_p: pause_game(a); break;
-        case SDLK_r: game_reset(g); break;
+        case SDLK_r: start_game(a, g); break;
         case SDLK_b: a->fx.bloom_on = !a->fx.bloom_on; break;
         case SDLK_m: app_capture_mouse(a, !a->mouse_captured); break;
         case SDLK_TAB: app_toggle_backend(a); break;
@@ -1638,7 +1776,9 @@ static void usage(const char *argv0) {
     printf("  --seed N           RNG seed\n");
     printf("  --shot out.ppm     Headless: bot plays --sim seconds, render one frame\n");
     printf("  --sim N            With --shot: seconds to simulate (default 6)\n");
-    printf("  --shot-menu NAME   With --shot: draw the title, pause or options menu\n");
+    printf("  --shot-menu NAME   With --shot: draw the title, pause, options or scores screen\n");
+    printf("  --scores FILE      High-score file (default: scores.txt in the per-user\n"
+           "                     data folder SDL picks for this system)\n");
     printf("  --res WxH          With --shot: output resolution (default 960x600)\n");
     printf("  --bench N          Headless: bot plays --sim seconds, then time N CPU\n"
            "                     renders per variant (features toggled off one by one)\n");
@@ -1651,7 +1791,7 @@ static void usage(const char *argv0) {
 
 int main(int argc, char *argv[]) {
     rt_backend preferred = RT_BACKEND_OPENGL;   /* falls back to CPU */
-    const char *shot_path = NULL, *dump_dir = NULL, *shot_menu = NULL;
+    const char *shot_path = NULL, *dump_dir = NULL, *shot_menu = NULL, *scores_path = NULL;
     int shot_w = INIT_WINDOW_W, shot_h = INIT_WINDOW_H, bot = 0, start_fullscreen = 0;
     float sim_seconds = 6.0f;
     int bench_frames = 0;
@@ -1673,11 +1813,13 @@ int main(int argc, char *argv[]) {
         else if (!strcmp(argv[i], "--shot") && i + 1 < argc) shot_path = argv[++i];
         else if (!strcmp(argv[i], "--shot-menu") && i + 1 < argc) {
             shot_menu = argv[++i];
-            if (strcmp(shot_menu, "title") && strcmp(shot_menu, "pause") && strcmp(shot_menu, "options")) {
-                fprintf(stderr, "--shot-menu must be title, pause or options\n");
+            if (strcmp(shot_menu, "title") && strcmp(shot_menu, "pause") &&
+                strcmp(shot_menu, "options") && strcmp(shot_menu, "scores")) {
+                fprintf(stderr, "--shot-menu must be title, pause, options or scores\n");
                 return 1;
             }
         }
+        else if (!strcmp(argv[i], "--scores") && i + 1 < argc) scores_path = argv[++i];
         else if (!strcmp(argv[i], "--sim") && i + 1 < argc) sim_seconds = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--dump-sfx") && i + 1 < argc) dump_dir = argv[++i];
         else if (!strcmp(argv[i], "--bench") && i + 1 < argc) bench_frames = atoi(argv[++i]);
@@ -1721,7 +1863,7 @@ int main(int argc, char *argv[]) {
     }
     if (shot_path) {
         sfx_init(0);
-        int rc = run_shot(&g, shot_path, sim_seconds, shot_w, shot_h, shot_menu);
+        int rc = run_shot(&g, shot_path, sim_seconds, shot_w, shot_h, shot_menu, scores_path);
         sfx_shutdown();
         return rc;
     }
@@ -1737,6 +1879,16 @@ int main(int argc, char *argv[]) {
     a.window_h = INIT_WINDOW_H;
     a.fullscreen = start_fullscreen;
     a.bot = bot;
+    a.last_rank = -1;
+    if (scores_path) {
+        snprintf(a.scores_path, sizeof a.scores_path, "%s", scores_path);
+    } else {
+        char *dir = SDL_GetPrefPath("ricochet", "ricochet");   /* per-user data folder */
+        if (dir) snprintf(a.scores_path, sizeof a.scores_path, "%sscores.txt", dir);
+        SDL_free(dir);
+    }
+    if (a.scores_path[0] && hs_load(&a.scores, a.scores_path) != 0)
+        fprintf(stderr, "Ignoring unreadable high scores in %s\n", a.scores_path);
     SDL_GLContext gl_ctx = NULL;
     static const int GL_VERSIONS[][2] = {{4, 3}, {4, 1}, {3, 3}};
     for (int v = 0; v < 3 && !gl_ctx; v++) {
@@ -1823,6 +1975,13 @@ int main(int argc, char *argv[]) {
                 app_set_fullscreen(&a, !a.fullscreen);
                 continue;
             }
+            if (a.screen == SCREEN_SCORES) {   /* any key or click goes back */
+                if ((e.type == SDL_KEYDOWN && !e.key.repeat) || e.type == SDL_MOUSEBUTTONDOWN) {
+                    menu_feedback((menu_event){MENU_BACK, -1, 0});
+                    a.screen = SCREEN_TITLE;
+                }
+                continue;
+            }
             menu *m = current_menu(&a);   /* may change between events */
             if (m) menu_input(&a, &g, m, &e);
             else play_input(&a, &g, &e, &in);
@@ -1834,6 +1993,7 @@ int main(int argc, char *argv[]) {
         if (a.screen == SCREEN_PLAY) {
             play_controls(&a, &g, &in, dt);
             game_update(&g, &in, dt);
+            if (g.game_over) finish_game(&a, &g);   /* once; shows the rank */
         } else if (a.attract) {
             bot_input(&g, &in, dt);
             game_update(&g, &in, dt);
@@ -1851,6 +2011,7 @@ int main(int argc, char *argv[]) {
         render_ms += SDL_GetTicks() - r0;
         menu *m = current_menu(&a);
         if (m) menu_draw(m, t, a.ui_t);
+        if (a.screen == SCREEN_SCORES) draw_scores(t, &a.scores, a.last_rank, a.ui_t);
         if (a.res_toast > 0.0f) {
             a.res_toast -= dt;
             if (!m) {
@@ -1877,6 +2038,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    finish_game(&a, &g);   /* quitting mid-game still records it */
     glDeleteFramebuffers(1, &a.fbo);
     glDeleteTextures(1, &a.tex);
     if (a.cpu) rt_renderer_destroy(a.cpu);

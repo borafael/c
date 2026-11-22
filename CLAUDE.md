@@ -104,6 +104,11 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   Title / pause / options menus: menu.c is a generic
 │   │                     #   list widget (keys + mouse, value items); the screens
 │   │                     #   and what each item does live in main.c.
+│   │                     #   Scoring: kill = enemy value x magazine factor
+│   │                     #   (bot-calibrated, mag_factor in main.c; no wave
+│   │                     #   multiplier). Top-10 local table (highscore.c, CHECK
+│   │                     #   tests) in SDL_GetPrefPath/scores.txt (--scores FILE);
+│   │                     #   bot / title-screen games never record.
 │   └── outpost/          # Top-down jeep roaming an island military base.
 │                         #   ASCII tile map (soil / shallow / deep water,
 │                         #   walls, turrets, hangars, tents, ...) greedily
@@ -168,7 +173,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 ./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
 ./apps/barrier/barrier                   # Game prototype
 ./apps/racer/racer                       # Anti-grav racer prototype (A/D strafe, W/S boost/brake)
-./apps/ricochet/ricochet                 # Sphere FPS: title menu (START / OPTIONS / QUIT), ESC or P pauses (WASD + mouse, hold LMB/SPACE to fire, walk over spheres to recollect, R restart, V cycle render resolution, TAB CPU/GPU; GPU by default when available; --cpu, --bot (skips the title), --fullscreen, --no-reflections, --ammo N magazine size (default 40), --start-ammo N rounds in hand at start, rest scattered on the floor, --wave N starting wave)
+./apps/ricochet/ricochet                 # Sphere FPS: title menu (START / HIGH SCORES / OPTIONS / QUIT), ESC or P pauses (WASD + mouse, hold LMB/SPACE to fire, walk over spheres to recollect, R restart, V cycle render resolution, TAB CPU/GPU; GPU by default when available; --cpu, --bot (skips the title), --fullscreen, --no-reflections, --ammo N magazine size (default 40), --start-ammo N rounds in hand at start, rest scattered on the floor, --wave N starting wave)
 ./apps/outpost/outpost                   # Top-down jeep on an island base (WASD/arrows, SPACE handbrake, -/= zoom, M minimap)
 ./apps/kmeans/kmeans                     # K-means in 3D (SPACE pause, N step, R new data, D data mode, J/K clusters, I init, L links; --shot out.ppm headless)
 ./apps/lowspec/lowspec --threads 1       # Headless CPU-raytrace bench (no SDL); --res, --interlace, --out
