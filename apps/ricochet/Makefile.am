@@ -1,6 +1,14 @@
 bin_PROGRAMS = ricochet
-ricochet_SOURCES = main.c sfx.c sfx.h hud.c hud.h menu.c menu.h \
-                   highscore.c highscore.h
+ricochet_SOURCES = main.c \
+                   app.c app.h \
+                   game.c game.h \
+                   bot.c bot.h \
+                   render.c render.h \
+                   ui.c ui.h \
+                   headless.c headless.h \
+                   menu.c menu.h hud.c hud.h \
+                   highscore.c highscore.h \
+                   sfx.c sfx.h
 
 ricochet_CPPFLAGS = -I$(top_srcdir)/libs/math \
                     -I$(top_srcdir)/libs/scene \

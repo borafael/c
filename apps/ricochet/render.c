@@ -1,0 +1,333 @@
+#include "render.h"
+#include "hud.h"
+
+#include <math.h>
+#include <stdio.h>
+
+#define FOV ((float)M_PI / 2.6f)
+
+render_options render_opts;
+
+static scene_color lerp_color(scene_color a, scene_color b, float t) {
+    return (scene_color){(uint8_t)(a.r + (b.r - a.r) * t),
+                         (uint8_t)(a.g + (b.g - a.g) * t),
+                         (uint8_t)(a.b + (b.b - a.b) * t)};
+}
+
+static int unlit_mat(scene *s, scene_color c) {
+    scene_material m = scene_material_default();
+    m.albedo = c;
+    m.unlit = 1;
+    return scene_add_material(s, m);
+}
+
+/* Box in the gun frame, optionally tilted about the gun's x axis. */
+static void gun_box(scene *s, const gun_frame *gf, float cx, float cy, float cz,
+                    float hx, float hy, float hz, float tilt, int m) {
+    float c = cosf(tilt), sn = sinf(tilt);
+    vector y = vector_add(vector_scale(gf->y, c), vector_scale(gf->z, sn));
+    vector z = vector_sub(vector_scale(gf->z, c), vector_scale(gf->y, sn));
+    scene_add_box(s, (scene_box){.center = gun_local(gf, cx, cy, cz),
+                                 .half_extents = {hx, hy, hz},
+                                 .ux = gf->x, .uy = y, .uz = z, .material = m});
+}
+
+static void gun_cyl(scene *s, const gun_frame *gf, float cx, float cy, float cz,
+                    vector axis, float r, float hh, int m) {
+    scene_add_cylinder(s, (scene_cylinder){.center = gun_local(gf, cx, cy, cz), .axis = axis,
+                                           .radius = r, .half_height = hh, .material = m});
+}
+
+static void gun_ring(scene *s, const gun_frame *gf, float cx, float cy, float cz,
+                     vector axis, float R, float r, int m) {
+    scene_add_torus(s, (scene_torus){.center = gun_local(gf, cx, cy, cz), .axis = axis,
+                                     .major_radius = R, .minor_radius = r, .material = m});
+}
+
+/* Futuristic sphere rifle: white receiver plates over dark gunmetal, a
+ * vented barrel shroud whose cooling rings glow from cold blue to orange
+ * as the barrel heats up, a side drum magazine with an ammo gauge, an
+ * ammo strip along the receiver, holo sight, grip, stock and a muzzle
+ * flash on every shot. */
+static void build_viewmodel(scene *s, const game *g, const scene_camera *cam) {
+    gun_frame gf = gun_frame_make(g, cam->origin, cam->forward, cam->right, cam->up);
+    float load = (float)g->ammo / g->mag;
+    float heat = g->pl.heat;
+
+    scene_material plate = scene_material_default();
+    plate.albedo = (scene_color){188, 194, 206};
+    plate.reflectivity = 0.20f;
+    int m_plate = scene_add_material(s, plate);
+    scene_material metal = scene_material_default();
+    metal.albedo = (scene_color){52, 56, 68};
+    metal.reflectivity = 0.40f;
+    int m_metal = scene_add_material(s, metal);
+    scene_material dark = scene_material_default();
+    dark.albedo = (scene_color){26, 28, 34};
+    dark.reflectivity = 0.08f;
+    int m_dark = scene_add_material(s, dark);
+
+    scene_color ammo_c = load > 0.30f ? (scene_color){120, 245, 255}
+                       : load > 0.12f ? (scene_color){255, 190, 60}
+                                      : (scene_color){255, 70, 60};
+    int m_ammo = unlit_mat(s, ammo_c);
+    int m_ammo_dim = unlit_mat(s, lerp_color((scene_color){20, 26, 34}, ammo_c, 0.25f));
+    scene_color heat_c = heat < 0.7f
+        ? lerp_color((scene_color){40, 80, 120}, (scene_color){255, 140, 50}, heat / 0.7f)
+        : lerp_color((scene_color){255, 140, 50}, (scene_color){255, 240, 200}, (heat - 0.7f) / 0.3f);
+    int m_heat = unlit_mat(s, heat_c);
+
+    vector X = gf.x, Z = gf.z;
+
+    /* Receiver + top cover + rail. */
+    gun_box(s, &gf, 0.0f,  0.000f,  0.02f, 0.042f, 0.046f, 0.150f, 0.0f, m_plate);
+    gun_box(s, &gf, 0.0f, -0.040f,  0.02f, 0.044f, 0.012f, 0.140f, 0.0f, m_metal);
+    gun_box(s, &gf, 0.0f,  0.054f,  0.00f, 0.024f, 0.009f, 0.125f, 0.0f, m_metal);
+    for (int i = 0; i < 5; i++)
+        gun_box(s, &gf, 0.0f, 0.066f, -0.08f + 0.04f * (float)i, 0.022f, 0.004f, 0.008f, 0.0f, m_dark);
+
+    /* Ammo strip on both sides: dim track, bright fill proportional to load. */
+    for (int side = -1; side <= 1; side += 2) {
+        float xs = side * 0.0425f;
+        gun_box(s, &gf, xs, 0.012f, 0.03f, 0.002f, 0.007f, 0.110f, 0.0f, m_ammo_dim);
+        if (load > 0.0f) {
+            float len = 0.110f * load;
+            gun_box(s, &gf, side * 0.0440f, 0.012f, -0.08f + len, 0.002f, 0.0075f, len, 0.0f, m_ammo);
+        }
+    }
+
+    /* Holo sight: post + floating reticle ring. */
+    gun_box(s, &gf, 0.0f, 0.072f, -0.035f, 0.011f, 0.010f, 0.026f, 0.0f, m_metal);
+    gun_ring(s, &gf, 0.0f, 0.100f, -0.035f, Z, 0.020f, 0.0040f, m_ammo);
+
+    /* Shroud with glowing cooling rings, barrel, muzzle brake. */
+    gun_cyl(s, &gf, 0.0f, GUN_MUZZLE_Y, 0.26f, Z, 0.027f, 0.090f, m_metal);
+    for (int i = 0; i < 3; i++)
+        gun_ring(s, &gf, 0.0f, GUN_MUZZLE_Y, 0.200f + 0.042f * (float)i, Z, 0.031f, 0.0085f, m_heat);
+    gun_box(s, &gf, 0.0f, -0.030f, 0.24f, 0.022f, 0.014f, 0.070f, 0.0f, m_dark);  /* handguard */
+    gun_cyl(s, &gf, 0.0f, GUN_MUZZLE_Y, 0.375f, Z, 0.012f, 0.035f, m_dark);
+    gun_box(s, &gf, 0.0f, GUN_MUZZLE_Y, 0.402f, 0.019f, 0.011f, 0.014f, 0.0f, m_metal);
+    gun_ring(s, &gf, 0.0f, GUN_MUZZLE_Y, GUN_MUZZLE_Z, Z, 0.015f, 0.0040f, m_ammo);
+
+    /* Side drum magazine with a radial ammo gauge on each face. */
+    gun_cyl(s, &gf, 0.0f, -0.078f, 0.06f, X, 0.052f, 0.030f, m_metal);
+    for (int side = -1; side <= 1; side += 2) {
+        vector n = vector_scale(X, (float)side);
+        scene_add_disc(s, (scene_disc){.center = gun_local(&gf, side * 0.0305f, -0.078f, 0.06f),
+                                       .normal = n, .radius = 0.040f, .material = m_ammo_dim});
+        if (load > 0.0f)
+            scene_add_disc(s, (scene_disc){.center = gun_local(&gf, side * 0.0312f, -0.078f, 0.06f),
+                                           .normal = n, .radius = 0.040f * sqrtf(load),
+                                           .material = m_ammo});
+        gun_ring(s, &gf, side * 0.031f, -0.078f, 0.06f, X, 0.046f, 0.0045f, m_plate);
+    }
+
+    /* Pistol grip (raked back), trigger guard, stock + butt pad. */
+    gun_box(s, &gf, 0.0f, -0.085f, -0.080f, 0.019f, 0.050f, 0.023f, 0.30f, m_dark);
+    gun_ring(s, &gf, 0.0f, -0.058f, -0.030f, X, 0.019f, 0.0035f, m_metal);
+    gun_box(s, &gf, 0.0f, -0.008f, -0.205f, 0.027f, 0.036f, 0.070f, 0.0f, m_plate);
+    gun_box(s, &gf, 0.0f, -0.008f, -0.282f, 0.029f, 0.042f, 0.008f, 0.0f, m_dark);
+
+    /* Muzzle flash for the first few frames after each shot. */
+    if (g->pl.recoil > 0.55f) {
+        float k = (g->pl.recoil - 0.55f) / 0.45f;
+        int m_flash = unlit_mat(s, (scene_color){220, 255, 255});
+        scene_add_sphere(s, (scene_sphere){.center = gun_local(&gf, 0.0f, GUN_MUZZLE_Y, GUN_MUZZLE_Z + 0.03f),
+                                           .radius = 0.012f + 0.030f * k, .material = m_flash});
+    }
+}
+
+static void build_scene(scene *s, const game *g, const scene_camera *cam) {
+    scene_clear(s);
+    scene_set_background(s, (scene_color){34, 40, 66}, -1);
+    scene_set_ambient(s, 0.32f);
+    scene_add_light(s, (scene_light){.direction = {0.45f, 0.85f, 0.30f}, .intensity = 0.80f});
+    scene_add_light(s, (scene_light){.direction = {-0.5f, 0.35f, -0.6f}, .intensity = 0.25f});
+
+    scene_material floor = scene_material_default();
+    floor.albedo = (scene_color){70, 74, 92};
+    floor.albedo2 = (scene_color){48, 51, 66};
+    floor.tex_kind = SCENE_TEX_CHECKER;
+    floor.tex_scale = 2.0f;
+    floor.reflectivity = 0.22f;
+    scene_add_plane(s, (scene_plane){.normal = {0, 1, 0}, .point = {0, 0, 0},
+                                     .material = scene_add_material(s, floor)});
+
+    scene_material wall = scene_material_default();
+    wall.albedo = (scene_color){96, 100, 124};
+    wall.albedo2 = (scene_color){70, 72, 92};
+    wall.tex_kind = SCENE_TEX_NOISE;
+    wall.tex_scale = 0.7f;
+    int m_wall = scene_add_material(s, wall);
+    int m_trim = unlit_mat(s, (scene_color){70, 200, 255});
+    float H = ARENA_HALF, T = WALL_T;
+    vector wmin[4] = {{-H - T, 0, -H - T}, {-H - T, 0, H}, {-H - T, 0, -H}, {H, 0, -H}};
+    vector wmax[4] = {{H + T, WALL_H, -H}, {H + T, WALL_H, H + T}, {-H, WALL_H, H}, {H + T, WALL_H, H}};
+    for (int i = 0; i < 4; i++) {
+        scene_add_box(s, scene_box_aabb(wmin[i], wmax[i], m_wall));
+        vector tmin = wmin[i], tmax = wmax[i];
+        tmin.y = WALL_H; tmax.y = WALL_H + 0.08f;
+        scene_add_box(s, scene_box_aabb(tmin, tmax, m_trim));
+    }
+
+    scene_material pil = scene_material_default();
+    pil.albedo = (scene_color){200, 196, 186};
+    pil.albedo2 = (scene_color){120, 116, 110};
+    pil.tex_kind = SCENE_TEX_MARBLE;
+    pil.tex_scale = 0.6f;
+    pil.reflectivity = 0.30f;
+    int m_pil = scene_add_material(s, pil);
+    for (int i = 0; i < N_PILLARS; i++) {
+        scene_add_cylinder(s, (scene_cylinder){
+            .center = {PILLARS[i].x, PILLAR_H * 0.5f, PILLARS[i].z},
+            .axis = {0, 1, 0}, .radius = PILLARS[i].r,
+            .half_height = PILLAR_H * 0.5f, .material = m_pil});
+        scene_add_torus(s, (scene_torus){
+            .center = {PILLARS[i].x, 0.12f, PILLARS[i].z}, .axis = {0, 1, 0},
+            .major_radius = PILLARS[i].r + 0.02f, .minor_radius = 0.12f, .material = m_trim});
+    }
+
+    /* Enemies. */
+    int m_sclera = scene_add_material(s, scene_material_default());
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        const enemy *e = &g->en[i];
+        if (!e->alive || e->spawn_t < 0.0f) continue;
+        const en_spec *sp = &SPECS[e->kind];
+        float r = enemy_radius(e);
+        float white = e->dying > 0.0f ? 0.4f + 0.6f * (e->dying / DIE_TIME) : e->flash;
+        scene_material m = scene_material_default();
+        m.albedo = lerp_color(sp->c1, (scene_color){255, 255, 255}, white);
+        m.albedo2 = lerp_color(sp->c2, (scene_color){255, 255, 255}, white);
+        m.tex_kind = SCENE_TEX_SPOTS;
+        m.tex_scale = r * 0.55f;
+        m.reflectivity = 0.18f;
+        m.unlit = white > 0.6f;
+        scene_add_sphere(s, (scene_sphere){.center = e->p, .radius = r,
+                                           .material = scene_add_material(s, m)});
+        if (e->dying > 0.0f) continue;
+        vector f = vector_normalize((vector){e->face.x, 0.15f, e->face.z});
+        scene_add_sphere(s, (scene_sphere){.center = vector_add(e->p, vector_scale(f, r * 0.80f)),
+                                           .radius = r * 0.30f, .material = m_sclera});
+        float glow = 0.6f + 0.4f * sinf(g->t * 6.0f + (float)i);
+        int m_pupil = unlit_mat(s, (scene_color){255, (uint8_t)(40 + 60 * glow), 30});
+        scene_add_sphere(s, (scene_sphere){.center = vector_add(e->p, vector_scale(f, r * 1.0f)),
+                                           .radius = r * 0.14f, .material = m_pupil});
+    }
+
+    /* Balls: hot cyan in flight, pulsing at rest so they're easy to find. */
+    int m_ball = unlit_mat(s, (scene_color){120, 245, 255});
+    for (int i = 0; i < g->mag; i++) {
+        physics_body b = ball_get(g, i);
+        if (!b.enabled) continue;
+        int m = m_ball;
+        if (b.sleeping) {
+            float pulse = 0.5f + 0.5f * sinf(g->t * 5.0f + (float)i);
+            m = unlit_mat(s, lerp_color((scene_color){60, 160, 200}, (scene_color){200, 255, 255}, pulse));
+        }
+        scene_add_sphere(s, (scene_sphere){.center = b.position, .radius = BALL_R, .material = m});
+    }
+
+    for (int i = 0; i < MAX_PARTS && !render_opts.no_parts; i++) {
+        const particle *p = &g->parts[i];
+        if (!p->alive) continue;
+        float k = p->life / p->max_life;
+        scene_add_sphere(s, (scene_sphere){.center = p->p, .radius = p->r * (0.4f + 0.6f * k),
+                                           .material = unlit_mat(s, p->c)});
+    }
+
+    if (!g->game_over && !render_opts.no_gun) build_viewmodel(s, g, cam);
+    if (render_opts.no_reflections)
+        for (int i = 0; i < s->material_count; i++) s->materials[i].reflectivity = 0.0f;
+}
+
+void draw_hud(const game *g, uint32_t *px, int w, int h) {
+    hud_target t = {px, w, h};
+    int sc = h / 150;
+    if (sc < 1) sc = 1;
+    char buf[64];
+
+    if (g->pl.hurt_flash > 0) hud_tint(t, 0xFF2020u, g->pl.hurt_flash * 0.45f);
+
+    /* Crosshair. */
+    int cx = w / 2, cy = h / 2, gap = 2 * sc, len = 4 * sc;
+    uint32_t xc = g->ammo > 0 ? 0xFFFFFFFFu : 0xFFFF5050u;
+    for (int pass = 0; pass < 2; pass++) {
+        uint32_t c = pass ? xc : 0xFF000000u;
+        int o = pass ? 0 : 1;
+        hud_rect(t, cx - gap - len - o, cy - o, len + 2 * o, 1 + 2 * o, c);
+        hud_rect(t, cx + gap + 1 - o, cy - o, len + 2 * o, 1 + 2 * o, c);
+        hud_rect(t, cx - o, cy - gap - len - o, 1 + 2 * o, len + 2 * o, c);
+        hud_rect(t, cx - o, cy + gap + 1 - o, 1 + 2 * o, len + 2 * o, c);
+    }
+
+    /* Ammo: count + magazine bar (bright = in hand, dim = out in the world). */
+    {
+        int aw = 60 * sc, ah = 4 * sc, ax = w - 6 * sc - aw, ay = h - 6 * sc - ah;
+        snprintf(buf, sizeof buf, "%d/%d", g->ammo, g->mag);
+        float ld = (float)g->ammo / g->mag;
+        uint32_t ac = ld > 0.30f ? 0xFF78F5FFu : (ld > 0.12f ? 0xFFFFBE3Cu : 0xFFFF4A3Cu);
+        hud_text(t, w - 6 * sc - hud_text_width(buf, sc * 2), ay - 17 * sc, buf, sc * 2, ac);
+        hud_rect(t, ax - 1, ay - 1, aw + 2, ah + 2, 0xFF000000u);
+        hud_rect(t, ax, ay, aw, ah, 0xFF203040u);
+        hud_rect(t, ax, ay, aw * g->ammo / g->mag, ah, ac);
+    }
+    if (g->ammo == 0 && !g->game_over) {
+        float blink = 0.5f + 0.5f * sinf(g->t * 8.0f);
+        if (blink > 0.3f)
+            hud_text_center(t, cy + 14 * sc, "OUT OF SPHERES - GO COLLECT THEM", sc, 0xFFFF7060u);
+    }
+
+    /* Health bar. */
+    int bw = 60 * sc, bh = 4 * sc, bx = 6 * sc, by = h - 6 * sc - bh;
+    hud_text(t, bx, by - 9 * sc, "HP", sc, 0xFFFFFFFFu);
+    hud_rect(t, bx - 1, by - 1, bw + 2, bh + 2, 0xFF000000u);
+    float hpk = g->pl.hp / PLAYER_HP;
+    uint32_t hc = hpk > 0.5f ? 0xFF60E070u : (hpk > 0.25f ? 0xFFF0C040u : 0xFFF04040u);
+    hud_rect(t, bx, by, (int)(bw * hpk), bh, hc);
+
+    snprintf(buf, sizeof buf, "WAVE %d", g->wave);
+    hud_text(t, 6 * sc, 6 * sc, buf, sc, 0xFFFFFFFFu);
+    snprintf(buf, sizeof buf, "LEFT %d", enemies_left(g));
+    hud_text(t, 6 * sc, 16 * sc, buf, sc, 0xFFB0B8D0u);
+    snprintf(buf, sizeof buf, "SCORE %d", g->score);
+    hud_text(t, w - 6 * sc - hud_text_width(buf, sc), 6 * sc, buf, sc, 0xFFFFE070u);
+    snprintf(buf, sizeof buf, "KILLS %d", g->kills);
+    hud_text(t, w - 6 * sc - hud_text_width(buf, sc), 16 * sc, buf, sc, 0xFFB0B8D0u);
+    float mf = mag_factor(g->mag);
+    if (fabsf(mf - 1.0f) > 0.005f) {   /* points per kill, from the magazine size */
+        snprintf(buf, sizeof buf, "X%.2f", mf);
+        hud_text(t, w - 6 * sc - hud_text_width(buf, sc), 26 * sc, buf, sc,
+                 mf > 1.0f ? 0xFF80F080u : 0xFFF09060u);
+    }
+
+    if (g->banner_t > 0.0f) {
+        hud_text_center(t, h / 3, g->banner, sc * 3, 0xFFFFFFFFu);
+        if (g->game_over) {
+            snprintf(buf, sizeof buf, "SCORE %d", g->score);
+            hud_text_center(t, h / 3 + 20 * sc, buf, sc * 2, 0xFFFFE070u);
+            if (g->hs_rank >= 0 && sinf(g->t * 6.0f) > -0.3f) {
+                snprintf(buf, sizeof buf, "NEW HIGH SCORE - #%d", g->hs_rank + 1);
+                hud_text_center(t, h / 3 + 34 * sc, buf, sc, 0xFF80F0FFu);
+            }
+            hud_text_center(t, h / 3 + 46 * sc, "R RESTART - ESC MENU", sc, 0xFFB0B8D0u);
+        }
+    }
+}
+
+void render_frame(game *g, rt_renderer *rnd, scene *s, scene_camera *cam,
+                  uint32_t *px, int w, int h, fx_state *fx, int hud) {
+    vector eye = eye_pos(g);
+    scene_camera_place(cam, eye, cam_forward(g->pl.yaw, g->pl.pitch));
+    g->ear = eye;
+    g->ear_right = cam->right;
+    build_scene(s, g, cam);
+    rt_viewport vp = {w, h, FOV};
+    rt_renderer_render(rnd, s, cam, &vp, px, NULL);
+    if (fx->bloom_on && fx->bloom) {
+        postfx_bloom cfg = {1, 0.72f, 0.2f, 0.55f, 4, 2};
+        postfx_bloom_apply(fx->bloom, px, w, h, &cfg);
+    }
+    postfx_vignette vig = {1, 0.35f, 0.55f};
+    postfx_vignette_apply(px, w, h, &vig);
+    if (hud) draw_hud(g, px, w, h);
+}

@@ -101,11 +101,14 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   --bench N times CPU renders with features off.
 │   │                     #   Starts on the OpenGL backend when GL 4.3 is
 │   │                     #   available (Linux/Windows), else CPU; --cpu forces CPU.
-│   │                     #   Title / pause / options menus: menu.c is a generic
-│   │                     #   list widget (keys + mouse, value items); the screens
-│   │                     #   and what each item does live in main.c.
+│   │                     #   Files: main.c (flags) -> app.c (window, screens,
+│   │                     #   input, loop) or headless.c (--shot / --bench);
+│   │                     #   game.c (rules, waves, ammo in a physics_world,
+│   │                     #   scoring), bot.c, render.c (scene + HUD), ui.c (menu
+│   │                     #   contents, options, score screen), menu.c (generic
+│   │                     #   list widget), highscore.c.
 │   │                     #   Scoring: kill = enemy value x magazine factor
-│   │                     #   (bot-calibrated, mag_factor in main.c; no wave
+│   │                     #   (bot-calibrated, mag_factor in game.c; no wave
 │   │                     #   multiplier). Top-10 local table (highscore.c, CHECK
 │   │                     #   tests) in SDL_GetPrefPath/scores.txt (--scores FILE);
 │   │                     #   bot / title-screen games never record.
@@ -205,7 +208,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
     - **Toon + edges** is the cel-shading recipe: run toon to band the lighting, then edges to outline the silhouettes.
 - **ECS-ish entity model**: Used in `barrier/` for entities with position/animation/behavior.
 - **Thread pool**: CPU raytrace backend parallelizes chunk rendering via `libs/thread/thread_pool`.
-- **Physics world**: `libs/physics` is one API for every app — a pool of sphere bodies (DYNAMIC: moved by the world; KINEMATIC: moved by the app, collided against) with features switched on in `physics_config` (all off by default except nbody's mutual gravity). Game rules never live in the library: collisions are resolved there and reported through `on_contact`, and the app turns them into sounds, damage and knockback (see `on_contact` in `apps/ricochet/main.c`). Bodies are processed in ID order and only mutual gravity is threaded, so worlds without it are deterministic; apps can disable bodies to keep fixed IDs (ricochet: enemy i = body i, ball k = body MAX_ENEMIES + k).
+- **Physics world**: `libs/physics` is one API for every app — a pool of sphere bodies (DYNAMIC: moved by the world; KINEMATIC: moved by the app, collided against) with features switched on in `physics_config` (all off by default except nbody's mutual gravity). Game rules never live in the library: collisions are resolved there and reported through `on_contact`, and the app turns them into sounds, damage and knockback (see `on_contact` in `apps/ricochet/game.c`). Bodies are processed in ID order and only mutual gravity is threaded, so worlds without it are deterministic; apps can disable bodies to keep fixed IDs (ricochet: enemy i = body i, ball k = body MAX_ENEMIES + k).
 - **Modular Autotools**: Each library has its own `Makefile.am`; root `Makefile.am` enforces build order (libs before apps).
 
 ## Possible Improvements
