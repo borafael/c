@@ -1,0 +1,31 @@
+# Gauntlet: a long hall with one straight lane down the middle and wall
+# stubs making bays on both sides. Enemies come from both ends; you can't
+# watch both at once.
+#
+#   #  wall (wall_height)   =  crate (crate_height)   O  pillar
+#   P  player start         E  enemy spawn            .  floor
+# One character is `tile` metres; the '#' border is the outer wall.
+
+name          Gauntlet
+tile          2
+wall_height   3.0
+crate_height  1.0
+pillar_height 6
+
+map
+####################################
+#....#.........#.........#.........#
+#E...#.........#.........#........E#
+#..=.#.........#.........#......=..#
+#....#.........#.........#.........#
+#..................................#
+#................P.................#
+#.........#.........#.........#....#
+#..=......#.........#.........#.=..#
+#E........#.........#.........#...E#
+#.........#.........#.........#....#
+####################################
+end
+
+# Start in the lane, looking down the hall (the map's P can't set a facing).
+player -1 -1 90

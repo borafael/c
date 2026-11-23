@@ -104,7 +104,8 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   available (Linux/Windows), else CPU; --cpu forces CPU.
 │   │                     #   Levels: text files in levels/ (arena.lvl = the
 │   │                     #   original arena, also built in; warehouse, colonnade,
-│   │                     #   bunker, crossroads, maze). One
+│   │                     #   bunker, crossroads, maze, pinball, gauntlet,
+│   │                     #   atrium, downtown = commands only). One
 │   │                     #   command per line (size, player, pillar, box, spawn)
 │   │                     #   and/or an ASCII map; format in level.h, CHECK tests.
 │   │                     #   Chosen on the title menu (LEVEL) or --level FILE;

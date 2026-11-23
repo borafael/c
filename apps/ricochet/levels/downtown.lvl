@@ -1,0 +1,44 @@
+# Downtown: city blocks of different heights on a grid of 4.5 m streets,
+# around a plaza where you start. Written as commands instead of a map:
+# every box is x0 z0 x1 z1 height, anything at least wall_height tall
+# looks like a building, anything lower like a crate.
+
+name          Downtown
+size          57 46.5
+wall_height   2.6
+pillar_height 6
+
+box -24 -18.75 -18 -12.75 5.5
+box -13.5 -18.75 -7.5 -12.75 7
+box -3 -18.75 3 -12.75 5.5
+box 7.5 -18.75 13.5 -12.75 5.5
+box 18 -18.75 24 -12.75 7
+box -23.5 -7.75 -21.5 -5.75 1
+box -20.5 -4.75 -18.5 -2.75 1
+box -13.5 -8.25 -7.5 -2.25 7
+box 7.5 -8.25 13.5 -2.25 3.5
+box 18 -8.25 24 -2.25 3.5
+box -24 2.25 -18 8.25 7
+box -13.5 2.25 -7.5 8.25 5.5
+box 7.5 2.25 13.5 8.25 8.5
+box 18.5 2.75 20.5 4.75 1
+box 21.5 5.75 23.5 7.75 1
+box -24 12.75 -18 18.75 7
+box -13.5 12.75 -7.5 18.75 3.5
+box -3 12.75 3 18.75 3
+box 7.5 12.75 13.5 18.75 5.5
+box 18 12.75 24 18.75 4.5
+
+# plaza
+pillar 0 0 0.8
+box -4 3 -2 4 1
+box 2 -4 4 -3 1
+player 0 -8 0
+
+# enemies arrive at the corners and the middle of each edge
+spawn -26.25 -21
+spawn 26.25 -21
+spawn -26.25 21
+spawn 26.25 21
+spawn 0 21
+spawn 0 -21
