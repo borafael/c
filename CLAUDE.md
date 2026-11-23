@@ -103,7 +103,8 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   Starts on the OpenGL backend when GL 4.3 is
 │   │                     #   available (Linux/Windows), else CPU; --cpu forces CPU.
 │   │                     #   Levels: text files in levels/ (arena.lvl = the
-│   │                     #   original arena, also built in; warehouse.lvl). One
+│   │                     #   original arena, also built in; warehouse, colonnade,
+│   │                     #   bunker, crossroads, maze). One
 │   │                     #   command per line (size, player, pillar, box, spawn)
 │   │                     #   and/or an ASCII map; format in level.h, CHECK tests.
 │   │                     #   Chosen on the title menu (LEVEL) or --level FILE;

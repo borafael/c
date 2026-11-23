@@ -24,6 +24,35 @@ START_TEST(test_arena_file_matches_builtin)
 }
 END_TEST
 
+/* Every level shipped in levels/ loads, and nothing starts inside a wall. */
+static const char *const shipped[] = {
+    "arena.lvl", "bunker.lvl", "colonnade.lvl", "crossroads.lvl", "maze.lvl", "warehouse.lvl",
+};
+
+static int inside_box(const level *lv, float x, float z) {
+    for (int i = 0; i < lv->n_boxes; i++)
+        if (x > lv->boxes[i].min.x && x < lv->boxes[i].max.x &&
+            z > lv->boxes[i].min.z && z < lv->boxes[i].max.z) return 1;
+    return 0;
+}
+
+START_TEST(test_shipped_levels_load)
+{
+    const char *f = shipped[_i];
+    ck_assert_msg(level_load(&a, level_file(f), err, sizeof err) == 0, "%s", err);
+    ck_assert_msg(a.name[0] != 0, "%s: no name", f);
+    ck_assert_msg(!inside_box(&a, a.player.x, a.player.z), "%s: player starts in a wall", f);
+    for (int i = 0; i < a.n_spawns; i++)
+        ck_assert_msg(!inside_box(&a, a.spawns[i].x, a.spawns[i].z), "%s: spawn %d in a wall", f, i);
+    for (int i = 0; i < a.n_boxes; i++) {
+        ck_assert_float_ge(a.boxes[i].min.x, -a.half_x);
+        ck_assert_float_le(a.boxes[i].max.x, a.half_x);
+        ck_assert_float_ge(a.boxes[i].min.z, -a.half_z);
+        ck_assert_float_le(a.boxes[i].max.z, a.half_z);
+    }
+}
+END_TEST
+
 START_TEST(test_warehouse_loads)
 {
     ck_assert_msg(level_load(&a, level_file("warehouse.lvl"), err, sizeof err) == 0, "%s", err);
@@ -154,6 +183,7 @@ int main(void) {
     TCase *tc = tcase_create("Format");
     tcase_add_test(tc, test_arena_file_matches_builtin);
     tcase_add_test(tc, test_warehouse_loads);
+    tcase_add_loop_test(tc, test_shipped_levels_load, 0, (int)(sizeof shipped / sizeof shipped[0]));
     tcase_add_test(tc, test_map_coordinates_and_border);
     tcase_add_test(tc, test_map_merges_runs);
     tcase_add_test(tc, test_commands);

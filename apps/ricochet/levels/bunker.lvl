@@ -1,0 +1,33 @@
+# Bunker: you start inside a walled keep with four ways in. Hold it, or
+# break out into the open ring where the enemies arrive.
+#
+#   #  wall (wall_height)   =  crate (crate_height)   O  pillar
+#   P  player start         E  enemy spawn            .  floor
+# One character is `tile` metres; the '#' border is the outer wall.
+
+name          Bunker
+tile          2
+wall_height   2.4
+crate_height  1.0
+pillar_height 5
+
+map
+########################
+#E.........E..........E#
+#......................#
+#..==...O......O...==..#
+#......................#
+#......####..####......#
+#......#........#......#
+#......#..=..=..#......#
+#.O.........P........O.#
+#......................#
+#......#..=..=..#......#
+#......#........#......#
+#......####..####......#
+#......................#
+#..==...O......O...==..#
+#......................#
+#E.........E..........E#
+########################
+end

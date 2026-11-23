@@ -39,4 +39,5 @@ tests_check_level_LDADD = $(CHECK_LIBS) -lm
 TESTS = tests/check_highscore tests/check_level
 endif
 
-dist_noinst_DATA = levels/arena.lvl levels/warehouse.lvl
+dist_noinst_DATA = levels/arena.lvl levels/bunker.lvl levels/colonnade.lvl \
+                   levels/crossroads.lvl levels/maze.lvl levels/warehouse.lvl
