@@ -82,7 +82,9 @@ menu_event menu_on_click(menu *m, int x, int y, int button) {
     if (button != 1 || !selectable(m, i)) return (menu_event){MENU_NONE, i, 0};
     m->sel = i;
     if (m->items[i].kind == MENU_ACTION) return (menu_event){MENU_ACTIVATE, i, 0};
-    /* On the value: left half steps down, right half up; on the label: up. */
+    /* On the value: left half steps down, right half up; on the label: up.
+     * Centred: left of the centre steps down, right of it up. */
+    if (m->centered) return change(m, i, x < (m->x0 + m->x1) / 2 ? -1 : +1);
     int mid = (m->value_x + m->x1) / 2;
     return change(m, i, x >= m->value_x && x < mid ? -1 : +1);
 }
@@ -139,9 +141,21 @@ void menu_draw(menu *m, hud_target t, float time) {
             hud_text(t, (t.w - hud_text_width(it->label, sc)) / 2, ty, it->label, sc, c);
             continue;
         }
-        hud_text(t, x0 + 6 * sc, ty, it->label, sc, c);
         char v[32], shown[40];
         value_text(it, v, sizeof v);
+        if (m->centered) {
+            /* Label ends just left of the centre, value starts just right
+             * of it; the arrows sit in a reserved slot so nothing moves
+             * when the row is selected. */
+            int cx = t.w / 2, gap = 4 * sc;
+            hud_text(t, cx - gap - hud_text_width(it->label, sc), ty, it->label, sc, c);
+            uint32_t vc = it->disabled ? COL_DISABLED : (sel ? COL_VALUE : COL_ITEM);
+            if (sel) snprintf(shown, sizeof shown, "< %s >", v);
+            hud_text(t, cx + gap + (sel ? 0 : hud_text_width("< ", sc)), ty,
+                     sel ? shown : v, sc, vc);
+            continue;
+        }
+        hud_text(t, x0 + 6 * sc, ty, it->label, sc, c);
         if (sel) snprintf(shown, sizeof shown, "< %s >", v);
         else snprintf(shown, sizeof shown, "%s", v);
         uint32_t vc = it->disabled ? COL_DISABLED : (sel ? COL_VALUE : COL_ITEM);

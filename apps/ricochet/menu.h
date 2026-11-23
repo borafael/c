@@ -37,6 +37,9 @@ typedef struct {
     int         count;
     int         sel;
     const char *footer;          /* Optional note under the list */
+    int         centered;        /* Value items as one line around the centre
+                                    ("LEVEL < ARENA >"), for menus that are
+                                    mostly centred actions */
     /* Layout of the last menu_draw, for mouse hit-testing. */
     int x0, x1, y0, row_h, value_x;
 } menu;

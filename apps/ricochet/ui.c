@@ -25,7 +25,7 @@ static menu_item title_items[] = {
 };
 menu title_menu = {.title = "RICOCHET", .items = title_items,
                    .count = COUNT(title_items),
-                   .footer = "ARROWS OR MOUSE - ENTER SELECTS"};
+                   .footer = "ARROWS OR MOUSE - ENTER SELECTS", .centered = 1};
 
 static menu_item pause_items[] = {
     [P_RESUME]  = {.kind = MENU_ACTION, .label = "RESUME"},
