@@ -212,6 +212,17 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
 
     /* Enemies. */
     int m_sclera = scene_add_material(s, scene_material_default());
+    int m_ball_glow = -1, m_horn = -1, m_star = -1, m_crack = -1;
+    for (int i = 0; i < MAX_ENEMIES; i++) {   /* only add what's on screen */
+        const enemy *e = &g->en[i];
+        if (!e->alive || e->dying > 0.0f || e->spawn_t < 0.0f) continue;
+        if (e->kind == EN_EATER && m_ball_glow < 0) m_ball_glow = unlit_mat(s, (scene_color){120, 245, 255});
+        if (e->kind == EN_CHARGER && m_horn < 0) {
+            m_horn = unlit_mat(s, (scene_color){255, 230, 200});
+            m_star = unlit_mat(s, (scene_color){255, 230, 90});
+        }
+        if (e->kind == EN_SPLITTER && m_crack < 0) m_crack = unlit_mat(s, (scene_color){10, 30, 40});
+    }
     for (int i = 0; i < MAX_ENEMIES; i++) {
         const enemy *e = &g->en[i];
         if (!e->alive || e->spawn_t < 0.0f) continue;
@@ -235,6 +246,41 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
         int m_pupil = unlit_mat(s, (scene_color){255, (uint8_t)(40 + 60 * glow), 30});
         scene_add_sphere(s, (scene_sphere){.center = vector_add(e->p, vector_scale(f, r * 1.0f)),
                                            .radius = r * 0.14f, .material = m_pupil});
+
+        switch (e->kind) {
+        case EN_EATER:
+            /* A ring of the balls it has swallowed, turning round its middle. */
+            for (int j = 0; j < e->eaten; j++) {
+                float a = g->t * 1.5f + 6.2831853f * (float)j / (float)e->eaten;
+                vector at = {e->p.x + cosf(a) * r * 0.97f, e->p.y - 0.1f * r, e->p.z + sinf(a) * r * 0.97f};
+                scene_add_sphere(s, (scene_sphere){.center = at, .radius = 0.085f, .material = m_ball_glow});
+            }
+            break;
+        case EN_CHARGER: {
+            /* A horn on its brow; stars round its head while dazed. */
+            vector hf = vector_normalize((vector){e->face.x * 0.7f, 1.0f, e->face.z * 0.7f});
+            scene_add_cone(s, (scene_cone){.apex = vector_add(e->p, vector_scale(hf, r * 1.75f)),
+                                           .axis = vector_scale(hf, -1.0f), .height = r * 0.9f,
+                                           .radius = r * 0.30f, .material = m_horn});
+            if (e->st == CH_DAZED)
+                for (int j = 0; j < 3; j++) {
+                    float a = g->t * 5.0f + 2.0943951f * (float)j;
+                    vector at = {e->p.x + cosf(a) * r * 0.9f, e->p.y + r + 0.15f, e->p.z + sinf(a) * r * 0.9f};
+                    scene_add_sphere(s, (scene_sphere){.center = at, .radius = 0.08f, .material = m_star});
+                }
+            break;
+        }
+        case EN_SPLITTER: {
+            /* Cracks where it will come apart. */
+            static const vector axes[3] = {{1, 0, 0}, {0, 0.5f, 0.866f}, {0.6f, 0.8f, 0}};
+            for (int j = 0; j < 3; j++)
+                scene_add_torus(s, (scene_torus){.center = e->p, .axis = vector_normalize(axes[j]),
+                                                 .major_radius = r * 0.995f, .minor_radius = 0.035f,
+                                                 .material = m_crack});
+            break;
+        }
+        default: break;
+        }
     }
 
     /* Balls: hot cyan in flight, pulsing at rest so they're easy to find. */

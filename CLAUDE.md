@@ -98,7 +98,12 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   walk over them to recollect ammo. Grenade (RMB/G):
 │   │                     #   charge = throw power, payload (wheel, Q/E) = balls
 │   │                     #   from the hand it bursts into on first contact
-│   │                     #   (own body GRENADE_ID after the balls). All SFX are
+│   │                     #   (own body GRENADE_ID after the balls). Enemies:
+│   │                     #   small / medium / big, then specials from set waves
+│   │                     #   (game.h): Eater (wave 3, swallows floor balls, pops
+│   │                     #   them out on death, spits one back if you're locked
+│   │                     #   out), Charger (5: wind-up, straight dash, dazed by
+│   │                     #   walls), Splitter (7: bursts into 3 shards). All SFX are
 │   │                     #   synthesized (sfx.c), panned + distance-faded.
 │   │                     #   --bot autopilot, --shot out.ppm headless (prints
 │   │                     #   sound-event counts), --dump-sfx DIR writes WAVs,

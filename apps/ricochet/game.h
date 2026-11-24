@@ -70,7 +70,35 @@
 
 #define MAX_PARTS     160
 
-typedef enum { EN_SMALL, EN_MED, EN_BIG, EN_KINDS } en_kind;
+/* Special enemies, each first appearing on its own wave (announced):
+ *   Eater     swallows balls lying on the floor (up to EATER_CAP, growing
+ *             and slowing with each); killing it pops them all back out.
+ *             If you have none in hand and none are loose, eaters spit
+ *             one out every EATER_BURP s, so you can never be locked out.
+ *   Charger   with a clear line at mid range: stops, flashes, then dashes
+ *             straight; a wall leaves it dazed.
+ *   Splitter  bursts into SPLIT_SHARDS fast, fragile shards when killed. */
+#define EATER_WAVE     3
+#define CHARGER_WAVE   5
+#define SPLITTER_WAVE  7
+#define EATER_CAP      12
+#define EATER_GROW     0.035f   /* radius per ball inside */
+#define EATER_EAT_SPEED 4.0f    /* balls slower than this get swallowed */
+#define EATER_BURP     2.0f
+#define CHARGE_WINDUP  0.75f
+#define CHARGE_SPEED   15.0f
+#define CHARGE_TIME    1.1f     /* longest dash */
+#define CHARGE_DAZE    1.6f
+#define CHARGE_COOL    2.5f
+#define CHARGE_DAMAGE  30.0f
+#define SPLIT_SHARDS   3
+
+typedef enum {
+    EN_SMALL, EN_MED, EN_BIG,
+    EN_EATER, EN_CHARGER, EN_SPLITTER, EN_SHARD,
+    EN_KINDS
+} en_kind;
+typedef enum { CH_APPROACH, CH_WINDUP, CH_DASH, CH_DAZED } charge_state;
 typedef struct {
     float r, speed, mass, damage;
     int   hp, score;
@@ -88,6 +116,12 @@ typedef struct {
     float  dying;       /* 0 = alive, >0 seconds into death */
     vector stuck_at;    /* where it was when stuck_t last reset */
     float  stuck_t;     /* seconds without getting anywhere */
+    int    eaten;       /* Eater: balls inside */
+    float  burp_t;      /* Eater: time towards the next spit */
+    int    st;          /* Charger: charge_state */
+    float  st_t;        /* Charger: time left in the state */
+    float  cool;        /* Charger: time before it may charge again */
+    vector dash;        /* Charger: unit dash direction */
 } enemy;
 
 typedef struct {
@@ -138,6 +172,7 @@ typedef struct {
     nav_grid nav[EN_KINDS + 1];  /* per enemy size (+ the player's, NAV_PLAYER):
                                   * each only goes through gaps it fits */
     nav_field to_player[EN_KINDS]; /* rebuilt each frame enemies need it */
+    nav_field to_ball;           /* Eaters' way to the ball they want */
     /* Balls (dynamic) and enemies (kinematic) are bodies in one physics
      * world, with fixed IDs: enemy i is body i, ball k is BALL_ID(k).
      * A ball in your hand is a disabled body. */
