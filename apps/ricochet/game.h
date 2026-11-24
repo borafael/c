@@ -47,6 +47,18 @@
 #define MAX_SUBSTEP_DIST 0.08f /* m a ball may travel per physics substep */
 #define MAX_SUBSTEPS  64
 
+/* Grenade: hold to charge the throw, release to lob it. It carries a
+ * payload of balls taken from your hand at the throw and bursts on its
+ * first contact with anything, spraying them out as ordinary balls. */
+#define GRENADE_R       0.18f
+#define GRENADE_CHARGE  1.0f    /* seconds from tap to full power */
+#define GRENADE_V_MIN   8.0f    /* throw speed for a tap (m/s) ... */
+#define GRENADE_V_MAX   26.0f   /* ... and at full power */
+#define GRENADE_LOFT    0.30f   /* added to the aim's up component: an arc */
+#define GRENADE_BURST_V 24.0f   /* speed of the balls it sprays */
+#define GRENADE_LIFE    6.0f    /* safety: bursts in the air after this */
+#define GRENADE_DEFAULT_PAYLOAD 10
+
 /* Enemies */
 #define MAX_ENEMIES   24
 #define SPAWN_TIME    0.9f     /* rise out of the floor */
@@ -97,8 +109,24 @@ typedef struct {
     float move_f, move_s;  /* -1..1 */
     int   sprint;
     int   fire;            /* trigger held this frame (automatic fire) */
+    int   grenade;         /* grenade button held (charge; release throws) */
+    int   payload_step;    /* -1 / +1: change the grenade payload this frame */
     float look_dx, look_dy;/* radians */
 } input;
+
+typedef enum { GREN_IDLE, GREN_CHARGING, GREN_FLYING } gren_state;
+
+typedef struct {
+    gren_state state;
+    float  power;        /* 0..1 while charging */
+    float  age;          /* seconds in flight */
+    float  tick;         /* next charge-tick sound at this power */
+    int    payload;      /* balls it carries while flying */
+    int    held;         /* button state last frame */
+    int    burst;        /* first contact seen; burst after the physics step */
+    int    burst_kind;   /* physics_contact_kind of that contact */
+    vector burst_p, burst_n;
+} grenade;
 
 typedef struct {
     player   pl;
@@ -115,7 +143,9 @@ typedef struct {
      * A ball in your hand is a disabled body. */
     physics_world *phys;
     int      mag;                /* balls that exist: in hand + in world */
-    int      ammo;               /* balls in hand */
+    int      ammo;               /* balls in hand (a flying grenade's payload
+                                  * is neither in hand nor in the world) */
+    grenade  gren;
     enemy    en[MAX_ENEMIES];
     particle parts[MAX_PARTS];
     int      wave, kills, score, shots, hits;
@@ -131,6 +161,7 @@ typedef struct {
 } game;
 
 #define BALL_ID(k) (MAX_ENEMIES + (k))
+#define GRENADE_ID BALL_ID(AMMO_CAP)
 #define NAV_PLAYER EN_KINDS
 #define HS_UNRECORDED (-2)
 
@@ -152,6 +183,8 @@ typedef struct {
     int mag, start_ammo, start_wave;
     const level *level;          /* what to play (never NULL) */
     int level_rev;               /* bump when *level changes (switch / reload) */
+    int grenade_payload;         /* balls per grenade (wheel / Q, E); kept
+                                  * across games */
 } game_settings;
 extern game_settings game_cfg;
 
@@ -176,6 +209,11 @@ gun_frame gun_frame_make(const game *g, vector eye, vector f, vector r, vector u
 vector gun_local(const gun_frame *gf, float x, float y, float z);
 int   enemies_left(const game *g);
 float enemy_radius(const enemy *e);
+/* Where a grenade thrown now with power p would fly: up to max points
+ * along the arc, ending where it would first touch something. Returns
+ * the count. */
+int grenade_arc(const game *g, float power, vector *pts, int max);
+
 /* Kill-points multiplier for a magazine size. */
 float mag_factor(int mag);
 

@@ -87,7 +87,9 @@ static void usage(const char *argv0) {
            "                     renders per variant (features toggled off one by one)\n");
     printf("  --dump-sfx DIR     Write every synthesized sound as DIR/<name>.wav\n");
     printf("\nWASD move, mouse look, hold LMB/SPACE to fire, SHIFT sprint, walk over spheres to\n");
-    printf("recollect them. ESC / P pause menu, M mouse capture, R restart,\n");
+    printf("recollect them. Grenade: hold RMB / G to charge (further throw), release to\n");
+    printf("throw; it bursts on first contact into that many of your spheres (wheel or\n");
+    printf("Q / E sets how many). ESC / P pause menu, M mouse capture, R restart,\n");
     printf("V cycle resolution (-/= step), TAB backend, B bloom, F11 fullscreen,\n");
     printf("F5 reload the level file (for editing levels).\n");
     printf("Menus: arrows / WASD or the mouse, Enter select, left / right change, ESC back.\n");

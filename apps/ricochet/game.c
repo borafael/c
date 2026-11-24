@@ -198,13 +198,13 @@ static const level *arena(void) {
     return &builtin_arena;
 }
 
-game_settings game_cfg = {DEFAULT_AMMO, -1, 1, NULL, 0};
+game_settings game_cfg = {DEFAULT_AMMO, -1, 1, NULL, 0, GRENADE_DEFAULT_PAYLOAD};
 
 static void on_contact(void *user, physics_world *w, const physics_contact *c);
 
 static physics_world *create_physics(game *g) {
     physics_config c = physics_default_config();
-    c.max_bodies   = MAX_ENEMIES + AMMO_CAP;
+    c.max_bodies   = MAX_ENEMIES + AMMO_CAP + 1;   /* + the grenade */
     c.gravity      = 0.0f;              /* no mutual attraction */
     c.merge_on_contact = 0;
     c.num_threads  = 1;
@@ -319,6 +319,9 @@ void game_reset(game *g) {
             .restitution = REST_BALL});
         physics_world_set_enabled(w, BALL_ID(k), 0);
     }
+    physics_world_add(w, &(physics_body_desc){
+        .type = PHYSICS_DYNAMIC, .mass = 2.0f, .radius = GRENADE_R, .restitution = 0.3f});
+    physics_world_set_enabled(w, GRENADE_ID, 0);
     g->pl.p = g->lv->player;
     g->pl.yaw = g->lv->player_yaw;
     g->pl.hp = PLAYER_HP;
@@ -338,6 +341,13 @@ void game_reset(game *g) {
  * magazine takes balls out of your hand first, then out of the world. */
 void game_set_magazine(game *g, int mag) {
     physics_world *w = g->phys;
+    /* A grenade in the air would be neither in hand nor in the world:
+     * call it back, payload into the hand. */
+    if (g->gren.state == GREN_FLYING) {
+        physics_world_set_enabled(w, GRENADE_ID, 0);
+        g->ammo += g->gren.payload;
+        g->gren = (grenade){.held = g->gren.held};
+    }
     for (int k = g->mag; k < mag; k++) scatter_ball(g, k);
     for (int k = g->mag - 1; k >= mag; k--) {
         physics_body b = ball_get(g, k);
@@ -394,6 +404,18 @@ static void enemy_damage(game *g, enemy *e, vector at) {
  * bodies, so c->body is always a ball. */
 static void on_contact(void *user, physics_world *w, const physics_contact *c) {
     game *g = user;
+    /* The grenade's first touch of anything sets it off; the burst itself
+     * happens after the physics step (see grenade_burst). */
+    if (c->body == GRENADE_ID || c->other == GRENADE_ID) {
+        grenade *gr = &g->gren;
+        if (gr->state == GREN_FLYING && !gr->burst) {
+            gr->burst = 1;
+            gr->burst_kind = c->kind;
+            gr->burst_p = physics_world_body_position(w, GRENADE_ID);
+            gr->burst_n = c->body == GRENADE_ID ? c->normal : vector_scale(c->normal, -1.0f);
+        }
+        return;
+    }
     vector bp = physics_world_body_position(w, c->body);
     float imp = c->speed;
     switch (c->kind) {
@@ -478,6 +500,47 @@ static void slide_off_box_tops(game *g, float dt) {
     }
 }
 
+/* Spray the payload out of the grenade as ordinary balls: a dome off the
+ * surface it hit (floor, wall, crate, pillar), every way off a body (an
+ * enemy, a ball, or bursting in mid-air). */
+static void grenade_burst(game *g) {
+    grenade *gr = &g->gren;
+    physics_world *w = g->phys;
+    physics_world_set_enabled(w, GRENADE_ID, 0);
+    vector p = gr->burst_p, n = gr->burst_n;
+    int dome = gr->burst_kind != PHYSICS_CONTACT_BODY;
+    n = vector_magnitude(n) > 1e-4f ? vector_normalize(n) : (vector){0, 1, 0};
+    if (p.y < GRENADE_R) p.y = GRENADE_R;
+    float spread = 0.22f + 0.012f * (float)gr->payload;   /* room for them all */
+    int left = gr->payload;
+    for (int k = 0; k < g->mag && left > 0; k++) {
+        if (ball_get(g, k).enabled) continue;   /* in hand or payload: same thing */
+        vector d;
+        do d = (vector){frange(-1, 1), frange(-1, 1), frange(-1, 1)};
+        while (vector_magnitude(d) > 1.0f || vector_magnitude(d) < 0.1f);
+        d = vector_normalize(d);
+        float dn = vector_dot(d, n);
+        if (dome && dn < 0) d = vector_sub(d, vector_scale(n, 2.0f * dn));
+        if (dome) d = vector_normalize(vector_add(d, vector_scale(n, 0.3f)));
+        vector bp = vector_add(p, vector_scale(d, spread));
+        if (bp.y < BALL_R + 0.01f) bp.y = BALL_R + 0.01f;
+        clamp_arena(g, &bp, BALL_R);
+        push_out_static(g, &bp, BALL_R);
+        physics_world_set_enabled(w, BALL_ID(k), 1);
+        physics_world_set_position(w, BALL_ID(k), bp);
+        physics_world_set_velocity(w, BALL_ID(k), vector_scale(d, GRENADE_BURST_V * frange(0.6f, 1.0f)));
+        g->shots++;
+        left--;
+    }
+    burst(g, p, (scene_color){255, 170, 60}, 22, 10.0f);
+    burst(g, p, (scene_color){255, 255, 220}, 10, 6.0f);
+    play_at(g, SFX_POP, p, 1.0f, 0.45f);
+    play_at(g, SFX_WALL, p, 1.0f, 0.6f);
+    gr->state = GREN_IDLE;
+    gr->payload = 0;
+    gr->burst = 0;
+}
+
 static void step_physics(game *g, float dt) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         const enemy *e = &g->en[i];
@@ -490,6 +553,7 @@ static void step_physics(game *g, float dt) {
         physics_world_set_mass(g->phys, i, SPECS[e->kind].mass);
     }
     physics_world_advance(g->phys, dt);
+    if (g->gren.burst) grenade_burst(g);
     if (g->lv->n_boxes > 0) slide_off_box_tops(g, dt);
     for (int i = 0; i < MAX_ENEMIES; i++)
         if (g->en[i].alive && g->en[i].spawn_t >= 0.0f)
@@ -673,6 +737,135 @@ static void fire(game *g) {
     game_sfx(SFX_SHOOT, 0.55f, 0.0f, frange(1.05f, 1.25f));
 }
 
+/* ------------------------------------------------------------ Grenade */
+
+/* Where the grenade leaves the hand and how fast, for a throw at power p:
+ * along the aim, lofted into an arc. */
+static void grenade_launch(const game *g, float power, vector *pos, vector *vel) {
+    const player *pl = &g->pl;
+    vector eye = eye_pos(g);
+    vector fwd = cam_forward(pl->yaw, pl->pitch);
+    vector dir = vector_normalize(vector_add(fwd, (vector){0, GRENADE_LOFT, 0}));
+    vector p = vector_add(eye, vector_scale(fwd, 0.45f));
+    p.y -= 0.15f;
+    vector probe = p;
+    vector hit = push_out_static(g, &probe, GRENADE_R);
+    if (hit.x != 0 || hit.z != 0) p = eye;   /* hand in a wall: from the eye */
+    float speed = GRENADE_V_MIN + (GRENADE_V_MAX - GRENADE_V_MIN) * fminf(fmaxf(power, 0.0f), 1.0f);
+    *pos = p;
+    *vel = vector_add(vector_scale(dir, speed), (vector){pl->v.x * 0.5f, 0, pl->v.z * 0.5f});
+}
+
+int grenade_arc(const game *g, float power, vector *pts, int max) {
+    const level *lv = g->lv;
+    const float dt = 0.04f, r = GRENADE_R;
+    vector p, v;
+    grenade_launch(g, power, &p, &v);
+    int n = 0;
+    while (n < max) {
+        pts[n++] = p;
+        vector q = vector_add(p, vector_scale(v, dt));
+        v.y -= GRAVITY * dt;
+        int stop = 0;
+        if (q.y <= r) {                                   /* floor */
+            float k = (p.y - r) / fmaxf(p.y - q.y, 1e-6f);
+            q = vector_add(p, vector_scale(vector_sub(q, p), k));
+            stop = 1;
+        }
+        if (fabsf(q.x) > lv->half_x - r || fabsf(q.z) > lv->half_z - r) {
+            clamp_arena(g, &q, r);
+            stop = 1;
+        }
+        for (int i = 0; i < lv->n_pillars && !stop; i++) {
+            float dx = q.x - lv->pillars[i].x, dz = q.z - lv->pillars[i].z, rr = lv->pillars[i].r + r;
+            stop = dx * dx + dz * dz < rr * rr;
+        }
+        for (int i = 0; i < lv->n_boxes && !stop; i++) {
+            const level_box *b = &lv->boxes[i];
+            stop = q.x > b->min.x - r && q.x < b->max.x + r && q.z > b->min.z - r &&
+                   q.z < b->max.z + r && q.y < b->max.y + r;
+        }
+        for (int i = 0; i < MAX_ENEMIES && !stop; i++) {
+            const enemy *e = &g->en[i];
+            if (!e->alive || e->dying > 0 || e->spawn_t < 0) continue;
+            float rr = enemy_radius(e) + r;
+            stop = vector_magnitude(vector_sub(q, e->p)) < rr;
+        }
+        if (stop) {
+            if (n < max) pts[n++] = q;
+            break;
+        }
+        p = q;
+    }
+    return n;
+}
+
+/* Payloads the wheel / Q, E step through, up to the magazine size. */
+static const int PAYLOADS[] = {3, 5, 10, 15, 20, 25, 30, 40};
+#define N_PAYLOADS ((int)(sizeof PAYLOADS / sizeof PAYLOADS[0]))
+
+static void step_payload(game *g, int dir) {
+    int ladder[N_PAYLOADS + 1], n = 0;
+    for (int i = 0; i < N_PAYLOADS && PAYLOADS[i] < g->mag; i++) ladder[n++] = PAYLOADS[i];
+    if (g->mag <= PAYLOADS[N_PAYLOADS - 1]) ladder[n++] = g->mag;   /* "all of them" */
+    int cur = game_cfg.grenade_payload, at = 0;
+    for (int i = 0; i < n; i++) if (ladder[i] <= cur) at = i;
+    at += dir;
+    if (at < 0) at = 0;
+    if (at >= n) at = n - 1;
+    if (ladder[at] != cur) game_sfx(SFX_PICKUP, 0.35f, 0.0f, 0.8f + 0.04f * (float)at);
+    game_cfg.grenade_payload = ladder[at];
+}
+
+static void update_grenade(game *g, const input *in, float dt) {
+    grenade *gr = &g->gren;
+    if (in->payload_step) step_payload(g, in->payload_step > 0 ? 1 : -1);
+    int pressed = in->grenade && !gr->held, released = !in->grenade && gr->held;
+    gr->held = in->grenade;
+    switch (gr->state) {
+    case GREN_IDLE:
+        if (!pressed || g->game_over) break;
+        if (g->ammo <= 0) { game_sfx(SFX_DRY, 0.7f, 0.0f, 0.8f); break; }
+        gr->state = GREN_CHARGING;
+        gr->power = 0.0f;
+        gr->tick = 0.1f;
+        break;
+    case GREN_CHARGING: {
+        gr->power = fminf(1.0f, gr->power + dt / GRENADE_CHARGE);
+        if (gr->power >= gr->tick - 1e-4f && gr->tick <= 1.0f) {
+            game_sfx(SFX_PICKUP, 0.30f, 0.0f, 0.7f + 0.9f * gr->tick);
+            gr->tick += 0.1f;
+        }
+        if (g->game_over) { gr->state = GREN_IDLE; break; }
+        if (!released) break;
+        int n = game_cfg.grenade_payload < g->ammo ? game_cfg.grenade_payload : g->ammo;
+        if (n <= 0) { gr->state = GREN_IDLE; game_sfx(SFX_DRY, 0.7f, 0.0f, 0.8f); break; }
+        vector p, v;
+        grenade_launch(g, gr->power, &p, &v);
+        physics_world_set_enabled(g->phys, GRENADE_ID, 1);
+        physics_world_set_position(g->phys, GRENADE_ID, p);
+        physics_world_set_velocity(g->phys, GRENADE_ID, v);
+        g->ammo -= n;
+        gr->payload = n;
+        gr->state = GREN_FLYING;
+        gr->age = 0.0f;
+        gr->burst = 0;
+        g->pl.recoil = 0.6f;
+        game_sfx(SFX_SHOOT, 0.8f, 0.0f, 0.55f);
+        break;
+    }
+    case GREN_FLYING:
+        gr->age += dt;
+        if (gr->age > GRENADE_LIFE && !gr->burst) {      /* never touched anything */
+            gr->burst = 1;
+            gr->burst_kind = PHYSICS_CONTACT_BODY;
+            gr->burst_p = physics_world_body_position(g->phys, GRENADE_ID);
+            gr->burst_n = (vector){0, 1, 0};
+        }
+        break;
+    }
+}
+
 static void update_player(game *g, const input *in, float dt) {
     player *pl = &g->pl;
     pl->yaw += in->look_dx;
@@ -706,6 +899,7 @@ static void update_player(game *g, const input *in, float dt) {
     pl->bob += hs * dt * 1.6f;
 
     if (in->fire) fire(g);
+    update_grenade(g, in, dt);
 
     /* Recollect: walk over (or catch) a ball. */
     for (int i = 0; i < g->mag; i++) {

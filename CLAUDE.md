@@ -95,7 +95,10 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   ├── ricochet/         # Sphere FPS: enemies are rolling one-eyed spheres,
 │   │                     #   a machine gun sprays 40 (--ammo) physical spheres that hop off
 │   │                     #   enemies / floor / walls / pillars / each other;
-│   │                     #   walk over them to recollect ammo. All SFX are
+│   │                     #   walk over them to recollect ammo. Grenade (RMB/G):
+│   │                     #   charge = throw power, payload (wheel, Q/E) = balls
+│   │                     #   from the hand it bursts into on first contact
+│   │                     #   (own body GRENADE_ID after the balls). All SFX are
 │   │                     #   synthesized (sfx.c), panned + distance-faded.
 │   │                     #   --bot autopilot, --shot out.ppm headless (prints
 │   │                     #   sound-event counts), --dump-sfx DIR writes WAVs,
@@ -188,7 +191,7 @@ The natural entry point is `apps/showcase` — it cycles through every postfx mo
 ./apps/nbody/nbody                       # N-Body — ESC quit, R reset (-G GPU backend)
 ./apps/barrier/barrier                   # Game prototype
 ./apps/racer/racer                       # Anti-grav racer prototype (A/D strafe, W/S boost/brake)
-./apps/ricochet/ricochet                 # Sphere FPS: title menu (START / HIGH SCORES / OPTIONS / QUIT), ESC or P pauses (WASD + mouse, hold LMB/SPACE to fire, walk over spheres to recollect, R restart, V cycle render resolution, TAB CPU/GPU; GPU by default when available; --cpu, --bot (skips the title), --fullscreen, --no-reflections, --ammo N magazine size (default 40), --start-ammo N rounds in hand at start, rest scattered on the floor, --wave N starting wave, --level FILE, F5 reloads the level file)
+./apps/ricochet/ricochet                 # Sphere FPS: title menu (START / HIGH SCORES / OPTIONS / QUIT), ESC or P pauses (WASD + mouse, hold LMB/SPACE to fire, hold RMB/G to charge a grenade and release to throw it (bursts on first contact into N of your spheres; wheel or Q/E sets N), walk over spheres to recollect, R restart, V cycle render resolution, TAB CPU/GPU; GPU by default when available; --cpu, --bot (skips the title), --fullscreen, --no-reflections, --ammo N magazine size (default 40), --start-ammo N rounds in hand at start, rest scattered on the floor, --wave N starting wave, --level FILE, F5 reloads the level file)
 ./apps/outpost/outpost                   # Top-down jeep on an island base (WASD/arrows, SPACE handbrake, -/= zoom, M minimap)
 ./apps/kmeans/kmeans                     # K-means in 3D (SPACE pause, N step, R new data, D data mode, J/K clusters, I init, L links; --shot out.ppm headless)
 ./apps/lowspec/lowspec --threads 1       # Headless CPU-raytrace bench (no SDL); --res, --interlace, --out

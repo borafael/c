@@ -354,8 +354,13 @@ static void play_input(app *a, game *g, const SDL_Event *e, input *in) {
             app_capture_mouse(a, 1);
             a->fire_block = 1;
         }
+    } else if (e->type == SDL_MOUSEWHEEL) {
+        int dy = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -e->wheel.y : e->wheel.y;
+        if (dy) in->payload_step += dy > 0 ? 1 : -1;
     } else if (e->type == SDL_KEYDOWN && !e->key.repeat) {
         switch (e->key.keysym.sym) {
+        case SDLK_q: in->payload_step -= 1; break;
+        case SDLK_e: in->payload_step += 1; break;
         case SDLK_ESCAPE: case SDLK_p: pause_game(a); break;
         case SDLK_r: start_game(a, g); break;
         case SDLK_F5: reload_level(a, g); break;
@@ -384,6 +389,9 @@ static void play_controls(app *a, const game *g, input *in, float dt) {
         return;
     }
     in->fire = trigger;
+    /* Grenade: hold right mouse button or G to charge, release to throw. */
+    int rmb = (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON_RMASK) != 0;
+    in->grenade = (a->mouse_captured && rmb) || keys[SDL_SCANCODE_G];
     in->move_f = (float)(keys[SDL_SCANCODE_W] - keys[SDL_SCANCODE_S]);
     in->move_s = (float)(keys[SDL_SCANCODE_D] - keys[SDL_SCANCODE_A]);
     in->sprint = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];

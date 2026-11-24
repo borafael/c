@@ -250,6 +250,31 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
         scene_add_sphere(s, (scene_sphere){.center = b.position, .radius = BALL_R, .material = m});
     }
 
+    /* Grenade in flight: a hot orange core, flickering. */
+    if (g->gren.state == GREN_FLYING) {
+        physics_body b = physics_world_body(g->phys, GRENADE_ID);
+        float flick = 0.5f + 0.5f * sinf(g->t * 30.0f);
+        int m = unlit_mat(s, lerp_color((scene_color){255, 120, 30}, (scene_color){255, 240, 200}, flick));
+        scene_add_sphere(s, (scene_sphere){.center = b.position, .radius = GRENADE_R, .material = m});
+    }
+    /* Charging: dots along the arc it would fly and a ring where it lands,
+     * sized by the payload. */
+    if (g->gren.state == GREN_CHARGING && !g->game_over) {
+        vector pts[96];
+        int n = grenade_arc(g, g->gren.power, pts, 96);
+        int m_dot = unlit_mat(s, (scene_color){255, 170, 60});
+        for (int i = 3; i < n - 1; i++)
+            scene_add_sphere(s, (scene_sphere){.center = pts[i], .radius = 0.05f, .material = m_dot});
+        if (n > 1) {
+            int pay = game_cfg.grenade_payload < g->ammo ? game_cfg.grenade_payload : g->ammo;
+            vector at = pts[n - 1];
+            at.y = fmaxf(at.y - GRENADE_R + 0.03f, 0.03f);
+            scene_add_torus(s, (scene_torus){
+                .center = at, .axis = {0, 1, 0},
+                .major_radius = 0.35f + 0.035f * (float)pay, .minor_radius = 0.04f, .material = m_dot});
+        }
+    }
+
     for (int i = 0; i < MAX_PARTS && !render_opts.no_parts; i++) {
         const particle *p = &g->parts[i];
         if (!p->alive) continue;
@@ -293,6 +318,24 @@ void draw_hud(const game *g, uint32_t *px, int w, int h) {
         hud_rect(t, ax - 1, ay - 1, aw + 2, ah + 2, 0xFF000000u);
         hud_rect(t, ax, ay, aw, ah, 0xFF203040u);
         hud_rect(t, ax, ay, aw * g->ammo / g->mag, ah, ac);
+    }
+    /* Grenade: payload above the ammo count; while charging, a power bar
+     * under the crosshair. */
+    {
+        int pay = game_cfg.grenade_payload < g->mag ? game_cfg.grenade_payload : g->mag;
+        int ready = g->gren.state != GREN_FLYING && g->ammo > 0;
+        snprintf(buf, sizeof buf, "GRENADE %d", pay);
+        hud_text(t, w - 6 * sc - hud_text_width(buf, sc), h - 6 * sc - 4 * sc - 27 * sc, buf, sc,
+                 ready ? 0xFFFFAA3Cu : 0xFF806850u);
+        if (g->gren.state == GREN_CHARGING && !g->game_over) {
+            int bw = 40 * sc, bh = 3 * sc, bx = cx - bw / 2, by = cy + 12 * sc;
+            hud_rect(t, bx - 1, by - 1, bw + 2, bh + 2, 0xFF000000u);
+            hud_rect(t, bx, by, bw, bh, 0xFF302010u);
+            hud_rect(t, bx, by, (int)((float)bw * g->gren.power), bh, 0xFFFFAA3Cu);
+            int n = pay < g->ammo ? pay : g->ammo;
+            snprintf(buf, sizeof buf, "x%d", n);
+            hud_text_center(t, by + bh + 3 * sc, buf, sc, 0xFFFFAA3Cu);
+        }
     }
     if (g->ammo == 0 && !g->game_over) {
         float blink = 0.5f + 0.5f * sinf(g->t * 8.0f);
