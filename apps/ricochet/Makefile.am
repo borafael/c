@@ -1,7 +1,8 @@
 bin_PROGRAMS = ricochet
 ricochet_SOURCES = main.c \
                    app.c app.h \
-                   game.c game.h \
+                   game.c game.h game_internal.h \
+                   enemy.c \
                    level.c level.h \
                    levels.c levels.h \
                    nav.c nav.h \

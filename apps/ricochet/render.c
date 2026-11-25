@@ -137,6 +137,134 @@ static void build_viewmodel(scene *s, const game *g, const scene_camera *cam) {
     }
 }
 
+/* --------------------------------------------------------------- Enemies */
+
+/* Materials for the decorations, made the first time a kind that needs
+ * them is on screen (so a frame without one costs nothing). */
+typedef struct { int glow, horn, star, crack; } decor_mats;
+
+static void decor_materials(scene *s, en_decor d, decor_mats *m) {
+    switch (d) {
+    case DECOR_STUDS:
+        if (m->glow < 0) m->glow = unlit_mat(s, (scene_color){120, 245, 255});
+        break;
+    case DECOR_HORN:
+        if (m->horn < 0) {
+            m->horn = unlit_mat(s, (scene_color){255, 230, 200});
+            m->star = unlit_mat(s, (scene_color){255, 230, 90});
+        }
+        break;
+    case DECOR_CRACKS:
+        if (m->crack < 0) m->crack = unlit_mat(s, (scene_color){10, 30, 40});
+        break;
+    case DECOR_NONE:
+        break;
+    }
+}
+
+/* Eater: a ring of the balls it has swallowed, turning round its middle. */
+static void decor_studs(scene *s, const game *g, const enemy *e, float r, const decor_mats *m) {
+    for (int j = 0; j < e->eaten; j++) {
+        float a = g->t * 1.5f + 6.2831853f * (float)j / (float)e->eaten;
+        vector at = {e->p.x + cosf(a) * r * 0.97f, e->p.y - 0.1f * r, e->p.z + sinf(a) * r * 0.97f};
+        scene_add_sphere(s, (scene_sphere){.center = at, .radius = 0.085f, .material = m->glow});
+    }
+}
+
+/* Charger: a horn on its brow; stars round its head while dazed. */
+static void decor_horn(scene *s, const game *g, const enemy *e, float r, const decor_mats *m) {
+    vector hf = vector_normalize((vector){e->face.x * 0.7f, 1.0f, e->face.z * 0.7f});
+    scene_add_cone(s, (scene_cone){.apex = vector_add(e->p, vector_scale(hf, r * 1.75f)),
+                                   .axis = vector_scale(hf, -1.0f), .height = r * 0.9f,
+                                   .radius = r * 0.30f, .material = m->horn});
+    if (e->st != CH_DAZED) return;
+    for (int j = 0; j < 3; j++) {
+        float a = g->t * 5.0f + 2.0943951f * (float)j;
+        vector at = {e->p.x + cosf(a) * r * 0.9f, e->p.y + r + 0.15f, e->p.z + sinf(a) * r * 0.9f};
+        scene_add_sphere(s, (scene_sphere){.center = at, .radius = 0.08f, .material = m->star});
+    }
+}
+
+/* Splitter: cracks where it will come apart. */
+static void decor_cracks(scene *s, const enemy *e, float r, const decor_mats *m) {
+    static const vector axes[3] = {{1, 0, 0}, {0, 0.5f, 0.866f}, {0.6f, 0.8f, 0}};
+    for (int j = 0; j < 3; j++)
+        scene_add_torus(s, (scene_torus){.center = e->p, .axis = vector_normalize(axes[j]),
+                                         .major_radius = r * 0.995f, .minor_radius = 0.035f,
+                                         .material = m->crack});
+}
+
+/* Body (white while flashing or dying), eye, and the kind's decor. */
+static void draw_enemies(scene *s, const game *g) {
+    int m_sclera = scene_add_material(s, scene_material_default());
+    decor_mats dm = {-1, -1, -1, -1};
+    for (int i = 0; i < MAX_ENEMIES; i++) {   /* only what's on screen */
+        const enemy *e = &g->en[i];
+        if (!e->alive || e->dying > 0.0f || e->spawn_t < 0.0f) continue;
+        decor_materials(s, SPECS[e->kind].decor, &dm);
+    }
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        const enemy *e = &g->en[i];
+        if (!e->alive || e->spawn_t < 0.0f) continue;
+        const en_spec *sp = &SPECS[e->kind];
+        float r = enemy_radius(e);
+        float white = e->dying > 0.0f ? 0.4f + 0.6f * (e->dying / DIE_TIME) : e->flash;
+        scene_material m = scene_material_default();
+        m.albedo = lerp_color(sp->c1, (scene_color){255, 255, 255}, white);
+        m.albedo2 = lerp_color(sp->c2, (scene_color){255, 255, 255}, white);
+        m.tex_kind = SCENE_TEX_SPOTS;
+        m.tex_scale = r * 0.55f;
+        m.reflectivity = 0.18f;
+        m.unlit = white > 0.6f;
+        scene_add_sphere(s, (scene_sphere){.center = e->p, .radius = r,
+                                           .material = scene_add_material(s, m)});
+        if (e->dying > 0.0f) continue;
+        vector f = vector_normalize((vector){e->face.x, 0.15f, e->face.z});
+        scene_add_sphere(s, (scene_sphere){.center = vector_add(e->p, vector_scale(f, r * 0.80f)),
+                                           .radius = r * 0.30f, .material = m_sclera});
+        float glow = 0.6f + 0.4f * sinf(g->t * 6.0f + (float)i);
+        int m_pupil = unlit_mat(s, (scene_color){255, (uint8_t)(40 + 60 * glow), 30});
+        scene_add_sphere(s, (scene_sphere){.center = vector_add(e->p, vector_scale(f, r * 1.0f)),
+                                           .radius = r * 0.14f, .material = m_pupil});
+        switch (sp->decor) {
+        case DECOR_STUDS:  decor_studs(s, g, e, r, &dm); break;
+        case DECOR_HORN:   decor_horn(s, g, e, r, &dm); break;
+        case DECOR_CRACKS: decor_cracks(s, e, r, &dm); break;
+        case DECOR_NONE:   break;
+        }
+    }
+}
+
+/* --------------------------------------------------------------- Grenade */
+
+/* In flight: a hot orange core, flickering. Charging: dots along the arc
+ * it would fly and a ring where it lands, sized by the payload. */
+static void draw_grenade(scene *s, const game *g) {
+    if (g->gren.state == GREN_FLYING) {
+        physics_body b = physics_world_body(g->phys, GRENADE_ID);
+        float flick = 0.5f + 0.5f * sinf(g->t * 30.0f);
+        int m = unlit_mat(s, lerp_color((scene_color){255, 120, 30}, (scene_color){255, 240, 200}, flick));
+        scene_add_sphere(s, (scene_sphere){.center = b.position, .radius = GRENADE_R, .material = m});
+    }
+    if (g->gren.state == GREN_CHARGING && !g->game_over) {
+        vector pts[96];
+        int n = grenade_arc(g, g->gren.power, pts, 96);
+        int m_dot = unlit_mat(s, (scene_color){255, 170, 60});
+        for (int i = 3; i < n - 1; i++)
+            scene_add_sphere(s, (scene_sphere){.center = pts[i], .radius = 0.05f, .material = m_dot});
+        if (n > 1) {
+            int pay = game_cfg.grenade_payload < g->ammo ? game_cfg.grenade_payload : g->ammo;
+            vector at = pts[n - 1];
+            at.y = fmaxf(at.y - GRENADE_R + 0.03f, 0.03f);
+            scene_add_torus(s, (scene_torus){
+                .center = at, .axis = {0, 1, 0},
+                .major_radius = 0.35f + 0.035f * (float)pay, .minor_radius = 0.04f, .material = m_dot});
+        }
+    }
+}
+
+/* ----------------------------------------------------------------- Scene */
+
 static void build_scene(scene *s, const game *g, const scene_camera *cam) {
     scene_clear(s);
     scene_set_background(s, (scene_color){34, 40, 66}, -1);
@@ -210,78 +338,7 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
         }
     }
 
-    /* Enemies. */
-    int m_sclera = scene_add_material(s, scene_material_default());
-    int m_ball_glow = -1, m_horn = -1, m_star = -1, m_crack = -1;
-    for (int i = 0; i < MAX_ENEMIES; i++) {   /* only add what's on screen */
-        const enemy *e = &g->en[i];
-        if (!e->alive || e->dying > 0.0f || e->spawn_t < 0.0f) continue;
-        if (e->kind == EN_EATER && m_ball_glow < 0) m_ball_glow = unlit_mat(s, (scene_color){120, 245, 255});
-        if (e->kind == EN_CHARGER && m_horn < 0) {
-            m_horn = unlit_mat(s, (scene_color){255, 230, 200});
-            m_star = unlit_mat(s, (scene_color){255, 230, 90});
-        }
-        if (e->kind == EN_SPLITTER && m_crack < 0) m_crack = unlit_mat(s, (scene_color){10, 30, 40});
-    }
-    for (int i = 0; i < MAX_ENEMIES; i++) {
-        const enemy *e = &g->en[i];
-        if (!e->alive || e->spawn_t < 0.0f) continue;
-        const en_spec *sp = &SPECS[e->kind];
-        float r = enemy_radius(e);
-        float white = e->dying > 0.0f ? 0.4f + 0.6f * (e->dying / DIE_TIME) : e->flash;
-        scene_material m = scene_material_default();
-        m.albedo = lerp_color(sp->c1, (scene_color){255, 255, 255}, white);
-        m.albedo2 = lerp_color(sp->c2, (scene_color){255, 255, 255}, white);
-        m.tex_kind = SCENE_TEX_SPOTS;
-        m.tex_scale = r * 0.55f;
-        m.reflectivity = 0.18f;
-        m.unlit = white > 0.6f;
-        scene_add_sphere(s, (scene_sphere){.center = e->p, .radius = r,
-                                           .material = scene_add_material(s, m)});
-        if (e->dying > 0.0f) continue;
-        vector f = vector_normalize((vector){e->face.x, 0.15f, e->face.z});
-        scene_add_sphere(s, (scene_sphere){.center = vector_add(e->p, vector_scale(f, r * 0.80f)),
-                                           .radius = r * 0.30f, .material = m_sclera});
-        float glow = 0.6f + 0.4f * sinf(g->t * 6.0f + (float)i);
-        int m_pupil = unlit_mat(s, (scene_color){255, (uint8_t)(40 + 60 * glow), 30});
-        scene_add_sphere(s, (scene_sphere){.center = vector_add(e->p, vector_scale(f, r * 1.0f)),
-                                           .radius = r * 0.14f, .material = m_pupil});
-
-        switch (e->kind) {
-        case EN_EATER:
-            /* A ring of the balls it has swallowed, turning round its middle. */
-            for (int j = 0; j < e->eaten; j++) {
-                float a = g->t * 1.5f + 6.2831853f * (float)j / (float)e->eaten;
-                vector at = {e->p.x + cosf(a) * r * 0.97f, e->p.y - 0.1f * r, e->p.z + sinf(a) * r * 0.97f};
-                scene_add_sphere(s, (scene_sphere){.center = at, .radius = 0.085f, .material = m_ball_glow});
-            }
-            break;
-        case EN_CHARGER: {
-            /* A horn on its brow; stars round its head while dazed. */
-            vector hf = vector_normalize((vector){e->face.x * 0.7f, 1.0f, e->face.z * 0.7f});
-            scene_add_cone(s, (scene_cone){.apex = vector_add(e->p, vector_scale(hf, r * 1.75f)),
-                                           .axis = vector_scale(hf, -1.0f), .height = r * 0.9f,
-                                           .radius = r * 0.30f, .material = m_horn});
-            if (e->st == CH_DAZED)
-                for (int j = 0; j < 3; j++) {
-                    float a = g->t * 5.0f + 2.0943951f * (float)j;
-                    vector at = {e->p.x + cosf(a) * r * 0.9f, e->p.y + r + 0.15f, e->p.z + sinf(a) * r * 0.9f};
-                    scene_add_sphere(s, (scene_sphere){.center = at, .radius = 0.08f, .material = m_star});
-                }
-            break;
-        }
-        case EN_SPLITTER: {
-            /* Cracks where it will come apart. */
-            static const vector axes[3] = {{1, 0, 0}, {0, 0.5f, 0.866f}, {0.6f, 0.8f, 0}};
-            for (int j = 0; j < 3; j++)
-                scene_add_torus(s, (scene_torus){.center = e->p, .axis = vector_normalize(axes[j]),
-                                                 .major_radius = r * 0.995f, .minor_radius = 0.035f,
-                                                 .material = m_crack});
-            break;
-        }
-        default: break;
-        }
-    }
+    draw_enemies(s, g);
 
     /* Balls: hot cyan in flight, pulsing at rest so they're easy to find. */
     int m_ball = unlit_mat(s, (scene_color){120, 245, 255});
@@ -296,30 +353,7 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
         scene_add_sphere(s, (scene_sphere){.center = b.position, .radius = BALL_R, .material = m});
     }
 
-    /* Grenade in flight: a hot orange core, flickering. */
-    if (g->gren.state == GREN_FLYING) {
-        physics_body b = physics_world_body(g->phys, GRENADE_ID);
-        float flick = 0.5f + 0.5f * sinf(g->t * 30.0f);
-        int m = unlit_mat(s, lerp_color((scene_color){255, 120, 30}, (scene_color){255, 240, 200}, flick));
-        scene_add_sphere(s, (scene_sphere){.center = b.position, .radius = GRENADE_R, .material = m});
-    }
-    /* Charging: dots along the arc it would fly and a ring where it lands,
-     * sized by the payload. */
-    if (g->gren.state == GREN_CHARGING && !g->game_over) {
-        vector pts[96];
-        int n = grenade_arc(g, g->gren.power, pts, 96);
-        int m_dot = unlit_mat(s, (scene_color){255, 170, 60});
-        for (int i = 3; i < n - 1; i++)
-            scene_add_sphere(s, (scene_sphere){.center = pts[i], .radius = 0.05f, .material = m_dot});
-        if (n > 1) {
-            int pay = game_cfg.grenade_payload < g->ammo ? game_cfg.grenade_payload : g->ammo;
-            vector at = pts[n - 1];
-            at.y = fmaxf(at.y - GRENADE_R + 0.03f, 0.03f);
-            scene_add_torus(s, (scene_torus){
-                .center = at, .axis = {0, 1, 0},
-                .major_radius = 0.35f + 0.035f * (float)pay, .minor_radius = 0.04f, .material = m_dot});
-        }
-    }
+    draw_grenade(s, g);
 
     for (int i = 0; i < MAX_PARTS && !render_opts.no_parts; i++) {
         const particle *p = &g->parts[i];
@@ -332,6 +366,27 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
     if (!g->game_over && !render_opts.no_gun) build_viewmodel(s, g, cam);
     if (render_opts.no_reflections)
         for (int i = 0; i < s->material_count; i++) s->materials[i].reflectivity = 0.0f;
+}
+
+/* Grenade: payload above the ammo count; while charging, a power bar
+ * under the crosshair. */
+static void hud_grenade(hud_target t, const game *g, int sc) {
+    int w = t.w, h = t.h, cx = w / 2, cy = h / 2;
+    char buf[32];
+    int pay = game_cfg.grenade_payload < g->mag ? game_cfg.grenade_payload : g->mag;
+    int ready = g->gren.state != GREN_FLYING && g->ammo > 0;
+    snprintf(buf, sizeof buf, "GRENADE %d", pay);
+    hud_text(t, w - 6 * sc - hud_text_width(buf, sc), h - 6 * sc - 4 * sc - 27 * sc, buf, sc,
+             ready ? 0xFFFFAA3Cu : 0xFF806850u);
+    if (g->gren.state == GREN_CHARGING && !g->game_over) {
+        int bw = 40 * sc, bh = 3 * sc, bx = cx - bw / 2, by = cy + 12 * sc;
+        hud_rect(t, bx - 1, by - 1, bw + 2, bh + 2, 0xFF000000u);
+        hud_rect(t, bx, by, bw, bh, 0xFF302010u);
+        hud_rect(t, bx, by, (int)((float)bw * g->gren.power), bh, 0xFFFFAA3Cu);
+        int n = pay < g->ammo ? pay : g->ammo;
+        snprintf(buf, sizeof buf, "x%d", n);
+        hud_text_center(t, by + bh + 3 * sc, buf, sc, 0xFFFFAA3Cu);
+    }
 }
 
 void draw_hud(const game *g, uint32_t *px, int w, int h) {
@@ -365,24 +420,7 @@ void draw_hud(const game *g, uint32_t *px, int w, int h) {
         hud_rect(t, ax, ay, aw, ah, 0xFF203040u);
         hud_rect(t, ax, ay, aw * g->ammo / g->mag, ah, ac);
     }
-    /* Grenade: payload above the ammo count; while charging, a power bar
-     * under the crosshair. */
-    {
-        int pay = game_cfg.grenade_payload < g->mag ? game_cfg.grenade_payload : g->mag;
-        int ready = g->gren.state != GREN_FLYING && g->ammo > 0;
-        snprintf(buf, sizeof buf, "GRENADE %d", pay);
-        hud_text(t, w - 6 * sc - hud_text_width(buf, sc), h - 6 * sc - 4 * sc - 27 * sc, buf, sc,
-                 ready ? 0xFFFFAA3Cu : 0xFF806850u);
-        if (g->gren.state == GREN_CHARGING && !g->game_over) {
-            int bw = 40 * sc, bh = 3 * sc, bx = cx - bw / 2, by = cy + 12 * sc;
-            hud_rect(t, bx - 1, by - 1, bw + 2, bh + 2, 0xFF000000u);
-            hud_rect(t, bx, by, bw, bh, 0xFF302010u);
-            hud_rect(t, bx, by, (int)((float)bw * g->gren.power), bh, 0xFFFFAA3Cu);
-            int n = pay < g->ammo ? pay : g->ammo;
-            snprintf(buf, sizeof buf, "x%d", n);
-            hud_text_center(t, by + bh + 3 * sc, buf, sc, 0xFFFFAA3Cu);
-        }
-    }
+    hud_grenade(t, g, sc);
     if (g->ammo == 0 && !g->game_over) {
         float blink = 0.5f + 0.5f * sinf(g->t * 8.0f);
         if (blink > 0.3f)

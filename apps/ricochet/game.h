@@ -99,11 +99,8 @@ typedef enum {
     EN_KINDS
 } en_kind;
 typedef enum { CH_APPROACH, CH_WINDUP, CH_DASH, CH_DAZED } charge_state;
-typedef struct {
-    float r, speed, mass, damage;
-    int   hp, score;
-    scene_color c1, c2;
-} en_spec;
+
+typedef struct game game;
 
 typedef struct {
     int    alive;
@@ -116,13 +113,57 @@ typedef struct {
     float  dying;       /* 0 = alive, >0 seconds into death */
     vector stuck_at;    /* where it was when stuck_t last reset */
     float  stuck_t;     /* seconds without getting anywhere */
-    int    eaten;       /* Eater: balls inside */
+    int    eaten;       /* balls inside (Eater) */
     float  burp_t;      /* Eater: time towards the next spit */
-    int    st;          /* Charger: charge_state */
+    int    st;          /* per-kind state, 0 at spawn (Charger: charge_state) */
     float  st_t;        /* Charger: time left in the state */
     float  cool;        /* Charger: time before it may charge again */
     vector dash;        /* Charger: unit dash direction */
 } enemy;
+
+/* Where an enemy is heading this frame: the player unless its kind's goal
+ * hook picks something else (an Eater: a ball on the floor). */
+typedef struct {
+    vector     p;        /* the goal */
+    vector     dir;      /* unit, flat, straight at it */
+    nav_field *field;    /* the way there around walls */
+} en_goal;
+
+/* What render.c adds to the body: data, so the rules never draw. */
+typedef enum { DECOR_NONE, DECOR_STUDS, DECOR_HORN, DECOR_CRACKS } en_decor;
+
+/* One row per kind (SPECS, enemy.c): numbers, look, and hooks for the
+ * kinds that behave differently. A NULL hook means the plain behaviour:
+ * chase the player, accelerate towards it, hurt it on touch. */
+typedef struct {
+    float r, speed, mass, damage;
+    int   hp, score;
+    scene_color c1, c2;
+    const char *name;    /* announced on its first wave ("NEW: EATER") */
+    int   first_wave;    /* waves it joins the mix from; 0 = regular / never drawn */
+    int   pop_bits;      /* particles when it dies */
+    int   cap;           /* balls it can hold (Eater) */
+    float grow;          /* radius per ball held */
+    float slow;          /* fraction of speed lost per ball held */
+    en_decor decor;
+    /* Something to go for other than the player. */
+    void  (*goal)(game *g, enemy *e, en_goal *goal);
+    /* Change the wanted velocity; returning 1 means rushing: velocity set
+     * to *want directly, no acceleration limit. */
+    int   (*steer)(game *g, enemy *e, float dt, float dist, vector dir, vector *want);
+    /* A rush ran into a wall or pillar. */
+    void  (*bump)(game *g, enemy *e, float r);
+    /* After moving and separating (Eater: swallow, spit back). `locked` is
+     * shared by every enemy this frame: -1 not worked out yet, else
+     * whether all the ammo is stuck inside eaters. */
+    void  (*after_move)(game *g, enemy *e, float dt, int *locked);
+    /* Where the eye looks, given where the goal is. */
+    vector (*look)(const enemy *e, int rushing, vector goal_dir);
+    /* Touched the player (instead of the plain hurt). */
+    void  (*touch)(game *g, enemy *e, vector dir, int rushing);
+    /* Finished dying (Eater: balls out; Splitter: shards). */
+    void  (*die)(game *g, enemy *e);
+} en_spec;
 
 typedef struct {
     int    alive;
@@ -162,7 +203,7 @@ typedef struct {
     vector burst_p, burst_n;
 } grenade;
 
-typedef struct {
+struct game {
     player   pl;
     /* The level being played, and what was built from it: pillars and
      * boxes are physics colliders (balls bounce, everything else is
@@ -193,7 +234,7 @@ typedef struct {
     float    t;
     /* Listener frame for spatial audio (updated each frame). */
     vector   ear, ear_right;
-} game;
+};
 
 #define BALL_ID(k) (MAX_ENEMIES + (k))
 #define GRENADE_ID BALL_ID(AMMO_CAP)

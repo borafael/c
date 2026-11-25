@@ -1,8 +1,8 @@
-/* Ricochet game state and rules: the player, enemies, waves, the sphere
- * ammo living in a physics world, scoring. No SDL, no rendering. */
+/* Ricochet game state and rules: the player, the sphere ammo living in a
+ * physics world, the grenade, scoring, the frame. Enemies are in enemy.c
+ * (see game_internal.h). No SDL, no rendering. */
 
-#include "game.h"
-#include "sfx.h"
+#include "game_internal.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -28,17 +28,6 @@ void rng_seed(uint64_t seed) {
 
 /* ---------------------------------------------------------------- World */
 
-
-const en_spec SPECS[EN_KINDS] = {
-    {0.55f, 4.2f,  5.0f, 10.0f,  3, 1000, {255, 160,  40}, {120,  50,  10}},
-    {0.85f, 2.8f, 14.0f, 20.0f,  7, 2500, {230,  45,  80}, { 90,  10,  30}},
-    {1.30f, 1.8f, 40.0f, 30.0f, 16, 6000, {150,  70, 230}, { 45,  15,  80}},
-    /* r     speed mass   damage hp  score  c1               c2 */
-    {0.75f, 3.2f, 10.0f, 15.0f,  6, 2000, {110, 220,  70}, { 30,  90,  20}},   /* eater */
-    {0.70f, 2.6f, 12.0f, 15.0f,  6, 3000, {235,  60,  40}, { 90,  15,  10}},   /* charger */
-    {1.00f, 2.4f, 18.0f, 20.0f,  6, 2500, { 60, 200, 210}, { 15,  70,  90}},   /* splitter */
-    {0.45f, 4.6f,  3.0f,  8.0f,  1,  500, {140, 240, 240}, { 30,  90, 110}},   /* shard */
-};
 physics_body ball_get(const game *g, int k) {
     return physics_world_body(g->phys, BALL_ID(k));
 }
@@ -73,11 +62,11 @@ vector gun_local(const gun_frame *gf, float x, float y, float z) {
  * quietly. Menu clicks call sfx_play directly and ignore it. */
 float game_volume = 1.0f;
 
-static void game_sfx(sfx_id id, float gain, float pan, float rate) {
+void game_sfx(sfx_id id, float gain, float pan, float rate) {
     sfx_play(id, gain * game_volume, pan, rate);
 }
 
-static void play_at(game *g, sfx_id id, vector at, float gain, float rate) {
+void play_at(game *g, sfx_id id, vector at, float gain, float rate) {
     vector d = vector_sub(at, g->ear);
     float dist = vector_magnitude(d);
     float att = 1.0f / (1.0f + 0.10f * dist);
@@ -87,32 +76,12 @@ static void play_at(game *g, sfx_id id, vector at, float gain, float rate) {
 
 /* ------------------------------------------------------------- Helpers */
 
-static void banner(game *g, const char *s) {
+void banner(game *g, const char *s) {
     snprintf(g->banner, sizeof g->banner, "%s", s);
     g->banner_t = 2.2f;
 }
 
-int enemies_left(const game *g) {
-    int n = 0;
-    for (int i = 0; i < MAX_ENEMIES; i++)
-        if (g->en[i].alive && g->en[i].dying == 0.0f) n++;
-    return n;
-}
-
-/* Size before the death swell: an eater grows with every ball inside. */
-static float enemy_size(const enemy *e) {
-    return SPECS[e->kind].r + (e->kind == EN_EATER ? EATER_GROW * (float)e->eaten : 0.0f);
-}
-
-float enemy_radius(const enemy *e) {
-    float r = enemy_size(e);
-    if (e->dying > 0.0f) r *= 1.0f + 0.35f * (e->dying / DIE_TIME);
-    return r;
-}
-
-/* Push a circle (xz) out of pillars, then boxes. Returns the normal of
- * the last push, or a zero vector if there was no contact. */
-static vector push_out_static(const game *g, vector *p, float r) {
+vector push_out_static(const game *g, vector *p, float r) {
     vector n = physics_world_push_out_columns(g->phys, p, r);
     if (g->lv->n_boxes > 0) {
         vector nb = physics_world_push_out_boxes(g->phys, p, r);
@@ -121,7 +90,7 @@ static vector push_out_static(const game *g, vector *p, float r) {
     return n;
 }
 
-static void clamp_arena(const game *g, vector *p, float r) {
+void clamp_arena(const game *g, vector *p, float r) {
     float lx = g->lv->half_x - r, lz = g->lv->half_z - r;
     if (p->x >  lx) p->x =  lx;
     if (p->x < -lx) p->x = -lx;
@@ -129,7 +98,7 @@ static void clamp_arena(const game *g, vector *p, float r) {
     if (p->z < -lz) p->z = -lz;
 }
 
-static void burst(game *g, vector at, scene_color c, int n, float speed) {
+void burst(game *g, vector at, scene_color c, int n, float speed) {
     for (int k = 0; k < n; k++) {
         for (int i = 0; i < MAX_PARTS; i++) {
             if (g->parts[i].alive) continue;
@@ -142,86 +111,7 @@ static void burst(game *g, vector at, scene_color c, int n, float speed) {
     }
 }
 
-/* ----------------------------------------------------------- Game flow */
-
-static vector spawn_point(game *g, float r);
-static void eater_release(game *g, enemy *e, int n, int spit);
-
-/* The special that arrives on this wave, or -1. */
-static int new_kind(int wave) {
-    return wave == EATER_WAVE ? EN_EATER : wave == CHARGER_WAVE ? EN_CHARGER
-         : wave == SPLITTER_WAVE ? EN_SPLITTER : -1;
-}
-
-static void spawn_wave(game *g) {
-    g->wave++;
-    int count = 2 + g->wave;
-    if (count > MAX_ENEMIES) count = MAX_ENEMIES;
-    float big_p = fminf(0.08f * (float)(g->wave - 1), 0.35f);
-    int placed = 0, intro = -1;
-    for (int i = 0; i < MAX_ENEMIES && placed < count; i++) {
-        if (g->en[i].alive) continue;
-        float roll = frand();
-        int kind = roll < big_p ? EN_BIG : (roll < big_p + 0.45f ? EN_SMALL : EN_MED);
-        /* Specials take a growing share once they have arrived; each one's
-         * first wave leads with one of it. (Waves before the first special
-         * draw exactly as they always did.) */
-        int specials[3], ns = 0;
-        if (g->wave >= EATER_WAVE)    specials[ns++] = EN_EATER;
-        if (g->wave >= CHARGER_WAVE)  specials[ns++] = EN_CHARGER;
-        if (g->wave >= SPLITTER_WAVE) specials[ns++] = EN_SPLITTER;
-        if (ns > 0) {
-            float share = fminf(0.15f + 0.03f * (float)(g->wave - EATER_WAVE), 0.45f);
-            if (frand() < share) kind = specials[(int)(frand() * (float)ns) % ns];
-            if (placed == 0 && (intro = new_kind(g->wave)) >= 0) kind = intro;
-        }
-        float r = SPECS[kind].r;
-        vector p = spawn_point(g, r);
-        g->en[i] = (enemy){
-            .alive = 1, .kind = kind, .p = p, .v = {0, 0, 0},
-            .face = vector_normalize((vector){g->pl.p.x - p.x, 0, g->pl.p.z - p.z}),
-            .hp = SPECS[kind].hp,
-            .spawn_t = -0.4f * (float)placed,
-            .stuck_at = p,
-        };
-        placed++;
-    }
-    char buf[32];
-    static const char *const names[EN_KINDS] = {
-        [EN_EATER] = "EATER", [EN_CHARGER] = "CHARGER", [EN_SPLITTER] = "SPLITTER"};
-    if (intro >= 0) snprintf(buf, sizeof buf, "NEW: %s", names[intro]);
-    else snprintf(buf, sizeof buf, "WAVE %d", g->wave);
-    banner(g, buf);
-}
-
-/* Somewhere for an enemy of radius r to rise from: near a spawn point if
- * the level has them, else anywhere at least 11 m from the player; never
- * in a pillar or wall. */
-static vector spawn_point(game *g, float r) {
-    const level *lv = g->lv;
-    vector p = {0, r, 0};
-    for (int tries = 0; tries < 100; tries++) {
-        if (lv->n_spawns > 0) {
-            /* Near one of the level's spawn points. */
-            vector sp = lv->spawns[(int)(frand() * (float)lv->n_spawns) % lv->n_spawns];
-            p.x = sp.x + frange(-1.0f, 1.0f);
-            p.z = sp.z + frange(-1.0f, 1.0f);
-            clamp_arena(g, &p, r + 0.5f);
-            float dx = p.x - g->pl.p.x, dz = p.z - g->pl.p.z;
-            if (tries < 50 && dx * dx + dz * dz < 8.0f * 8.0f) continue;
-        } else {
-            p.x = frange(-lv->half_x + r + 1, lv->half_x - r - 1);
-            p.z = frange(-lv->half_z + r + 1, lv->half_z - r - 1);
-            float dx = p.x - g->pl.p.x, dz = p.z - g->pl.p.z;
-            if (dx * dx + dz * dz < 11.0f * 11.0f) continue;
-        }
-        vector q = p;
-        vector hit = push_out_static(g, &q, r + 0.6f);
-        if (hit.x != 0 || hit.z != 0) continue;
-        break;
-    }
-    return p;
-}
+/* ------------------------------------------------------ Level and reset */
 
 static level builtin_arena;
 static const level *arena(void) {
@@ -305,8 +195,7 @@ static void build_level(game *g) {
     int ok = g->phys != NULL;
     for (int k = 0; k <= EN_KINDS && ok; k++) {
         float r = k == NAV_PLAYER ? PLAYER_R
-                : k == EN_EATER ? SPECS[k].r + EATER_GROW * EATER_CAP   /* full */
-                : SPECS[k].r;
+                : SPECS[k].r + SPECS[k].grow * (float)SPECS[k].cap;   /* full up */
         float clearance = r + 0.05f;
         ok = nav_build(&g->nav[k], g->lv, clearance) == 0 &&
              (k == NAV_PLAYER || nav_field_init(&g->to_player[k], &g->nav[k]) == 0);
@@ -389,7 +278,7 @@ void game_set_magazine(game *g, int mag) {
     }
     /* Same for balls inside eaters: out they come. */
     for (int i = 0; i < MAX_ENEMIES; i++)
-        if (g->en[i].alive && g->en[i].eaten > 0) eater_release(g, &g->en[i], g->en[i].eaten, 0);
+        if (g->en[i].alive && g->en[i].eaten > 0) enemy_release(g, &g->en[i], g->en[i].eaten, 0);
     for (int k = g->mag; k < mag; k++) scatter_ball(g, k);
     for (int k = g->mag - 1; k >= mag; k--) {
         physics_body b = ball_get(g, k);
@@ -422,21 +311,6 @@ void game_set_magazine(game *g, int mag) {
 float mag_factor(int mag) {
     float r = (float)DEFAULT_AMMO / (float)mag;
     return powf(r, mag <= DEFAULT_AMMO ? 0.35f : 0.95f);
-}
-
-static int kill_points(const game *g, int kind) {
-    /* Rounded to tens so scores stay readable. */
-    return 10 * (int)lroundf((float)SPECS[kind].score * mag_factor(g->mag) / 10.0f);
-}
-
-static void enemy_damage(game *g, enemy *e, vector at) {
-    e->flash = 1.0f;
-    if (--e->hp > 0) return;
-    e->dying = 1e-4f;
-    g->kills++;
-    g->score += kill_points(g, e->kind);
-    play_at(g, SFX_POP, at, 1.0f, 1.25f - 0.25f * SPECS[e->kind].r);
-    burst(g, e->p, SPECS[e->kind].c1, e->kind <= EN_BIG ? 14 + 6 * e->kind : 20, 7.0f);
 }
 
 /* ------------------------------------------------------------- Physics */
@@ -600,302 +474,6 @@ static void step_physics(game *g, float dt) {
     for (int i = 0; i < MAX_ENEMIES; i++)
         if (g->en[i].alive && g->en[i].spawn_t >= 0.0f)
             g->en[i].v = physics_world_body_velocity(g->phys, i);
-}
-
-/* ------------------------------------------------------ Special enemies */
-
-/* Let n of an eater's balls out: at its surface, flung outwards (or at
- * the player with `spit`). Balls inside are disabled bodies like the ones
- * in your hand; which slots come back doesn't matter, only how many. */
-static void eater_release(game *g, enemy *e, int n, int spit) {
-    float r = enemy_size(e);
-    for (int k = 0; k < g->mag && n > 0 && e->eaten > 0; k++) {
-        if (ball_get(g, k).enabled) continue;
-        vector d;
-        if (spit) {
-            d = vector_normalize((vector){g->pl.p.x - e->p.x, 0, g->pl.p.z - e->p.z});
-            d = vector_normalize(vector_add(d, (vector){frange(-0.2f, 0.2f), 0.5f, frange(-0.2f, 0.2f)}));
-        } else {
-            float a = frange(0.0f, 6.2831853f);
-            d = vector_normalize((vector){cosf(a), frange(0.3f, 1.0f), sinf(a)});
-        }
-        vector p = vector_add(e->p, vector_scale(d, r + BALL_R + 0.05f));
-        if (p.y < BALL_R + 0.01f) p.y = BALL_R + 0.01f;
-        clamp_arena(g, &p, BALL_R);
-        push_out_static(g, &p, BALL_R);
-        physics_world_set_enabled(g->phys, BALL_ID(k), 1);
-        physics_world_set_position(g->phys, BALL_ID(k), p);
-        physics_world_set_velocity(g->phys, BALL_ID(k), vector_scale(d, spit ? 7.0f : frange(4.0f, 8.0f)));
-        e->eaten--;
-        n--;
-    }
-}
-
-/* The ball an eater goes for: the nearest one lying (or rolling slowly)
- * on the floor, or -1. */
-static int eater_target(const game *g, const enemy *e) {
-    int best = -1;
-    float bd = 1e9f;
-    for (int k = 0; k < g->mag; k++) {
-        physics_body b = ball_get(g, k);
-        if (!b.enabled || b.position.y > 0.5f || vector_magnitude(b.velocity) > EATER_EAT_SPEED) continue;
-        float dx = b.position.x - e->p.x, dz = b.position.z - e->p.z, d = dx * dx + dz * dz;
-        if (d < bd) { bd = d; best = k; }
-    }
-    return best;
-}
-
-static void eater_eat(game *g, enemy *e) {
-    float reach = enemy_size(e) + BALL_R + 0.1f;
-    for (int k = 0; k < g->mag && e->eaten < EATER_CAP; k++) {
-        physics_body b = ball_get(g, k);
-        if (!b.enabled || b.position.y > 0.5f || vector_magnitude(b.velocity) > EATER_EAT_SPEED) continue;
-        float dx = b.position.x - e->p.x, dz = b.position.z - e->p.z;
-        if (dx * dx + dz * dz > reach * reach) continue;
-        physics_world_set_enabled(g->phys, BALL_ID(k), 0);
-        e->eaten++;
-        play_at(g, SFX_PICKUP, e->p, 0.8f, 0.55f + 0.02f * (float)e->eaten);
-    }
-}
-
-/* Nothing in hand, nothing loose, no grenade in the air: everything is
- * inside eaters. Then they spit balls back so the game can go on. */
-static int ammo_locked_out(const game *g) {
-    if (g->ammo > 0 || g->gren.state == GREN_FLYING) return 0;
-    for (int k = 0; k < g->mag; k++) if (ball_get(g, k).enabled) return 0;
-    return 1;
-}
-
-static void split(game *g, const enemy *e) {
-    int made = 0;
-    for (int i = 0; i < MAX_ENEMIES && made < SPLIT_SHARDS; i++) {
-        enemy *o = &g->en[i];
-        if (o->alive) continue;
-        float a = 6.2831853f * ((float)made + frange(0.0f, 0.5f)) / SPLIT_SHARDS;
-        vector d = {cosf(a), 0, sinf(a)};
-        vector p = vector_add(e->p, vector_scale(d, 0.5f));
-        p.y = SPECS[EN_SHARD].r;
-        clamp_arena(g, &p, SPECS[EN_SHARD].r);
-        push_out_static(g, &p, SPECS[EN_SHARD].r);
-        *o = (enemy){
-            .alive = 1, .kind = EN_SHARD, .p = p, .v = vector_scale(d, 6.0f), .face = d,
-            .hp = SPECS[EN_SHARD].hp, .spawn_t = SPAWN_TIME, .stuck_at = p,
-        };
-        made++;
-    }
-}
-
-static void hurt_player(game *g, enemy *e, vector dir, float damage, float shove) {
-    g->pl.hp -= damage;
-    g->pl.invuln = INVULN_TIME;
-    g->pl.hurt_flash = 1.0f;
-    g->pl.v = vector_add(g->pl.v, vector_scale(dir, shove));
-    e->v = vector_scale(dir, -4.0f);
-    game_sfx(SFX_HURT, 0.9f, 0.0f, 1.0f);
-    if (g->pl.hp <= 0) {
-        g->pl.hp = 0;
-        g->game_over = 1;
-        banner(g, "GAME OVER");
-        g->banner_t = 1e9f;
-    }
-}
-
-static void update_enemies(game *g, float dt) {
-    int locked = 0, locked_known = 0;
-    for (int i = 0; i < MAX_ENEMIES; i++) {
-        enemy *e = &g->en[i];
-        if (!e->alive) continue;
-        const en_spec *s = &SPECS[e->kind];
-        e->flash = fmaxf(0.0f, e->flash - dt * 6.0f);
-
-        if (e->dying > 0.0f) {
-            e->dying += dt;
-            if (e->dying >= DIE_TIME) {
-                e->alive = 0;
-                burst(g, e->p, s->c2, 10, 5.0f);
-                if (e->kind == EN_EATER) eater_release(g, e, e->eaten, 0);
-                if (e->kind == EN_SPLITTER) split(g, e);
-            }
-            continue;
-        }
-        float r = enemy_size(e);
-        if (e->spawn_t < SPAWN_TIME) {
-            e->spawn_t += dt;
-            float k = fmaxf(0.0f, e->spawn_t) / SPAWN_TIME;
-            if (k > 1) k = 1;
-            k = 1 - (1 - k) * (1 - k);
-            e->p.y = -r + 2.0f * r * k;
-            continue;
-        }
-        e->p.y = r;
-
-        vector to = {g->pl.p.x - e->p.x, 0, g->pl.p.z - e->p.z};
-        float dist = sqrtf(to.x * to.x + to.z * to.z);
-        vector dir = dist > 1e-4f ? vector_scale(to, 1.0f / dist) : (vector){0, 0, 1};
-
-        /* What it is heading for: the player, or (an eater with room) a
-         * ball on the floor. */
-        vector goal = g->pl.p, gdir = dir;
-        nav_field *field = &g->to_player[e->kind];
-        if (e->kind == EN_EATER && e->eaten < EATER_CAP) {
-            int b = eater_target(g, e);
-            if (b >= 0) {
-                goal = ball_get(g, b).position;
-                vector gt = {goal.x - e->p.x, 0, goal.z - e->p.z};
-                float gl = sqrtf(gt.x * gt.x + gt.z * gt.z);
-                gdir = gl > 1e-4f ? vector_scale(gt, 1.0f / gl) : dir;
-                field = &g->to_ball;
-            }
-        }
-
-        /* Straight at the goal when nothing is in the way; around walls
-         * along the nav grid otherwise. */
-        vector head = gdir;
-        if (g->lv->n_boxes > 0 && !level_clear_line(g->lv, e->p, goal, 0.0f)) {
-            nav_grid *ng = &g->nav[e->kind];
-            nav_flow(ng, field, goal);
-            vector nd = nav_dir(ng, field, e->p);
-            if (nd.x != 0 || nd.z != 0) head = nd;
-        }
-
-        /* Slight weave so a crowd doesn't move in lockstep. */
-        float weave = 0.35f * sinf(g->t * 1.3f + (float)i * 2.1f);
-        vector side = {-head.z, 0, head.x};
-        vector want = vector_normalize(vector_add(head, vector_scale(side, weave)));
-        float speed = s->speed * (1.0f + 0.04f * (float)(g->wave - 1));
-        if (e->kind == EN_EATER) speed *= 1.0f - 0.025f * (float)e->eaten;
-        if (g->game_over) speed *= 0.3f;
-        want = vector_scale(want, speed);
-
-        /* Charger: approach, wind up, dash, maybe dazed against a wall. */
-        int dashing = 0;
-        if (e->kind == EN_CHARGER) {
-            e->st_t -= dt;
-            e->cool -= dt;
-            switch (e->st) {
-            case CH_APPROACH:
-                if (e->cool <= 0 && dist > 3.0f && dist < 14.0f && !g->game_over &&
-                    (g->lv->n_boxes == 0 || level_clear_line(g->lv, e->p, g->pl.p, 0.0f))) {
-                    e->st = CH_WINDUP;
-                    e->st_t = CHARGE_WINDUP;
-                    play_at(g, SFX_DRY, e->p, 1.0f, 0.5f);
-                }
-                break;
-            case CH_WINDUP:
-                want = (vector){0, 0, 0};
-                e->dash = dir;   /* aims until the last moment */
-                e->flash = fmaxf(e->flash, 0.5f + 0.5f * sinf(g->t * 40.0f));
-                if (e->st_t <= 0) {
-                    e->st = CH_DASH;
-                    e->st_t = CHARGE_TIME;
-                    play_at(g, SFX_SHOOT, e->p, 1.0f, 0.45f);
-                }
-                break;
-            case CH_DASH:
-                dashing = 1;
-                if (e->st_t <= 0) { e->st = CH_APPROACH; e->cool = CHARGE_COOL; }
-                break;
-            case CH_DAZED:
-                want = (vector){0, 0, 0};
-                if (e->st_t <= 0) { e->st = CH_APPROACH; e->cool = CHARGE_COOL; }
-                break;
-            }
-        }
-
-        if (dashing) {
-            e->v = vector_scale(e->dash, CHARGE_SPEED);
-        } else {
-            vector dv = vector_sub(want, e->v);
-            dv.y = 0;
-            float dvl = vector_magnitude(dv), maxdv = ENEMY_ACCEL * dt;
-            if (dvl > maxdv) dv = vector_scale(dv, maxdv / dvl);
-            e->v = vector_add(e->v, dv);
-        }
-        e->v.y = 0;
-        e->p = vector_add(e->p, vector_scale(e->v, dt));
-
-        /* Walls / pillars: bounce off a little so knockback reads. */
-        float lx = g->lv->half_x - r, lz = g->lv->half_z - r;
-        int hit_wall = 0;
-        if (e->p.x >  lx) { e->p.x =  lx; e->v.x = -fabsf(e->v.x) * 0.4f; hit_wall = 1; }
-        if (e->p.x < -lx) { e->p.x = -lx; e->v.x =  fabsf(e->v.x) * 0.4f; hit_wall = 1; }
-        if (e->p.z >  lz) { e->p.z =  lz; e->v.z = -fabsf(e->v.z) * 0.4f; hit_wall = 1; }
-        if (e->p.z < -lz) { e->p.z = -lz; e->v.z =  fabsf(e->v.z) * 0.4f; hit_wall = 1; }
-        vector n = push_out_static(g, &e->p, r);
-        if (n.x != 0 || n.z != 0) {
-            float vn = e->v.x * n.x + e->v.z * n.z;
-            if (vn < 0) { e->v.x -= vn * n.x; e->v.z -= vn * n.z; }   /* slide */
-            hit_wall = 1;
-        }
-        if (dashing && hit_wall) {
-            e->st = CH_DAZED;
-            e->st_t = CHARGE_DAZE;
-            e->v = vector_scale(e->dash, -2.0f);
-            play_at(g, SFX_WALL, e->p, 1.0f, 0.5f);
-            burst(g, vector_add(e->p, vector_scale(e->dash, r)), (scene_color){255, 230, 120}, 10, 5.0f);
-        }
-
-        /* Watchdog for levels with walls: an enemy that hasn't got 1 m
-         * anywhere in 6 s and can't see the player (wedged in a gap too
-         * narrow for it, say) sinks and rises again somewhere else. */
-        if (g->lv->n_boxes > 0) {
-            float mx = e->p.x - e->stuck_at.x, mz = e->p.z - e->stuck_at.z;
-            if (mx * mx + mz * mz > 1.0f) {
-                e->stuck_at = e->p;
-                e->stuck_t = 0.0f;
-            } else if ((e->stuck_t += dt) > 6.0f && !level_clear_line(g->lv, e->p, g->pl.p, 0.0f)) {
-                e->p = spawn_point(g, r);
-                e->p.y = -r;
-                e->v = (vector){0, 0, 0};
-                e->spawn_t = 0.0f;
-                e->stuck_at = e->p;
-                e->stuck_t = 0.0f;
-                e->st = CH_APPROACH;
-                continue;
-            }
-        }
-
-        /* Separate from other enemies. */
-        for (int k = 0; k < MAX_ENEMIES; k++) {
-            enemy *o = &g->en[k];
-            if (k == i || !o->alive || o->dying > 0 || o->spawn_t < SPAWN_TIME) continue;
-            float dx = e->p.x - o->p.x, dz = e->p.z - o->p.z;
-            float d = sqrtf(dx * dx + dz * dz), min = r + enemy_size(o);
-            if (d < min && d > 1e-4f) {
-                float push = (min - d) * 0.5f;
-                e->p.x += dx / d * push;
-                e->p.z += dz / d * push;
-            }
-        }
-
-        /* Eater: swallow what it rolls over; spit one back now and then
-         * if that's all the ammo there is. */
-        if (e->kind == EN_EATER) {
-            eater_eat(g, e);
-            if (!locked_known) { locked = ammo_locked_out(g); locked_known = 1; }
-            if (locked && e->eaten > 0) {
-                if ((e->burp_t += dt) >= EATER_BURP) {
-                    e->burp_t = 0.0f;
-                    eater_release(g, e, 1, 1);
-                    play_at(g, SFX_POP, e->p, 0.6f, 1.6f);
-                    locked = 0;
-                }
-            } else {
-                e->burp_t = 0.0f;
-            }
-        }
-
-        /* Eye tracks what it's after (a dashing charger looks ahead). */
-        vector look = dashing || e->st == CH_DAZED ? e->dash : gdir;
-        e->face = vector_normalize(vector_add(e->face, vector_scale(look, dt * 5.0f)));
-
-        /* Contact damage: a dashing charger hits twice as hard, and the
-         * hit ends its dash. */
-        if (!g->game_over && dist < r + PLAYER_R && g->pl.invuln <= 0.0f) {
-            hurt_player(g, e, dir, dashing ? CHARGE_DAMAGE : s->damage, dashing ? 16.0f : 9.0f);
-            if (dashing) { e->st = CH_APPROACH; e->cool = CHARGE_COOL; }
-        }
-    }
 }
 
 static void update_particles(game *g, float dt) {

@@ -27,7 +27,8 @@
  * Where things live:
  *   main.c      command line, then hands off to app or headless
  *   app.c       window, display, screens and their input, main loop
- *   game.c      rules and state: player, enemies, waves, ammo, scoring
+ *   game.c      rules and state: player, ammo, grenade, physics, scoring
+ *   enemy.c     enemy kinds (one SPECS row each, with hooks), waves, AI
  *   bot.c       the autopilot
  *   render.c    scene building, gun viewmodel, post effects, HUD
  *   ui.c        menu contents, options, high-score screen

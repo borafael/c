@@ -120,8 +120,10 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   F5 reloads the file while playing.
 │   │                     #   Files: main.c (flags) -> app.c (window, screens,
 │   │                     #   input, loop) or headless.c (--shot / --bench);
-│   │                     #   game.c (rules, waves, ammo in a physics_world,
-│   │                     #   scoring), bot.c, render.c (scene + HUD), ui.c (menu
+│   │                     #   game.c (rules, ammo in a physics_world, grenade,
+│   │                     #   scoring), enemy.c (one SPECS row per kind: stats,
+│   │                     #   decor for render.c, optional behaviour hooks;
+│   │                     #   waves, steering), bot.c, render.c (scene + HUD), ui.c (menu
 │   │                     #   contents, options, score screen), menu.c (generic
 │   │                     #   list widget), level.c / levels.c (format, list),
 │   │                     #   nav.c (grid flow fields: enemies and the bot path
