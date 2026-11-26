@@ -1,0 +1,95 @@
+# Stadium: a big open pitch inside a low wall with four gates, goals at
+# both ends, two dugouts for cover, and stands rising in three rows all
+# around. The stands' corners are cut back so the bowl reads as rounded,
+# and the gaps they leave are tunnels where enemies come in, with two
+# more under the long stands at midfield. Commands only: every box is
+# x0 z0 x1 z1 height.
+#
+#   pitch        x -34..34, z -22..22 (you start on the centre spot)
+#   concourse    the 3 m ring between the pitch wall and the stands
+#   stands       three rows, 1.2 / 2.2 / 3.2 m tall
+#   floodlights  the four tall pillars on the end stands' corners
+
+name          Stadium
+size          89 65
+wall_height   4
+pillar_height 12
+player        0 0 90
+
+# Pitch wall, 1 m: a ball lobs over it, enemies go round through the
+# gates (x -19..-15 and 15..19 on both long sides).
+box -31 21.6 -19 22 1
+box -31 -22 -19 -21.6 1
+box -15 21.6 15 22 1
+box -15 -22 15 -21.6 1
+box 19 21.6 31 22 1
+box 19 -22 31 -21.6 1
+box 33.6 -19 34 19 1
+box -34 -19 -33.6 19 1
+# its corners, stepped
+box 31 21 32 22 1
+box 31 -22 32 -21 1
+box -32 21 -31 22 1
+box -32 -22 -31 -21 1
+box 32 20 33 21 1
+box 32 -21 33 -20 1
+box -33 20 -32 21 1
+box -33 -21 -32 -20 1
+box 33 19 34 20 1
+box 33 -20 34 -19 1
+box -34 19 -33 20 1
+box -34 -20 -33 -19 1
+
+# Goals: posts 2.4 m, the back and sides of the net 1 m.
+box 31.6 3.3 32 3.7 2.4
+box 31.6 -3.7 32 -3.3 2.4
+box 33.2 -3.7 33.6 3.7 1
+box 32 3.3 33.2 3.7 1
+box 32 -3.7 33.2 -3.3 1
+box -32 3.3 -31.6 3.7 2.4
+box -32 -3.7 -31.6 -3.3 2.4
+box -33.6 -3.7 -33.2 3.7 1
+box -33.2 3.3 -32 3.7 1
+box -33.2 -3.7 -32 -3.3 1
+
+# Dugouts, 1 m, diagonally across the halfway line.
+box -8 17 -3 18.5 1
+box 3 -18.5 8 -17 1
+
+# Long stands (z 25..32.5), split at midfield by a tunnel (x -1.5..1.5);
+# each row further out reaches further round the corner.
+box -34 25 -1.5 27.5 1.2
+box -34 -27.5 -1.5 -25 1.2
+box 1.5 25 34 27.5 1.2
+box 1.5 -27.5 34 -25 1.2
+box -35.5 27.5 -1.5 30 2.2
+box -35.5 -30 -1.5 -27.5 2.2
+box 1.5 27.5 35.5 30 2.2
+box 1.5 -30 35.5 -27.5 2.2
+box -37 30 -1.5 32.5 3.2
+box -37 -32.5 -1.5 -30 3.2
+box 1.5 30 37 32.5 3.2
+box 1.5 -32.5 37 -30 3.2
+
+# End stands (x 37..44.5), behind the goals.
+box 37 -21 39.5 21 1.2
+box -39.5 -21 -37 21 1.2
+box 39.5 -22.5 42 22.5 2.2
+box -42 -22.5 -39.5 22.5 2.2
+box 42 -24 44.5 24 3.2
+box -44.5 -24 -42 24 3.2
+
+# Floodlights rising from the corners of the top row behind the goals
+# (inside it, so they leave no gap to get stuck in).
+pillar 43.25 22.8 0.7
+pillar 43.25 -22.8 0.7
+pillar -43.25 22.8 0.7
+pillar -43.25 -22.8 0.7
+
+# Enemies come out of the tunnels.
+spawn 40.75 28.75
+spawn 40.75 -28.75
+spawn -40.75 28.75
+spawn -40.75 -28.75
+spawn 0 30.5
+spawn 0 -30.5

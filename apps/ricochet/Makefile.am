@@ -43,4 +43,4 @@ endif
 dist_noinst_DATA = levels/arena.lvl levels/atrium.lvl levels/bunker.lvl \
                    levels/colonnade.lvl levels/crossroads.lvl levels/downtown.lvl \
                    levels/gauntlet.lvl levels/maze.lvl levels/pinball.lvl \
-                   levels/warehouse.lvl
+                   levels/stadium.lvl levels/warehouse.lvl

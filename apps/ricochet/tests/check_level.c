@@ -27,7 +27,7 @@ END_TEST
 /* Every level shipped in levels/ loads, and nothing starts inside a wall. */
 static const char *const shipped[] = {
     "arena.lvl", "atrium.lvl", "bunker.lvl", "colonnade.lvl", "crossroads.lvl",
-    "downtown.lvl", "gauntlet.lvl", "maze.lvl", "pinball.lvl", "warehouse.lvl",
+    "downtown.lvl", "gauntlet.lvl", "maze.lvl", "pinball.lvl", "stadium.lvl", "warehouse.lvl",
 };
 
 static int inside_box(const level *lv, float x, float z) {
