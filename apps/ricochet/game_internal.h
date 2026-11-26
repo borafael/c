@@ -27,7 +27,12 @@ void   spawn_wave(game *g);
 void   update_enemies(game *g, float dt);
 /* A ball hit enemy e hard enough to hurt it: flash, maybe kill and score. */
 void   enemy_damage(game *g, enemy *e, vector at);
-/* Let n of the balls an enemy holds out (flung at the player with `spit`). */
-void   enemy_release(game *g, enemy *e, int n, int spit);
+/* Let n of the balls an enemy holds out. */
+void   enemy_release(game *g, enemy *e, int n);
+/* Balls enemies shot (game.shot_by) around the physics step: note where
+ * they were (returns how many there are), then hurt the player with the
+ * ones that went through them. */
+int    shots_before(const game *g, vector *prev);
+void   shots_after(game *g, const vector *prev);
 
 #endif

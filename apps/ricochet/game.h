@@ -72,9 +72,13 @@
 
 /* Special enemies, each first appearing on its own wave (announced):
  *   Eater     swallows balls lying on the floor (up to EATER_CAP, growing
- *             and slowing with each); killing it pops them all back out.
- *             If you have none in hand and none are loose, eaters spit
- *             one out every EATER_BURP s, so you can never be locked out.
+ *             and slowing with each; they orbit it) and shoots them back at
+ *             you: with a clear line in range it slows, its orbit spins up
+ *             and glows (EATER_AIM), then it fires a burst. Its shots are
+ *             your balls, hostile until they land: they hurt you (and any
+ *             enemy but the shooter) like yours hurt enemies, and come back
+ *             to you as ammo. Killing it pops the rest out. With everything
+ *             inside eaters, its shots are how you get ammo back.
  *   Charger   with a clear line at mid range: stops, flashes, then dashes
  *             straight; a wall leaves it dazed.
  *   Splitter  bursts into SPLIT_SHARDS fast, fragile shards when killed. */
@@ -84,7 +88,15 @@
 #define EATER_CAP      12
 #define EATER_GROW     0.035f   /* radius per ball inside */
 #define EATER_EAT_SPEED 4.0f    /* balls slower than this get swallowed */
-#define EATER_BURP     2.0f
+#define EATER_ORBIT    0.35f    /* how far outside it the swallowed balls orbit */
+#define EATER_AIM      0.55f    /* warning before a burst */
+#define EATER_BURST    5        /* shots per burst (fewer if it holds fewer) */
+#define EATER_BURST_GAP 0.09f
+#define EATER_RELOAD   2.6f
+#define EATER_RANGE    18.0f    /* shoots from point blank out to this */
+#define EATER_SHOT_SPEED 30.0f  /* yours fly at SHOOT_SPEED; this one you can dodge */
+#define EATER_SHOT_SPREAD 0.035f
+#define EATER_SHOT_DAMAGE 6.0f
 #define CHARGE_WINDUP  0.75f
 #define CHARGE_SPEED   15.0f
 #define CHARGE_TIME    1.1f     /* longest dash */
@@ -99,6 +111,7 @@ typedef enum {
     EN_KINDS
 } en_kind;
 typedef enum { CH_APPROACH, CH_WINDUP, CH_DASH, CH_DAZED } charge_state;
+typedef enum { EAT_ROAM, EAT_AIM, EAT_FIRE } eater_state;
 
 typedef struct game game;
 
@@ -114,10 +127,10 @@ typedef struct {
     vector stuck_at;    /* where it was when stuck_t last reset */
     float  stuck_t;     /* seconds without getting anywhere */
     int    eaten;       /* balls inside (Eater) */
-    float  burp_t;      /* Eater: time towards the next spit */
-    int    st;          /* per-kind state, 0 at spawn (Charger: charge_state) */
-    float  st_t;        /* Charger: time left in the state */
-    float  cool;        /* Charger: time before it may charge again */
+    int    st;          /* per-kind state, 0 at spawn (charge_state, eater_state) */
+    float  st_t;        /* time left in the state (Eater: to the next shot) */
+    float  cool;        /* time before it may charge / shoot again */
+    int    volley;      /* Eater: shots left in this burst */
     vector dash;        /* Charger: unit dash direction */
 } enemy;
 
@@ -153,10 +166,8 @@ typedef struct {
     int   (*steer)(game *g, enemy *e, float dt, float dist, vector dir, vector *want);
     /* A rush ran into a wall or pillar. */
     void  (*bump)(game *g, enemy *e, float r);
-    /* After moving and separating (Eater: swallow, spit back). `locked` is
-     * shared by every enemy this frame: -1 not worked out yet, else
-     * whether all the ammo is stuck inside eaters. */
-    void  (*after_move)(game *g, enemy *e, float dt, int *locked);
+    /* After moving and separating (Eater: swallow). */
+    void  (*after_move)(game *g, enemy *e);
     /* Where the eye looks, given where the goal is. */
     vector (*look)(const enemy *e, int rushing, vector goal_dir);
     /* Touched the player (instead of the plain hurt). */
@@ -222,6 +233,9 @@ struct game {
     int      ammo;               /* balls in hand (a flying grenade's payload
                                   * is neither in hand nor in the world) */
     grenade  gren;
+    /* 1 + the enemy that shot ball k, until the ball lands, slows down or
+     * hits you; 0 for a ball that is just a ball. */
+    unsigned char shot_by[AMMO_CAP];
     enemy    en[MAX_ENEMIES];
     particle parts[MAX_PARTS];
     int      wave, kills, score, shots, hits;

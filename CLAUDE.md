@@ -100,9 +100,10 @@ C monorepo using GNU Autotools for build management. Experimental project for le
 │   │                     #   from the hand it bursts into on first contact
 │   │                     #   (own body GRENADE_ID after the balls). Enemies:
 │   │                     #   small / medium / big, then specials from set waves
-│   │                     #   (game.h): Eater (wave 3, swallows floor balls, pops
-│   │                     #   them out on death, spits one back if you're locked
-│   │                     #   out), Charger (5: wind-up, straight dash, dazed by
+│   │                     #   (game.h): Eater (wave 3, swallows floor balls, which
+│   │                     #   orbit it, and shoots them back at you in bursts:
+│   │                     #   red, hostile until they land (game.shot_by), then
+│   │                     #   yours again; pops the rest out on death), Charger (5: wind-up, straight dash, dazed by
 │   │                     #   walls), Splitter (7: bursts into 3 shards). All SFX are
 │   │                     #   synthesized (sfx.c), panned + distance-faded.
 │   │                     #   --bot autopilot, --shot out.ppm headless (prints

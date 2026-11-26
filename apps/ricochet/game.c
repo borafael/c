@@ -278,7 +278,8 @@ void game_set_magazine(game *g, int mag) {
     }
     /* Same for balls inside eaters: out they come. */
     for (int i = 0; i < MAX_ENEMIES; i++)
-        if (g->en[i].alive && g->en[i].eaten > 0) enemy_release(g, &g->en[i], g->en[i].eaten, 0);
+        if (g->en[i].alive && g->en[i].eaten > 0) enemy_release(g, &g->en[i], g->en[i].eaten);
+    memset(g->shot_by, 0, sizeof g->shot_by);   /* slots get shuffled below */
     for (int k = g->mag; k < mag; k++) scatter_ball(g, k);
     for (int k = g->mag - 1; k >= mag; k--) {
         physics_body b = ball_get(g, k);
@@ -334,8 +335,10 @@ static void on_contact(void *user, physics_world *w, const physics_contact *c) {
     }
     vector bp = physics_world_body_position(w, c->body);
     float imp = c->speed;
+    int k = c->body - MAX_ENEMIES;   /* the ball */
     switch (c->kind) {
     case PHYSICS_CONTACT_GROUND:
+        g->shot_by[k] = 0;   /* an enemy's shot has landed: just a ball */
         if (imp > 1.0f)
             play_at(g, SFX_BOUNCE, bp, fminf(1.0f, 0.15f + imp / 14.0f),
                     frange(0.92f, 1.08f) + fminf(imp, 12.0f) * 0.01f);
@@ -348,6 +351,7 @@ static void on_contact(void *user, physics_world *w, const physics_contact *c) {
         break;
     case PHYSICS_CONTACT_BOX:
         if (c->normal.y > 0.99f) {              /* landed on top: like the floor */
+            g->shot_by[k] = 0;
             if (imp > 1.0f)
                 play_at(g, SFX_BOUNCE, bp, fminf(1.0f, 0.15f + imp / 14.0f),
                         frange(0.92f, 1.08f) + fminf(imp, 12.0f) * 0.01f);
@@ -368,9 +372,11 @@ static void on_contact(void *user, physics_world *w, const physics_contact *c) {
         ev.x += kick.x;
         ev.z += kick.z;
         physics_world_set_velocity(w, c->other, ev);
-        int can_hurt = en->dying == 0.0f && en->spawn_t >= SPAWN_TIME;
+        /* An enemy's shot hurts the others, never the one that fired it. */
+        int can_hurt = en->dying == 0.0f && en->spawn_t >= SPAWN_TIME &&
+                       g->shot_by[k] != 1 + c->other;
         if (imp > HIT_MIN_SPEED && can_hurt) {
-            g->hits++;
+            if (!g->shot_by[k]) g->hits++;   /* your accuracy only */
             play_at(g, SFX_HIT, bp, fminf(1.0f, 0.35f + imp / 25.0f),
                     1.3f - 0.35f * SPECS[en->kind].r + frange(-0.04f, 0.04f));
             burst(g, bp, (scene_color){200, 250, 255}, 4, 3.0f);
@@ -468,8 +474,11 @@ static void step_physics(game *g, float dt) {
         physics_world_set_radius(g->phys, i, enemy_radius(e));
         physics_world_set_mass(g->phys, i, SPECS[e->kind].mass);
     }
+    vector shot_prev[AMMO_CAP];
+    int shots = shots_before(g, shot_prev);
     physics_world_advance(g->phys, dt);
     if (g->gren.burst) grenade_burst(g);
+    if (shots) shots_after(g, shot_prev);
     if (g->lv->n_boxes > 0) slide_off_box_tops(g, dt);
     for (int i = 0; i < MAX_ENEMIES; i++)
         if (g->en[i].alive && g->en[i].spawn_t >= 0.0f)
@@ -700,7 +709,7 @@ static void update_player(game *g, const input *in, float dt) {
     /* Recollect: walk over (or catch) a ball. */
     for (int i = 0; i < g->mag; i++) {
         physics_body b = ball_get(g, i);
-        if (!b.enabled || b.age < PICKUP_MIN_AGE || b.position.y > 2.2f) continue;
+        if (!b.enabled || b.age < PICKUP_MIN_AGE || b.position.y > 2.2f || g->shot_by[i]) continue;
         float dx = b.position.x - pl->p.x, dz = b.position.z - pl->p.z;
         if (dx * dx + dz * dz > PICKUP_R * PICKUP_R) continue;
         physics_world_set_enabled(g->phys, BALL_ID(i), 0);

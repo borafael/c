@@ -141,12 +141,15 @@ static void build_viewmodel(scene *s, const game *g, const scene_camera *cam) {
 
 /* Materials for the decorations, made the first time a kind that needs
  * them is on screen (so a frame without one costs nothing). */
-typedef struct { int glow, horn, star, crack; } decor_mats;
+typedef struct { int glow, hot, horn, star, crack; } decor_mats;
 
 static void decor_materials(scene *s, en_decor d, decor_mats *m) {
     switch (d) {
     case DECOR_STUDS:
-        if (m->glow < 0) m->glow = unlit_mat(s, (scene_color){120, 245, 255});
+        if (m->glow < 0) {
+            m->glow = unlit_mat(s, (scene_color){120, 245, 255});
+            m->hot = unlit_mat(s, (scene_color){255, 240, 150});
+        }
         break;
     case DECOR_HORN:
         if (m->horn < 0) {
@@ -162,12 +165,27 @@ static void decor_materials(scene *s, en_decor d, decor_mats *m) {
     }
 }
 
-/* Eater: a ring of the balls it has swallowed, turning round its middle. */
+/* Eater: the balls it has swallowed orbit it on a tilted ring (two
+ * crossed rings once there are many), wobbling. Aiming or firing, the
+ * orbit spins up and runs hot. */
 static void decor_studs(scene *s, const game *g, const enemy *e, float r, const decor_mats *m) {
-    for (int j = 0; j < e->eaten; j++) {
-        float a = g->t * 1.5f + 6.2831853f * (float)j / (float)e->eaten;
-        vector at = {e->p.x + cosf(a) * r * 0.97f, e->p.y - 0.1f * r, e->p.z + sinf(a) * r * 0.97f};
-        scene_add_sphere(s, (scene_sphere){.center = at, .radius = 0.085f, .material = m->glow});
+    int armed = e->st == EAT_AIM || e->st == EAT_FIRE;
+    float spin = armed ? 7.0f : 1.6f, R = r + EATER_ORBIT;
+    int rings = e->eaten > 6 ? 2 : 1;
+    for (int q = 0; q < rings; q++) {
+        int n = rings == 1 ? e->eaten : (q == 0 ? (e->eaten + 1) / 2 : e->eaten / 2);
+        float tilt = (q == 0 ? 0.35f : -0.35f) + 0.08f * sinf(g->t * 1.1f + (float)q);
+        float yaw = (float)q * 1.5707963f + (float)(e - g->en);   /* rings cross; enemies differ */
+        float ct = cosf(tilt), st = sinf(tilt), cy = cosf(yaw), sy = sinf(yaw);
+        for (int j = 0; j < n; j++) {
+            float a = (q ? -spin : spin) * g->t + 6.2831853f * (float)j / (float)n;
+            float x = cosf(a) * R, z = sinf(a) * R;   /* flat ring, then tilt, then turn */
+            float y = z * st;
+            z *= ct;
+            vector at = {e->p.x + x * cy - z * sy, e->p.y + y, e->p.z + x * sy + z * cy};
+            scene_add_sphere(s, (scene_sphere){.center = at, .radius = BALL_R,
+                                               .material = armed ? m->hot : m->glow});
+        }
     }
 }
 
@@ -197,7 +215,7 @@ static void decor_cracks(scene *s, const enemy *e, float r, const decor_mats *m)
 /* Body (white while flashing or dying), eye, and the kind's decor. */
 static void draw_enemies(scene *s, const game *g) {
     int m_sclera = scene_add_material(s, scene_material_default());
-    decor_mats dm = {-1, -1, -1, -1};
+    decor_mats dm = {-1, -1, -1, -1, -1};
     for (int i = 0; i < MAX_ENEMIES; i++) {   /* only what's on screen */
         const enemy *e = &g->en[i];
         if (!e->alive || e->dying > 0.0f || e->spawn_t < 0.0f) continue;
@@ -341,11 +359,15 @@ static void build_scene(scene *s, const game *g, const scene_camera *cam) {
     draw_enemies(s, g);
 
     /* Balls: hot cyan in flight, pulsing at rest so they're easy to find. */
-    int m_ball = unlit_mat(s, (scene_color){120, 245, 255});
+    int m_ball = unlit_mat(s, (scene_color){120, 245, 255}), m_shot = -1;
     for (int i = 0; i < g->mag; i++) {
         physics_body b = ball_get(g, i);
         if (!b.enabled) continue;
         int m = m_ball;
+        if (g->shot_by[i]) {   /* an enemy's shot, until it lands */
+            if (m_shot < 0) m_shot = unlit_mat(s, (scene_color){255, 70, 50});
+            m = m_shot;
+        }
         if (b.sleeping) {
             float pulse = 0.5f + 0.5f * sinf(g->t * 5.0f + (float)i);
             m = unlit_mat(s, lerp_color((scene_color){60, 160, 200}, (scene_color){200, 255, 255}, pulse));
